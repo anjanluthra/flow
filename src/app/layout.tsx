@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { Providers } from "@/components/Providers";
 import { Sidebar } from "@/components/ui/Sidebar";
 import "./globals.css";
 
@@ -28,8 +29,10 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full antialiased font-sans">
-        <Sidebar />
-        <main className="ml-64 min-h-screen bg-slate-50/50">{children}</main>
+        <Providers>
+          <Sidebar />
+          <main className="ml-64 min-h-screen bg-slate-50/50">{children}</main>
+        </Providers>
       </body>
     </html>
   );
