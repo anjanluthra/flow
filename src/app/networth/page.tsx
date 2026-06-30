@@ -272,6 +272,17 @@ export default function NetWorthPage() {
   const totalYield = accounts.reduce((s, a) => s + a.annualCashFlow, 0)
   const totalLocalBalance = accounts.reduce((s, a) => s + a.localBalance, 0)
 
+  // Personal vs Corporate split (matching the spreadsheet model)
+  const personalWithIdx = accounts
+    .map((a, i) => ({ account: a, idx: i }))
+    .filter(({ account: a }) => a.account !== 'Corporate Cash Balance')
+  const corporateWithIdx = accounts
+    .map((a, i) => ({ account: a, idx: i }))
+    .filter(({ account: a }) => a.account === 'Corporate Cash Balance')
+  const personalNetWorth = personalWithIdx.reduce((s, { account: a }) => s + a.usdValue, 0)
+  const corporateCash = corporateWithIdx.reduce((s, { account: a }) => s + a.usdValue, 0)
+  const personalYield = personalWithIdx.reduce((s, { account: a }) => s + a.annualCashFlow, 0)
+
   // ---- Edit handlers ----
   function startEditing() {
     const vals: Record<string, string> = {}
@@ -331,7 +342,7 @@ export default function NetWorthPage() {
             title="Total Net Worth"
             value={fmt(totalNetWorth)}
             change={2.3}
-            subtitle="vs last month"
+            subtitle={`Personal ${fmt(personalNetWorth)} + Corporate ${fmt(corporateCash)}`}
             icon={<DollarSign className="h-5 w-5" />}
           />
           <Card
@@ -523,17 +534,15 @@ export default function NetWorthPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {accounts.map((a, i) => (
+                {/* ---- Personal Accounts ---- */}
+                {personalWithIdx.map(({ account: a, idx: i }) => (
                   <tr
                     key={a.account}
                     className="transition-colors hover:bg-gray-50/50"
                   >
-                    {/* Account Name */}
                     <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
                       {a.account}
                     </td>
-
-                    {/* Holder Badge */}
                     <td className="px-4 py-3">
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${HOLDER_STYLES[a.holder]}`}
@@ -541,25 +550,15 @@ export default function NetWorthPage() {
                         {a.holder}
                       </span>
                     </td>
-
-                    {/* Country */}
                     <td className="px-4 py-3 text-center">
                       <span className="text-sm" title={a.country}>
                         {COUNTRY_FLAGS[a.country] || a.country}{' '}
-                        <span className="text-xs text-gray-400">
-                          {a.country}
-                        </span>
+                        <span className="text-xs text-gray-400">{a.country}</span>
                       </span>
                     </td>
-
-                    {/* Asset Class */}
-                    <td
-                      className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}
-                    >
+                    <td className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}>
                       {a.assetClass}
                     </td>
-
-                    {/* Liquidity Tier */}
                     <td className="px-4 py-3 text-center">
                       <span
                         className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${LIQUIDITY_STYLES[a.liquidity]}`}
@@ -567,40 +566,23 @@ export default function NetWorthPage() {
                         {a.liquidity}
                       </span>
                     </td>
-
-                    {/* Currency */}
-                    <td className="px-4 py-3 text-center text-gray-500">
-                      {a.currency}
-                    </td>
-
-                    {/* Local Balance (editable) */}
+                    <td className="px-4 py-3 text-center text-gray-500">{a.currency}</td>
                     <td className="px-4 py-3 text-right tabular-nums">
                       {isEditing ? (
                         <input
                           type="text"
                           value={editValues[i] ?? a.localBalance.toString()}
                           onChange={(e) =>
-                            setEditValues((prev) => ({
-                              ...prev,
-                              [i]: e.target.value,
-                            }))
+                            setEditValues((prev) => ({ ...prev, [i]: e.target.value }))
                           }
                           className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                         />
                       ) : (
-                        <span
-                          className={
-                            a.localBalance < 0
-                              ? 'text-red-600'
-                              : 'text-gray-900'
-                          }
-                        >
+                        <span className={a.localBalance < 0 ? 'text-red-600' : 'text-gray-900'}>
                           {fmtLocal(a.localBalance, a.currency)}
                         </span>
                       )}
                     </td>
-
-                    {/* USD Value */}
                     <td
                       className={`px-4 py-3 text-right tabular-nums font-medium ${
                         a.usdValue < 0 ? 'text-red-600' : 'text-gray-900'
@@ -608,13 +590,86 @@ export default function NetWorthPage() {
                     >
                       {fmt(a.usdValue)}
                     </td>
-
-                    {/* Yield */}
                     <td className="px-4 py-3 text-right tabular-nums text-gray-600">
                       {a.yield > 0 ? `${a.yield.toFixed(2)}%` : '—'}
                     </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-gray-600">
+                      {a.annualCashFlow > 0 ? fmt(a.annualCashFlow) : '—'}
+                    </td>
+                  </tr>
+                ))}
 
-                    {/* Annual Cash Flow */}
+                {/* ---- Personal Net Worth Subtotal ---- */}
+                <tr className="border-t-2 border-blue-200 bg-blue-50/60">
+                  <td className="px-4 py-3 font-bold text-blue-900">Personal Net Worth</td>
+                  <td className="px-4 py-3" />
+                  <td className="px-4 py-3" />
+                  <td className="px-4 py-3" />
+                  <td className="px-4 py-3" />
+                  <td className="px-4 py-3" />
+                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">&mdash;</td>
+                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">{fmt(personalNetWorth)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-700">&mdash;</td>
+                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">{fmt(personalYield)}</td>
+                </tr>
+
+                {/* ---- Corporate Cash ---- */}
+                {corporateWithIdx.map(({ account: a, idx: i }) => (
+                  <tr
+                    key={a.account}
+                    className="bg-amber-50/40 transition-colors hover:bg-amber-50/70"
+                  >
+                    <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
+                      {a.account}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${HOLDER_STYLES[a.holder]}`}
+                      >
+                        {a.holder}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <span className="text-sm" title={a.country}>
+                        {COUNTRY_FLAGS[a.country] || a.country}{' '}
+                        <span className="text-xs text-gray-400">{a.country}</span>
+                      </span>
+                    </td>
+                    <td className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}>
+                      {a.assetClass}
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${LIQUIDITY_STYLES[a.liquidity]}`}>
+                        {a.liquidity}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3 text-center text-gray-500">{a.currency}</td>
+                    <td className="px-4 py-3 text-right tabular-nums">
+                      {isEditing ? (
+                        <input
+                          type="text"
+                          value={editValues[i] ?? a.localBalance.toString()}
+                          onChange={(e) =>
+                            setEditValues((prev) => ({ ...prev, [i]: e.target.value }))
+                          }
+                          className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                        />
+                      ) : (
+                        <span className={a.localBalance < 0 ? 'text-red-600' : 'text-gray-900'}>
+                          {fmtLocal(a.localBalance, a.currency)}
+                        </span>
+                      )}
+                    </td>
+                    <td
+                      className={`px-4 py-3 text-right tabular-nums font-medium ${
+                        a.usdValue < 0 ? 'text-red-600' : 'text-gray-900'
+                      }`}
+                    >
+                      {fmt(a.usdValue)}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-gray-600">
+                      {a.yield > 0 ? `${a.yield.toFixed(2)}%` : '—'}
+                    </td>
                     <td className="px-4 py-3 text-right tabular-nums text-gray-600">
                       {a.annualCashFlow > 0 ? fmt(a.annualCashFlow) : '—'}
                     </td>
@@ -622,11 +677,11 @@ export default function NetWorthPage() {
                 ))}
               </tbody>
 
-              {/* Totals Row */}
+              {/* ---- Grand Total ---- */}
               <tfoot>
-                <tr className="border-t-2 border-gray-300 bg-gray-50/80">
+                <tr className="border-t-2 border-gray-300 bg-gray-100">
                   <td className="px-4 py-3 font-bold text-gray-900">
-                    Total
+                    Total Net Worth
                   </td>
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3" />
