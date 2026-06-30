@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   PieChart,
   Pie,
@@ -25,6 +25,10 @@ import {
   Save,
   X,
   DollarSign,
+  Calendar,
+  ChevronLeft,
+  ChevronRight,
+  Clock,
 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 
@@ -33,6 +37,7 @@ import { Card } from '@/components/ui/Card'
 // ---------------------------------------------------------------------------
 
 interface Account {
+  accountId: string
   account: string
   holder: 'Anjan' | 'Kate' | 'Joint'
   country: string
@@ -43,6 +48,14 @@ interface Account {
   usdValue: number
   yield: number
   annualCashFlow: number
+  isCorporate: boolean
+}
+
+interface SnapshotSummary {
+  date: string
+  totalNetWorth: number
+  personalNetWorth: number
+  corporateCash: number
 }
 
 interface AllocationSlice {
@@ -65,41 +78,33 @@ interface LiquidityTier {
 }
 
 // ---------------------------------------------------------------------------
-// Data from Net Worth Model 2026 - Anjan and Kate.xlsx
+// Fallback data (from Net Worth Model 2026 spreadsheet)
+// Used when database isn't connected or no snapshots exist yet
 // ---------------------------------------------------------------------------
 
-const initialAccounts: Account[] = [
-  { account: 'FAB iSavings Account', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 1933546.05, usdValue: 526493, yield: 3.5, annualCashFlow: 18427 },
-  { account: 'FAB Current Account', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 100050.19, usdValue: 27243, yield: 0, annualCashFlow: 0 },
-  { account: 'FAB 3% FD', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T2.5', currency: 'AED', localBalance: 100000, usdValue: 27229, yield: 3.0, annualCashFlow: 817 },
-  { account: 'FAB Elite Card Debt', holder: 'Joint', country: 'AE', assetClass: 'Debt', liquidity: 'T1', currency: 'AED', localBalance: 30000, usdValue: 8169, yield: 0, annualCashFlow: 0 },
-  { account: 'HSBC Jersey', holder: 'Joint', country: 'JE', assetClass: 'Cash', liquidity: 'T2.5', currency: 'USD', localBalance: 299000, usdValue: 299000, yield: 4.5, annualCashFlow: 6728 },
-  { account: 'Hargreaves S&P Pension', holder: 'Anjan', country: 'US', assetClass: 'Equities', liquidity: 'T3', currency: 'GBP', localBalance: 21418, usdValue: 28336, yield: 0, annualCashFlow: 0 },
-  { account: 'Axis FD', holder: 'Anjan', country: 'IN', assetClass: 'Cash', liquidity: 'T2.5', currency: 'USD', localBalance: 0, usdValue: 0, yield: 6.0, annualCashFlow: 0 },
-  { account: 'Wio Personal (Anjan)', holder: 'Anjan', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 27653, usdValue: 7530, yield: 0, annualCashFlow: 0 },
-  { account: 'Wio Personal (Kate)', holder: 'Kate', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 5244, usdValue: 1428, yield: 0, annualCashFlow: 0 },
-  { account: 'Hargreaves Schroder Pension', holder: 'Anjan', country: 'GB', assetClass: 'Equities', liquidity: 'T3', currency: 'GBP', localBalance: 38695, usdValue: 51194, yield: 0, annualCashFlow: 0 },
-  { account: 'IBKR S&P ISP', holder: 'Joint', country: 'US', assetClass: 'Equities', liquidity: 'T1', currency: 'USD', localBalance: 146986, usdValue: 146986, yield: 0, annualCashFlow: 0 },
-  { account: 'Monzo Joint (UK)', holder: 'Joint', country: 'GB', assetClass: 'Cash', liquidity: 'T1', currency: 'GBP', localBalance: 15, usdValue: 20, yield: 2.5, annualCashFlow: 0 },
-  { account: 'Revolut', holder: 'Anjan', country: 'GB', assetClass: 'Cash', liquidity: 'T1', currency: 'GBP', localBalance: 336, usdValue: 445, yield: 0, annualCashFlow: 0 },
-  { account: 'Santander/NS&I (UK)', holder: 'Anjan', country: 'GB', assetClass: 'Cash', liquidity: 'T1', currency: 'GBP', localBalance: 1665, usdValue: 2203, yield: 4.0, annualCashFlow: 88 },
-  { account: 'Upvolt Equity', holder: 'Anjan', country: 'GB', assetClass: 'Private Equity', liquidity: 'T3', currency: 'GBP', localBalance: 31000, usdValue: 41013, yield: 0, annualCashFlow: 0 },
-  { account: 'UAE Car', holder: 'Anjan', country: 'AE', assetClass: 'Car', liquidity: 'T3', currency: 'AED', localBalance: 114500, usdValue: 31178, yield: 0, annualCashFlow: 0 },
-  { account: 'Upvolt Debt', holder: 'Anjan', country: 'GB', assetClass: 'Private Debt', liquidity: 'T3', currency: 'USD', localBalance: 50000, usdValue: 50000, yield: 11.0, annualCashFlow: 5500 },
-  { account: 'Trump Meme Coin', holder: 'Anjan', country: 'US', assetClass: 'Crypto', liquidity: 'T2', currency: 'USD', localBalance: 500, usdValue: 500, yield: 0, annualCashFlow: 0 },
-  { account: 'Corporate Cash Balance', holder: 'Joint', country: 'GB', assetClass: 'Cash', liquidity: 'T2', currency: 'USD', localBalance: 437000, usdValue: 437000, yield: 0, annualCashFlow: 0 },
+const FALLBACK_ACCOUNTS: Account[] = [
+  { accountId: '', account: 'FAB iSavings Account', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 1933546.05, usdValue: 526493, yield: 3.5, annualCashFlow: 18427, isCorporate: false },
+  { accountId: '', account: 'FAB Current Account', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 100050.19, usdValue: 27243, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'FAB 3% FD', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T2.5', currency: 'AED', localBalance: 100000, usdValue: 27229, yield: 3.0, annualCashFlow: 817, isCorporate: false },
+  { accountId: '', account: 'FAB Elite Card Debt', holder: 'Joint', country: 'AE', assetClass: 'Debt', liquidity: 'T1', currency: 'AED', localBalance: 30000, usdValue: 8169, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'HSBC Jersey', holder: 'Joint', country: 'JE', assetClass: 'Cash', liquidity: 'T2.5', currency: 'USD', localBalance: 299000, usdValue: 299000, yield: 4.5, annualCashFlow: 6728, isCorporate: false },
+  { accountId: '', account: 'Hargreaves S&P Pension', holder: 'Anjan', country: 'US', assetClass: 'Equities', liquidity: 'T3', currency: 'GBP', localBalance: 21418, usdValue: 28336, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'Axis FD', holder: 'Anjan', country: 'IN', assetClass: 'Cash', liquidity: 'T2.5', currency: 'USD', localBalance: 0, usdValue: 0, yield: 6.0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'Wio Personal (Anjan)', holder: 'Anjan', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 27653, usdValue: 7530, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'Wio Personal (Kate)', holder: 'Kate', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 5244, usdValue: 1428, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'Hargreaves Schroder Pension', holder: 'Anjan', country: 'GB', assetClass: 'Equities', liquidity: 'T3', currency: 'GBP', localBalance: 38695, usdValue: 51194, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'IBKR S&P ISP', holder: 'Joint', country: 'US', assetClass: 'Equities', liquidity: 'T1', currency: 'USD', localBalance: 146986, usdValue: 146986, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'Monzo Joint (UK)', holder: 'Joint', country: 'GB', assetClass: 'Cash', liquidity: 'T1', currency: 'GBP', localBalance: 15, usdValue: 20, yield: 2.5, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'Revolut', holder: 'Anjan', country: 'GB', assetClass: 'Cash', liquidity: 'T1', currency: 'GBP', localBalance: 336, usdValue: 445, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'Santander/NS&I (UK)', holder: 'Anjan', country: 'GB', assetClass: 'Cash', liquidity: 'T1', currency: 'GBP', localBalance: 1665, usdValue: 2203, yield: 4.0, annualCashFlow: 88, isCorporate: false },
+  { accountId: '', account: 'Upvolt Equity', holder: 'Anjan', country: 'GB', assetClass: 'Private Equity', liquidity: 'T3', currency: 'GBP', localBalance: 31000, usdValue: 41013, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'UAE Car', holder: 'Anjan', country: 'AE', assetClass: 'Car', liquidity: 'T3', currency: 'AED', localBalance: 114500, usdValue: 31178, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'Upvolt Debt', holder: 'Anjan', country: 'GB', assetClass: 'Private Debt', liquidity: 'T3', currency: 'USD', localBalance: 50000, usdValue: 50000, yield: 11.0, annualCashFlow: 5500, isCorporate: false },
+  { accountId: '', account: 'Trump Meme Coin', holder: 'Anjan', country: 'US', assetClass: 'Crypto', liquidity: 'T2', currency: 'USD', localBalance: 500, usdValue: 500, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'Corporate Cash Balance', holder: 'Joint', country: 'GB', assetClass: 'Cash', liquidity: 'T2', currency: 'USD', localBalance: 437000, usdValue: 437000, yield: 0, annualCashFlow: 0, isCorporate: true },
 ]
 
-const allocationData: AllocationSlice[] = [
-  { name: 'Cash', value: 1328591, pct: '79.2%', color: '#3B82F6' },
-  { name: 'Equities', value: 226516, pct: '13.5%', color: '#10B981' },
-  { name: 'Private Equity', value: 41013, pct: '2.4%', color: '#8B5CF6' },
-  { name: 'Private Debt', value: 50000, pct: '3.0%', color: '#F59E0B' },
-  { name: 'Car', value: 31178, pct: '1.9%', color: '#6366F1' },
-  { name: 'Crypto', value: 500, pct: '0.0%', color: '#EC4899' },
-]
-
-const netWorthHistory: NetWorthSnapshot[] = [
+const FALLBACK_HISTORY: NetWorthSnapshot[] = [
   { month: 'Sep 2024', value: 392000 },
   { month: 'Oct 2024', value: 453228 },
   { month: 'Nov 2024', value: 514457 },
@@ -124,13 +129,6 @@ const netWorthHistory: NetWorthSnapshot[] = [
   { month: 'Jun 2026', value: 1677797 },
 ]
 
-const liquidityData: LiquidityTier[] = [
-  { tier: 'T1', label: 'T1 Instant', value: 749517, color: '#22C55E' },
-  { tier: 'T2', label: 'T2 Days', value: 437500, color: '#F59E0B' },
-  { tier: 'T2.5', label: 'T2.5 Locked', value: 326229, color: '#F97316' },
-  { tier: 'T3', label: 'T3 Locked Years', value: 201721, color: '#EF4444' },
-]
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -151,6 +149,20 @@ function fmtCompact(n: number): string {
   return `$${n.toLocaleString('en-US')}`
 }
 
+function formatDateLabel(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+}
+
+function formatMonthLabel(dateStr: string): string {
+  const d = new Date(dateStr + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { month: 'short', year: 'numeric' })
+}
+
+function todayStr(): string {
+  return new Date().toISOString().split('T')[0]
+}
+
 const COUNTRY_FLAGS: Record<string, string> = {
   AE: '\u{1F1E6}\u{1F1EA}',
   GB: '\u{1F1EC}\u{1F1E7}',
@@ -160,11 +172,9 @@ const COUNTRY_FLAGS: Record<string, string> = {
 }
 
 const HOLDER_STYLES: Record<string, string> = {
-  Anjan:
-    'bg-blue-50 text-blue-700 border border-blue-200',
+  Anjan: 'bg-blue-50 text-blue-700 border border-blue-200',
   Kate: 'bg-pink-50 text-pink-700 border border-pink-200',
-  Joint:
-    'bg-purple-50 text-purple-700 border border-purple-200',
+  Joint: 'bg-purple-50 text-purple-700 border border-purple-200',
 }
 
 const ASSET_CLASS_STYLES: Record<string, string> = {
@@ -177,11 +187,35 @@ const ASSET_CLASS_STYLES: Record<string, string> = {
   Car: 'text-indigo-600',
 }
 
+const ASSET_CLASS_COLORS: Record<string, string> = {
+  Cash: '#3B82F6',
+  Equities: '#10B981',
+  'Private Equity': '#8B5CF6',
+  'Private Debt': '#F59E0B',
+  Car: '#6366F1',
+  Crypto: '#EC4899',
+  Debt: '#EF4444',
+}
+
 const LIQUIDITY_STYLES: Record<string, string> = {
   T1: 'bg-green-50 text-green-700 border border-green-200',
   T2: 'bg-amber-50 text-amber-700 border border-amber-200',
   'T2.5': 'bg-orange-50 text-orange-700 border border-orange-200',
   T3: 'bg-red-50 text-red-700 border border-red-200',
+}
+
+const LIQUIDITY_COLORS: Record<string, string> = {
+  T1: '#22C55E',
+  T2: '#F59E0B',
+  'T2.5': '#F97316',
+  T3: '#EF4444',
+}
+
+const LIQUIDITY_LABELS: Record<string, string> = {
+  T1: 'T1 Instant',
+  T2: 'T2 Days',
+  'T2.5': 'T2.5 Locked',
+  T3: 'T3 Locked Years',
 }
 
 // ---------------------------------------------------------------------------
@@ -254,34 +288,232 @@ function renderPieLabel(props: any) {
 // ---------------------------------------------------------------------------
 
 export default function NetWorthPage() {
-  const [accounts, setAccounts] = useState<Account[]>(initialAccounts)
+  // ---- Data state ----
+  const [accounts, setAccounts] = useState<Account[]>(FALLBACK_ACCOUNTS)
+  const [snapshotDates, setSnapshotDates] = useState<SnapshotSummary[]>([])
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
+  const [isDbConnected, setIsDbConnected] = useState(false)
+  const [isLoading, setIsLoading] = useState(false)
+
+  // ---- Edit state ----
   const [isEditing, setIsEditing] = useState(false)
   const [editValues, setEditValues] = useState<Record<string, string>>({})
+  const [saveDate, setSaveDate] = useState(todayStr())
+  const [isSaving, setIsSaving] = useState(false)
 
-  // ---- Computed totals ----
-  const totalNetWorth = accounts.reduce((s, a) => s + a.usdValue, 0)
-  const liquidAssets = accounts
-    .filter((a) => a.liquidity === 'T1' || a.liquidity === 'T2')
-    .reduce((s, a) => s + a.usdValue, 0)
-  const lockedAssets = accounts
-    .filter((a) => a.liquidity === 'T2.5' || a.liquidity === 'T3')
-    .reduce((s, a) => s + a.usdValue, 0)
-  const totalDebt = accounts
-    .filter((a) => a.assetClass === 'Debt')
-    .reduce((s, a) => s + a.usdValue, 0)
-  const totalYield = accounts.reduce((s, a) => s + a.annualCashFlow, 0)
-  const totalLocalBalance = accounts.reduce((s, a) => s + a.localBalance, 0)
+  // ---- Fetch available snapshot dates on mount ----
+  const fetchSnapshotDates = useCallback(async () => {
+    try {
+      const res = await fetch('/api/snapshots')
+      if (!res.ok) throw new Error('API error')
+      const data = await res.json()
+      setSnapshotDates(data.snapshots || [])
+      setIsDbConnected(true)
 
-  // Personal vs Corporate split (matching the spreadsheet model)
-  const personalWithIdx = accounts
-    .map((a, i) => ({ account: a, idx: i }))
-    .filter(({ account: a }) => a.account !== 'Corporate Cash Balance')
-  const corporateWithIdx = accounts
-    .map((a, i) => ({ account: a, idx: i }))
-    .filter(({ account: a }) => a.account === 'Corporate Cash Balance')
-  const personalNetWorth = personalWithIdx.reduce((s, { account: a }) => s + a.usdValue, 0)
-  const corporateCash = corporateWithIdx.reduce((s, { account: a }) => s + a.usdValue, 0)
-  const personalYield = personalWithIdx.reduce((s, { account: a }) => s + a.annualCashFlow, 0)
+      // Auto-select the latest date if available
+      if (data.snapshots?.length > 0) {
+        setSelectedDate((prev) => prev || data.snapshots[0].date)
+      }
+    } catch {
+      setIsDbConnected(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchSnapshotDates()
+  }, [fetchSnapshotDates])
+
+  // ---- Fetch snapshot data when a date is selected ----
+  useEffect(() => {
+    if (!selectedDate || !isDbConnected) return
+
+    let cancelled = false
+    setIsLoading(true)
+
+    fetch(`/api/snapshots/${selectedDate}`)
+      .then((res) => {
+        if (!res.ok) throw new Error('API error')
+        return res.json()
+      })
+      .then((data) => {
+        if (cancelled) return
+        if (data.accounts?.length > 0) {
+          const hasData = data.accounts.some(
+            (a: { balanceUsd: number }) => a.balanceUsd !== 0
+          )
+          if (hasData) {
+            setAccounts(
+              data.accounts.map(
+                (a: {
+                  accountId: string
+                  name: string
+                  holder: string
+                  country: string
+                  assetClass: string
+                  liquidity: string
+                  currency: string
+                  balanceLocal: number
+                  balanceUsd: number
+                  yieldPercent: number
+                  annualCashflow: number
+                  isCorporate: boolean
+                }) => ({
+                  accountId: a.accountId,
+                  account: a.name,
+                  holder: a.holder as Account['holder'],
+                  country: a.country,
+                  assetClass: a.assetClass as Account['assetClass'],
+                  liquidity: a.liquidity as Account['liquidity'],
+                  currency: a.currency,
+                  localBalance: a.balanceLocal,
+                  usdValue: a.balanceUsd,
+                  yield: a.yieldPercent,
+                  annualCashFlow: a.annualCashflow,
+                  isCorporate: a.isCorporate,
+                })
+              )
+            )
+          }
+        }
+      })
+      .catch(() => {
+        // Keep current data on error
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [selectedDate, isDbConnected])
+
+  // ---- Computed: personal/corporate split ----
+  const personalAccounts = useMemo(
+    () => accounts.filter((a) => !a.isCorporate),
+    [accounts]
+  )
+  const corporateAccounts = useMemo(
+    () => accounts.filter((a) => a.isCorporate),
+    [accounts]
+  )
+  const personalNetWorth = useMemo(
+    () => personalAccounts.reduce((s, a) => s + a.usdValue, 0),
+    [personalAccounts]
+  )
+  const corporateCash = useMemo(
+    () => corporateAccounts.reduce((s, a) => s + a.usdValue, 0),
+    [corporateAccounts]
+  )
+  const totalNetWorth = personalNetWorth + corporateCash
+
+  const liquidAssets = useMemo(
+    () =>
+      accounts
+        .filter((a) => a.liquidity === 'T1' || a.liquidity === 'T2')
+        .reduce((s, a) => s + a.usdValue, 0),
+    [accounts]
+  )
+  const lockedAssets = useMemo(
+    () =>
+      accounts
+        .filter((a) => a.liquidity === 'T2.5' || a.liquidity === 'T3')
+        .reduce((s, a) => s + a.usdValue, 0),
+    [accounts]
+  )
+  const totalDebt = useMemo(
+    () =>
+      accounts
+        .filter((a) => a.assetClass === 'Debt')
+        .reduce((s, a) => s + a.usdValue, 0),
+    [accounts]
+  )
+  const totalYield = useMemo(
+    () => accounts.reduce((s, a) => s + a.annualCashFlow, 0),
+    [accounts]
+  )
+  const personalYield = useMemo(
+    () => personalAccounts.reduce((s, a) => s + a.annualCashFlow, 0),
+    [personalAccounts]
+  )
+
+  // ---- Computed: allocation pie data ----
+  const allocationData: AllocationSlice[] = useMemo(() => {
+    const byClass: Record<string, number> = {}
+    accounts.forEach((a) => {
+      if (a.assetClass === 'Debt') return
+      byClass[a.assetClass] = (byClass[a.assetClass] || 0) + a.usdValue
+    })
+    const totalAssets = Object.values(byClass).reduce((s, v) => s + v, 0)
+    return Object.entries(byClass)
+      .filter(([, v]) => v > 0)
+      .sort(([, a], [, b]) => b - a)
+      .map(([name, value]) => ({
+        name,
+        value: Math.round(value),
+        pct:
+          totalAssets > 0
+            ? `${((value / totalAssets) * 100).toFixed(1)}%`
+            : '0%',
+        color: ASSET_CLASS_COLORS[name] || '#94A3B8',
+      }))
+  }, [accounts])
+
+  // ---- Computed: liquidity bar data ----
+  const liquidityData: LiquidityTier[] = useMemo(() => {
+    const byTier: Record<string, number> = {}
+    accounts.forEach((a) => {
+      byTier[a.liquidity] = (byTier[a.liquidity] || 0) + a.usdValue
+    })
+    return ['T1', 'T2', 'T2.5', 'T3']
+      .filter((t) => (byTier[t] || 0) > 0)
+      .map((t) => ({
+        tier: t,
+        label: LIQUIDITY_LABELS[t] || t,
+        value: Math.round(byTier[t] || 0),
+        color: LIQUIDITY_COLORS[t] || '#94A3B8',
+      }))
+  }, [accounts])
+
+  // ---- Computed: net worth history ----
+  const netWorthHistory: NetWorthSnapshot[] = useMemo(() => {
+    if (snapshotDates.length >= 2) {
+      return [...snapshotDates]
+        .reverse()
+        .map((s) => ({
+          month: formatMonthLabel(s.date),
+          value: Math.round(s.totalNetWorth),
+        }))
+    }
+    return FALLBACK_HISTORY
+  }, [snapshotDates])
+
+  // ---- Date navigation ----
+  const currentDateIndex = useMemo(() => {
+    if (!selectedDate) return -1
+    return snapshotDates.findIndex((s) => s.date === selectedDate)
+  }, [selectedDate, snapshotDates])
+
+  function goToPrevDate() {
+    if (currentDateIndex < snapshotDates.length - 1) {
+      setSelectedDate(snapshotDates[currentDateIndex + 1].date)
+    }
+  }
+
+  function goToNextDate() {
+    if (currentDateIndex > 0) {
+      setSelectedDate(snapshotDates[currentDateIndex - 1].date)
+    }
+  }
+
+  function goToLatest() {
+    if (snapshotDates.length > 0) {
+      setSelectedDate(snapshotDates[0].date)
+    } else {
+      setSelectedDate(null)
+      setAccounts(FALLBACK_ACCOUNTS)
+    }
+  }
 
   // ---- Edit handlers ----
   function startEditing() {
@@ -290,6 +522,7 @@ export default function NetWorthPage() {
       vals[i] = a.localBalance.toString()
     })
     setEditValues(vals)
+    setSaveDate(todayStr())
     setIsEditing(true)
   }
 
@@ -298,16 +531,66 @@ export default function NetWorthPage() {
     setEditValues({})
   }
 
-  function saveEdits() {
+  async function saveSnapshot() {
+    if (!isDbConnected) {
+      applyEditsLocally()
+      return
+    }
+
+    setIsSaving(true)
+    try {
+      const updatedAccounts = accounts.map((a, i) => {
+        const raw = editValues[i]
+        if (raw === undefined) return a
+        const parsed = parseFloat(raw)
+        if (isNaN(parsed)) return a
+        const ratio =
+          a.localBalance !== 0 ? a.usdValue / a.localBalance : 1
+        return {
+          ...a,
+          localBalance: parsed,
+          usdValue: Math.round(parsed * ratio),
+        }
+      })
+
+      const balances = updatedAccounts.map((a) => ({
+        accountId: a.accountId,
+        balanceLocal: a.localBalance,
+        balanceUsd: a.usdValue,
+        yieldPercent: a.yield,
+        annualCashflow: a.annualCashFlow,
+      }))
+
+      const res = await fetch('/api/snapshots', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ date: saveDate, balances }),
+      })
+
+      if (!res.ok) throw new Error('Save failed')
+
+      setAccounts(updatedAccounts)
+      setIsEditing(false)
+      setEditValues({})
+      await fetchSnapshotDates()
+      setSelectedDate(saveDate)
+    } catch (err) {
+      console.error('Failed to save snapshot:', err)
+      applyEditsLocally()
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  function applyEditsLocally() {
     setAccounts((prev) =>
       prev.map((a, i) => {
         const raw = editValues[i]
         if (raw === undefined) return a
         const parsed = parseFloat(raw)
         if (isNaN(parsed)) return a
-        // In a real app, we'd re-compute usdValue from the new local balance and the FX rate.
-        // For the mock, we approximate by scaling the existing ratio.
-        const ratio = a.localBalance !== 0 ? a.usdValue / a.localBalance : 1
+        const ratio =
+          a.localBalance !== 0 ? a.usdValue / a.localBalance : 1
         return {
           ...a,
           localBalance: parsed,
@@ -319,19 +602,105 @@ export default function NetWorthPage() {
     setEditValues({})
   }
 
+  // ---- Index lists for the table ----
+  const personalWithIdx = useMemo(
+    () =>
+      accounts
+        .map((a, i) => ({ account: a, idx: i }))
+        .filter(({ account }) => !account.isCorporate),
+    [accounts]
+  )
+  const corporateWithIdx = useMemo(
+    () =>
+      accounts
+        .map((a, i) => ({ account: a, idx: i }))
+        .filter(({ account }) => account.isCorporate),
+    [accounts]
+  )
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         {/* ---------------------------------------------------------------- */}
         {/* Page Header                                                      */}
         {/* ---------------------------------------------------------------- */}
-        <div className="mb-8">
+        <div className="mb-6">
           <h1 className="text-3xl font-bold tracking-tight text-gray-900">
             Net Worth
           </h1>
           <p className="mt-1 text-sm text-gray-500">
             Balance Sheet &amp; Asset Tracker
           </p>
+        </div>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Date Navigation Bar                                              */}
+        {/* ---------------------------------------------------------------- */}
+        <div className="mb-8 flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+          <Calendar className="h-4 w-4 text-gray-400" />
+
+          {snapshotDates.length > 0 ? (
+            <>
+              <select
+                value={selectedDate || ''}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm font-medium text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              >
+                {snapshotDates.map((s) => (
+                  <option key={s.date} value={s.date}>
+                    {formatDateLabel(s.date)}
+                    {s.date === snapshotDates[0].date ? ' (Latest)' : ''}
+                  </option>
+                ))}
+              </select>
+
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={goToPrevDate}
+                  disabled={currentDateIndex >= snapshotDates.length - 1}
+                  className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 disabled:opacity-30"
+                  title="Older snapshot"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={goToNextDate}
+                  disabled={currentDateIndex <= 0}
+                  className="rounded-md p-1 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 disabled:opacity-30"
+                  title="Newer snapshot"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+
+              {selectedDate !== snapshotDates[0]?.date && (
+                <button
+                  onClick={goToLatest}
+                  className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+                >
+                  Jump to Latest
+                </button>
+              )}
+
+              <span className="ml-auto text-xs text-gray-400">
+                <Clock className="mr-1 inline h-3 w-3" />
+                {snapshotDates.length} snapshot
+                {snapshotDates.length !== 1 ? 's' : ''}
+              </span>
+            </>
+          ) : (
+            <span className="text-sm text-gray-500">
+              {isDbConnected
+                ? 'No snapshots yet — save your first one below'
+                : 'Showing spreadsheet data (database not connected)'}
+            </span>
+          )}
+
+          {isLoading && (
+            <span className="ml-2 animate-pulse text-xs text-blue-500">
+              Loading...
+            </span>
+          )}
         </div>
 
         {/* ---------------------------------------------------------------- */}
@@ -366,10 +735,9 @@ export default function NetWorthPage() {
         </div>
 
         {/* ---------------------------------------------------------------- */}
-        {/* Asset Allocation Pie + Liquidity Bar  (2-col)                     */}
+        {/* Asset Allocation Pie + Liquidity Bar                              */}
         {/* ---------------------------------------------------------------- */}
         <div className="mb-8 grid grid-cols-1 gap-6 lg:grid-cols-2">
-          {/* Pie Chart */}
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <h2 className="mb-4 text-base font-semibold text-gray-900">
               Asset Allocation
@@ -395,10 +763,12 @@ export default function NetWorthPage() {
                 <Tooltip content={<PieTooltip />} />
               </PieChart>
             </ResponsiveContainer>
-            {/* Legend */}
             <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2">
               {allocationData.map((d) => (
-                <div key={d.name} className="flex items-center gap-1.5 text-xs text-gray-600">
+                <div
+                  key={d.name}
+                  className="flex items-center gap-1.5 text-xs text-gray-600"
+                >
                   <span
                     className="inline-block h-2.5 w-2.5 rounded-full"
                     style={{ backgroundColor: d.color }}
@@ -409,7 +779,6 @@ export default function NetWorthPage() {
             </div>
           </div>
 
-          {/* Liquidity Breakdown Bar */}
           <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
             <h2 className="mb-4 text-base font-semibold text-gray-900">
               Liquidity Breakdown
@@ -420,7 +789,11 @@ export default function NetWorthPage() {
                 layout="vertical"
                 margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
               >
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" horizontal={false} />
+                <CartesianGrid
+                  strokeDasharray="3 3"
+                  stroke="#f0f0f0"
+                  horizontal={false}
+                />
                 <XAxis
                   type="number"
                   tickFormatter={(v: number) => fmtCompact(v)}
@@ -436,7 +809,10 @@ export default function NetWorthPage() {
                   tickLine={false}
                   width={120}
                 />
-                <Tooltip content={<BarTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
+                <Tooltip
+                  content={<BarTooltip />}
+                  cursor={{ fill: 'rgba(0,0,0,0.04)' }}
+                />
                 <Bar dataKey="value" radius={[0, 6, 6, 0]} barSize={32}>
                   {liquidityData.map((entry, idx) => (
                     <Cell key={idx} fill={entry.color} />
@@ -444,15 +820,18 @@ export default function NetWorthPage() {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-            {/* Tier summary cards */}
             <div className="mt-4 grid grid-cols-2 gap-3">
               {liquidityData.map((d) => (
                 <div
                   key={d.tier}
                   className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2"
                 >
-                  <p className="text-xs font-medium text-gray-500">{d.label}</p>
-                  <p className="text-sm font-semibold text-gray-900">{fmt(d.value)}</p>
+                  <p className="text-xs font-medium text-gray-500">
+                    {d.label}
+                  </p>
+                  <p className="text-sm font-semibold text-gray-900">
+                    {fmt(d.value)}
+                  </p>
                 </div>
               ))}
             </div>
@@ -463,19 +842,37 @@ export default function NetWorthPage() {
         {/* Account Table                                                    */}
         {/* ---------------------------------------------------------------- */}
         <div className="mb-8 rounded-xl border border-gray-200 bg-white shadow-sm">
-          <div className="flex items-center justify-between border-b border-gray-200 px-6 py-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-4">
             <h2 className="text-base font-semibold text-gray-900">
               Account Balances
+              {selectedDate && (
+                <span className="ml-2 text-sm font-normal text-gray-400">
+                  as of {formatDateLabel(selectedDate)}
+                </span>
+              )}
             </h2>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {isEditing ? (
                 <>
+                  <div className="flex items-center gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-1.5">
+                    <Calendar className="h-3.5 w-3.5 text-blue-600" />
+                    <label className="text-xs font-medium text-blue-700">
+                      Save as:
+                    </label>
+                    <input
+                      type="date"
+                      value={saveDate}
+                      onChange={(e) => setSaveDate(e.target.value)}
+                      className="rounded border border-blue-300 bg-white px-2 py-0.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    />
+                  </div>
                   <button
-                    onClick={saveEdits}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700"
+                    onClick={saveSnapshot}
+                    disabled={isSaving}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-50"
                   >
                     <Save className="h-3.5 w-3.5" />
-                    Save
+                    {isSaving ? 'Saving...' : 'Save Snapshot'}
                   </button>
                   <button
                     onClick={cancelEditing}
@@ -537,7 +934,7 @@ export default function NetWorthPage() {
                 {/* ---- Personal Accounts ---- */}
                 {personalWithIdx.map(({ account: a, idx: i }) => (
                   <tr
-                    key={a.account}
+                    key={a.accountId || a.account}
                     className="transition-colors hover:bg-gray-50/50"
                   >
                     <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
@@ -553,10 +950,14 @@ export default function NetWorthPage() {
                     <td className="px-4 py-3 text-center">
                       <span className="text-sm" title={a.country}>
                         {COUNTRY_FLAGS[a.country] || a.country}{' '}
-                        <span className="text-xs text-gray-400">{a.country}</span>
+                        <span className="text-xs text-gray-400">
+                          {a.country}
+                        </span>
                       </span>
                     </td>
-                    <td className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}>
+                    <td
+                      className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}
+                    >
                       {a.assetClass}
                     </td>
                     <td className="px-4 py-3 text-center">
@@ -566,19 +967,30 @@ export default function NetWorthPage() {
                         {a.liquidity}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-center text-gray-500">{a.currency}</td>
+                    <td className="px-4 py-3 text-center text-gray-500">
+                      {a.currency}
+                    </td>
                     <td className="px-4 py-3 text-right tabular-nums">
                       {isEditing ? (
                         <input
                           type="text"
                           value={editValues[i] ?? a.localBalance.toString()}
                           onChange={(e) =>
-                            setEditValues((prev) => ({ ...prev, [i]: e.target.value }))
+                            setEditValues((prev) => ({
+                              ...prev,
+                              [i]: e.target.value,
+                            }))
                           }
                           className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                         />
                       ) : (
-                        <span className={a.localBalance < 0 ? 'text-red-600' : 'text-gray-900'}>
+                        <span
+                          className={
+                            a.localBalance < 0
+                              ? 'text-red-600'
+                              : 'text-gray-900'
+                          }
+                        >
                           {fmtLocal(a.localBalance, a.currency)}
                         </span>
                       )}
@@ -601,22 +1013,32 @@ export default function NetWorthPage() {
 
                 {/* ---- Personal Net Worth Subtotal ---- */}
                 <tr className="border-t-2 border-blue-200 bg-blue-50/60">
-                  <td className="px-4 py-3 font-bold text-blue-900">Personal Net Worth</td>
+                  <td className="px-4 py-3 font-bold text-blue-900">
+                    Personal Net Worth
+                  </td>
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3" />
                   <td className="px-4 py-3" />
-                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">&mdash;</td>
-                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">{fmt(personalNetWorth)}</td>
-                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-700">&mdash;</td>
-                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">{fmt(personalYield)}</td>
+                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">
+                    &mdash;
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">
+                    {fmt(personalNetWorth)}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-700">
+                    &mdash;
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">
+                    {fmt(personalYield)}
+                  </td>
                 </tr>
 
                 {/* ---- Corporate Cash ---- */}
                 {corporateWithIdx.map(({ account: a, idx: i }) => (
                   <tr
-                    key={a.account}
+                    key={a.accountId || a.account}
                     className="bg-amber-50/40 transition-colors hover:bg-amber-50/70"
                   >
                     <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
@@ -632,30 +1054,47 @@ export default function NetWorthPage() {
                     <td className="px-4 py-3 text-center">
                       <span className="text-sm" title={a.country}>
                         {COUNTRY_FLAGS[a.country] || a.country}{' '}
-                        <span className="text-xs text-gray-400">{a.country}</span>
+                        <span className="text-xs text-gray-400">
+                          {a.country}
+                        </span>
                       </span>
                     </td>
-                    <td className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}>
+                    <td
+                      className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}
+                    >
                       {a.assetClass}
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${LIQUIDITY_STYLES[a.liquidity]}`}>
+                      <span
+                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${LIQUIDITY_STYLES[a.liquidity]}`}
+                      >
                         {a.liquidity}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-center text-gray-500">{a.currency}</td>
+                    <td className="px-4 py-3 text-center text-gray-500">
+                      {a.currency}
+                    </td>
                     <td className="px-4 py-3 text-right tabular-nums">
                       {isEditing ? (
                         <input
                           type="text"
                           value={editValues[i] ?? a.localBalance.toString()}
                           onChange={(e) =>
-                            setEditValues((prev) => ({ ...prev, [i]: e.target.value }))
+                            setEditValues((prev) => ({
+                              ...prev,
+                              [i]: e.target.value,
+                            }))
                           }
                           className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                         />
                       ) : (
-                        <span className={a.localBalance < 0 ? 'text-red-600' : 'text-gray-900'}>
+                        <span
+                          className={
+                            a.localBalance < 0
+                              ? 'text-red-600'
+                              : 'text-gray-900'
+                          }
+                        >
                           {fmtLocal(a.localBalance, a.currency)}
                         </span>
                       )}
@@ -712,6 +1151,11 @@ export default function NetWorthPage() {
         <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
           <h2 className="mb-4 text-base font-semibold text-gray-900">
             Net Worth History
+            {snapshotDates.length >= 2 && (
+              <span className="ml-2 text-sm font-normal text-gray-400">
+                from saved snapshots
+              </span>
+            )}
           </h2>
           <ResponsiveContainer width="100%" height={320}>
             <LineChart
@@ -738,8 +1182,18 @@ export default function NetWorthPage() {
                 dataKey="value"
                 stroke="#3B82F6"
                 strokeWidth={2.5}
-                dot={{ fill: '#3B82F6', r: 4, strokeWidth: 2, stroke: '#fff' }}
-                activeDot={{ r: 6, fill: '#3B82F6', stroke: '#fff', strokeWidth: 2 }}
+                dot={{
+                  fill: '#3B82F6',
+                  r: 4,
+                  strokeWidth: 2,
+                  stroke: '#fff',
+                }}
+                activeDot={{
+                  r: 6,
+                  fill: '#3B82F6',
+                  stroke: '#fff',
+                  strokeWidth: 2,
+                }}
               />
             </LineChart>
           </ResponsiveContainer>
