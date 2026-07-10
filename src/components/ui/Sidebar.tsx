@@ -8,11 +8,13 @@ import {
   ArrowLeftRight,
   Upload,
   PiggyBank,
+  CalendarRange,
 } from "lucide-react";
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
+  { href: "/annual", label: "Annual & Forecast", icon: CalendarRange },
   { href: "/import", label: "Import", icon: Upload },
   { href: "/networth", label: "Net Worth", icon: PiggyBank },
 ] as const;

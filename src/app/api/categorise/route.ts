@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { suggestCategoryName, ALL_CATEGORIES } from '@/lib/categories'
 
 interface MerchantMapping {
   pattern: string
-  categoryId: string
   categoryName: string
   confidence: number
 }
@@ -13,160 +13,90 @@ interface CategoriseRequest {
 }
 
 interface CategoriseResponse {
-  categoryId: string | null
   categoryName: string | null
   confidence: number
-  method: 'keyword' | 'merchant_mapping' | 'ai'
-}
-
-const CATEGORY_KEYWORDS: Record<string, { keywords: string[]; categoryName: string }> = {
-  dining: {
-    keywords: [
-      'restaurant', 'cafe', 'coffee', 'starbucks', 'costa', 'mcdonald', 'kfc',
-      'nando', 'pizza', 'burger', 'uber eats', 'deliveroo', 'zomato', 'talabat',
-      'careem food', 'subway', 'pret',
-    ],
-    categoryName: 'Dining & Coffee',
-  },
-  groceries: {
-    keywords: [
-      'carrefour', 'lulu', 'spinneys', 'waitrose', 'tesco', 'sainsbury', 'coop',
-      'aldi', 'lidl', 'grocery', 'supermarket', 'choithrams',
-    ],
-    categoryName: 'Groceries',
-  },
-  health: {
-    keywords: [
-      'pharmacy', 'hospital', 'doctor', 'clinic', 'dental', 'gym', 'fitness',
-      'health', 'medical', 'physio', 'life pharmacy',
-    ],
-    categoryName: 'Health & Wellness',
-  },
-  personal_care: {
-    keywords: ['salon', 'barber', 'haircut', 'spa', 'beauty', 'nail'],
-    categoryName: 'Personal Care',
-  },
-  car: {
-    keywords: [
-      'fuel', 'petrol', 'gas station', 'adnoc', 'enoc', 'parking', 'salik',
-      'toll', 'car wash', 'rta', 'maintenance', 'service center', 'darb',
-    ],
-    categoryName: 'Car',
-  },
-  taxi: {
-    keywords: ['uber', 'careem', 'taxi', 'cab', 'bolt', 'lyft', 'hala'],
-    categoryName: 'Taxis & Rideshare',
-  },
-  household: {
-    keywords: [
-      'ikea', 'ace hardware', 'home centre', 'maintenance', 'cleaning', 'maid',
-      'laundry', 'dragon mart',
-    ],
-    categoryName: 'Household',
-  },
-  bills: {
-    keywords: [
-      'du', 'etisalat', 'dewa', 'sewa', 'internet', 'phone bill', 'electricity',
-      'water', 'gas bill', 'rent', 'insurance',
-    ],
-    categoryName: 'Bills & Utilities',
-  },
-  entertainment: {
-    keywords: [
-      'cinema', 'movie', 'netflix', 'spotify', 'theatre', 'concert', 'museum',
-      'vox cinema',
-    ],
-    categoryName: 'Entertainment',
-  },
-  shopping: {
-    keywords: [
-      'amazon', 'noon', 'namshi', 'zara', 'h&m', 'mall', 'clothing',
-      'electronics', 'apple store',
-    ],
-    categoryName: 'Shopping',
-  },
-  subscriptions: {
-    keywords: [
-      'subscription', 'monthly', 'annual', 'membership', 'apple.com',
-      'google storage', 'chatgpt', 'claude', 'notion',
-    ],
-    categoryName: 'Subscriptions',
-  },
-  professional: {
-    keywords: ['legal', 'accountant', 'lawyer', 'consultant', 'notary', 'translation'],
-    categoryName: 'Professional Services',
-  },
-  travel: {
-    keywords: [
-      'airline', 'flight', 'hotel', 'booking.com', 'airbnb', 'emirates',
-      'etihad', 'flydubai', 'airport',
-    ],
-    categoryName: 'Travel & Holidays',
-  },
-  gifts: {
-    keywords: ['gift', 'present', 'flowers', 'donation', 'charity'],
-    categoryName: 'Gifts',
-  },
-  cash: {
-    keywords: ['atm', 'cash withdrawal', 'cash deposit'],
-    categoryName: 'Cash',
-  },
-  bank_fees: {
-    keywords: ['bank fee', 'charge', 'interest charge', 'annual fee', 'late fee', 'vat on fee'],
-    categoryName: 'Bank Fees',
-  },
-  business: {
-    keywords: ['coworking', 'business', 'client', 'conference', 'co-working', 'wework'],
-    categoryName: 'Business Expenses',
-  },
+  method: 'keyword' | 'merchant_mapping' | 'ai' | 'none'
 }
 
 function matchMerchantMapping(
   description: string,
   mappings: MerchantMapping[],
 ): CategoriseResponse | null {
-  const lowerDescription = description.toLowerCase()
-
+  const lower = description.toLowerCase()
   for (const mapping of mappings) {
-    if (lowerDescription.includes(mapping.pattern.toLowerCase())) {
+    if (lower.includes(mapping.pattern.toLowerCase())) {
       return {
-        categoryId: mapping.categoryId,
         categoryName: mapping.categoryName,
         confidence: mapping.confidence,
         method: 'merchant_mapping',
       }
     }
   }
-
   return null
 }
 
-function matchKeyword(description: string): CategoriseResponse | null {
-  const lowerDescription = description.toLowerCase()
+const VALID_CATEGORY_NAMES = ALL_CATEGORIES.map((c) => c.name)
 
-  for (const [categoryId, { keywords, categoryName }] of Object.entries(CATEGORY_KEYWORDS)) {
-    for (const keyword of keywords) {
-      if (lowerDescription.includes(keyword)) {
-        return {
-          categoryId,
-          categoryName,
-          confidence: 0.8,
-          method: 'keyword',
-        }
-      }
-    }
+/**
+ * Claude fallback for descriptions the keyword matcher can't place. Only runs
+ * when ANTHROPIC_API_KEY is configured; otherwise we return no match and the
+ * transaction is flagged for manual review. Uses a direct Messages API call so
+ * no extra SDK dependency is needed.
+ */
+async function categoriseWithAI(description: string): Promise<CategoriseResponse | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY
+  if (!apiKey) return null
+
+  try {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 20,
+        messages: [
+          {
+            role: 'user',
+            content:
+              `Categorise this bank transaction into exactly one of these categories:\n` +
+              `${VALID_CATEGORY_NAMES.join(', ')}\n\n` +
+              `Transaction: "${description}"\n\n` +
+              `Reply with ONLY the category name, nothing else.`,
+          },
+        ],
+      }),
+    })
+
+    if (!res.ok) return null
+    const data = await res.json()
+    const text: string | undefined = data?.content?.[0]?.text?.trim()
+    if (!text) return null
+
+    // Only accept an exact (case-insensitive) match to a known category.
+    const match = VALID_CATEGORY_NAMES.find(
+      (n) => n.toLowerCase() === text.toLowerCase(),
+    )
+    if (!match) return null
+
+    return { categoryName: match, confidence: 0.7, method: 'ai' }
+  } catch {
+    return null
   }
-
-  return null
 }
 
-export async function POST(request: NextRequest): Promise<NextResponse<CategoriseResponse | { error: string }>> {
+export async function POST(
+  request: NextRequest,
+): Promise<NextResponse<CategoriseResponse | { error: string }>> {
   try {
     const body = (await request.json()) as CategoriseRequest
 
-    if (!body.description || typeof body.description !== 'string' || body.description.trim().length === 0) {
+    if (!body.description || typeof body.description !== 'string' || !body.description.trim()) {
       return NextResponse.json(
-        { error: 'Missing or invalid "description" field. Must be a non-empty string.' },
+        { error: 'Missing or invalid "description" field.' },
         { status: 400 },
       )
     }
@@ -174,47 +104,32 @@ export async function POST(request: NextRequest): Promise<NextResponse<Categoris
     const description = body.description.trim()
     const merchantMappings = body.merchantMappings ?? []
 
-    // Step 1: Check merchant mappings first
+    // 1. Merchant mappings (highest confidence).
     if (merchantMappings.length > 0) {
       const merchantResult = matchMerchantMapping(description, merchantMappings)
-      if (merchantResult) {
-        return NextResponse.json(merchantResult)
-      }
+      if (merchantResult) return NextResponse.json(merchantResult)
     }
 
-    // Step 2: Fall back to keyword matching
-    const keywordResult = matchKeyword(description)
-    if (keywordResult) {
-      return NextResponse.json(keywordResult)
+    // 2. Keyword matcher (shared with the importer).
+    const keywordName = suggestCategoryName(description)
+    if (keywordName) {
+      return NextResponse.json({
+        categoryName: keywordName,
+        confidence: 0.8,
+        method: 'keyword',
+      })
     }
 
-    // Step 3: AI categorisation (stub)
-    // TODO: Call Claude API for AI categorisation
-    // const response = await anthropic.messages.create({
-    //   model: 'claude-sonnet-4-20250514',
-    //   max_tokens: 256,
-    //   messages: [
-    //     {
-    //       role: 'user',
-    //       content: `Categorise this bank transaction: "${description}". Return a JSON object with categoryId and categoryName.`,
-    //     },
-    //   ],
-    // })
+    // 3. Claude fallback (only if configured).
+    const aiResult = await categoriseWithAI(description)
+    if (aiResult) return NextResponse.json(aiResult)
 
-    // No match found
-    return NextResponse.json({
-      categoryId: null,
-      categoryName: null,
-      confidence: 0,
-      method: 'keyword',
-    })
+    return NextResponse.json({ categoryName: null, confidence: 0, method: 'none' })
   } catch (error) {
-    const message = error instanceof SyntaxError
-      ? 'Invalid JSON in request body.'
-      : 'Internal server error while categorising transaction.'
-
-    const status = error instanceof SyntaxError ? 400 : 500
-
-    return NextResponse.json({ error: message }, { status })
+    const isSyntax = error instanceof SyntaxError
+    return NextResponse.json(
+      { error: isSyntax ? 'Invalid JSON in request body.' : 'Internal server error.' },
+      { status: isSyntax ? 400 : 500 },
+    )
   }
 }
