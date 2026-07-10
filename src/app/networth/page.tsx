@@ -31,7 +31,7 @@ import {
   Clock,
 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
-import { convertToUSD } from '@/lib/currency'
+import { convertToUSD, DEFAULT_FX_RATES } from '@/lib/currency'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -302,6 +302,40 @@ export default function NetWorthPage() {
   const [saveDate, setSaveDate] = useState(todayStr())
   const [isSaving, setIsSaving] = useState(false)
 
+  // ---- FX state ----
+  const [fxRates, setFxRates] = useState<Record<string, number> | null>(null)
+  const [fxSource, setFxSource] = useState<string>('fallback')
+  const [viewCurrency, setViewCurrency] = useState<'USD' | 'GBP'>('USD')
+
+  // ---- Fetch live FX rates on mount ----
+  useEffect(() => {
+    fetch('/api/fx')
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((data) => {
+        if (data?.rates) {
+          setFxRates(data.rates)
+          setFxSource(data.source)
+        }
+      })
+      .catch(() => {
+        // Static defaults remain in effect.
+      })
+  }, [])
+
+  // Display conversion: values are stored in USD; GBP view divides by the
+  // live USD-per-GBP rate.
+  const gbpUsdRate = fxRates?.GBP_USD ?? DEFAULT_FX_RATES.GBP_USD
+  const fmtView = useCallback(
+    (usd: number): string => {
+      const value = viewCurrency === 'USD' ? usd : usd / gbpUsdRate
+      const rounded = Math.round(value)
+      const symbol = viewCurrency === 'USD' ? '$' : '£'
+      if (rounded < 0) return `-${symbol}${Math.abs(rounded).toLocaleString('en-US')}`
+      return `${symbol}${rounded.toLocaleString('en-US')}`
+    },
+    [viewCurrency, gbpUsdRate],
+  )
+
   // ---- Fetch available snapshot dates on mount ----
   const fetchSnapshotDates = useCallback(async () => {
     try {
@@ -563,7 +597,7 @@ export default function NetWorthPage() {
         return {
           ...a,
           localBalance: parsed,
-          usdValue: Math.round(convertToUSD(parsed, a.currency)),
+          usdValue: Math.round(convertToUSD(parsed, a.currency, fxRates ?? undefined)),
         }
       })
 
@@ -606,7 +640,7 @@ export default function NetWorthPage() {
         return {
           ...a,
           localBalance: parsed,
-          usdValue: Math.round(convertToUSD(parsed, a.currency)),
+          usdValue: Math.round(convertToUSD(parsed, a.currency, fxRates ?? undefined)),
         }
       })
     )
@@ -649,6 +683,37 @@ export default function NetWorthPage() {
         {/* Date Navigation Bar                                              */}
         {/* ---------------------------------------------------------------- */}
         <div className="mb-8 flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+          {/* Currency view toggle */}
+          <div className="flex overflow-hidden rounded-lg border border-gray-200">
+            {(['USD', 'GBP'] as const).map((c) => (
+              <button
+                key={c}
+                onClick={() => setViewCurrency(c)}
+                className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  viewCurrency === c
+                    ? 'bg-gray-900 text-white'
+                    : 'bg-white text-gray-500 hover:bg-gray-50'
+                }`}
+              >
+                {c === 'USD' ? '$ USD' : '£ GBP'}
+              </button>
+            ))}
+          </div>
+          <span
+            className={`text-[10px] font-medium uppercase tracking-wide ${
+              fxSource === 'fallback' ? 'text-amber-500' : 'text-emerald-600'
+            }`}
+            title={
+              fxSource === 'fallback'
+                ? 'Live rates unavailable — using static fallback rates'
+                : 'Converted with live daily FX rates'
+            }
+          >
+            {fxSource === 'fallback' ? 'static fx' : 'live fx'}
+          </span>
+
+          <div className="h-6 w-px bg-gray-200" />
+
           <Calendar className="h-4 w-4 text-gray-400" />
 
           {snapshotDates.length > 0 ? (
@@ -721,26 +786,26 @@ export default function NetWorthPage() {
         <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card
             title="Total Net Worth"
-            value={fmt(totalNetWorth)}
+            value={fmtView(totalNetWorth)}
             change={netWorthChange}
-            subtitle={`Personal ${fmt(personalNetWorth)} + Corporate ${fmt(corporateCash)}`}
+            subtitle={`Personal ${fmtView(personalNetWorth)} + Corporate ${fmtView(corporateCash)}`}
             icon={<DollarSign className="h-5 w-5" />}
           />
           <Card
             title="Liquid Assets (T1+T2)"
-            value={fmt(liquidAssets)}
+            value={fmtView(liquidAssets)}
             subtitle="Instant + short-term"
             icon={<Wallet className="h-5 w-5" />}
           />
           <Card
             title="Locked Assets (T2.5+T3)"
-            value={fmt(lockedAssets)}
+            value={fmtView(lockedAssets)}
             subtitle="Pensions & locked"
             icon={<Lock className="h-5 w-5" />}
           />
           <Card
             title="Total Debt"
-            value={fmt(totalDebt)}
+            value={fmtView(totalDebt)}
             subtitle="Credit card balance"
             icon={<CreditCard className="h-5 w-5" />}
           />
@@ -932,7 +997,7 @@ export default function NetWorthPage() {
                     Local Balance
                   </th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">
-                    USD Value
+                    {viewCurrency} Value
                   </th>
                   <th className="px-4 py-3 text-right font-medium text-gray-500">
                     Yield %
@@ -1012,13 +1077,13 @@ export default function NetWorthPage() {
                         a.usdValue < 0 ? 'text-red-600' : 'text-gray-900'
                       }`}
                     >
-                      {fmt(a.usdValue)}
+                      {fmtView(a.usdValue)}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-gray-600">
                       {a.yield > 0 ? `${a.yield.toFixed(2)}%` : '—'}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-gray-600">
-                      {a.annualCashFlow > 0 ? fmt(a.annualCashFlow) : '—'}
+                      {a.annualCashFlow > 0 ? fmtView(a.annualCashFlow) : '—'}
                     </td>
                   </tr>
                 ))}
@@ -1037,13 +1102,13 @@ export default function NetWorthPage() {
                     &mdash;
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">
-                    {fmt(personalNetWorth)}
+                    {fmtView(personalNetWorth)}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-700">
                     &mdash;
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums font-bold text-blue-900">
-                    {fmt(personalYield)}
+                    {fmtView(personalYield)}
                   </td>
                 </tr>
 
@@ -1116,13 +1181,13 @@ export default function NetWorthPage() {
                         a.usdValue < 0 ? 'text-red-600' : 'text-gray-900'
                       }`}
                     >
-                      {fmt(a.usdValue)}
+                      {fmtView(a.usdValue)}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-gray-600">
                       {a.yield > 0 ? `${a.yield.toFixed(2)}%` : '—'}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-gray-600">
-                      {a.annualCashFlow > 0 ? fmt(a.annualCashFlow) : '—'}
+                      {a.annualCashFlow > 0 ? fmtView(a.annualCashFlow) : '—'}
                     </td>
                   </tr>
                 ))}
@@ -1143,13 +1208,13 @@ export default function NetWorthPage() {
                     &mdash;
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums font-bold text-gray-900">
-                    {fmt(totalNetWorth)}
+                    {fmtView(totalNetWorth)}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums font-bold text-gray-600">
                     &mdash;
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums font-bold text-gray-900">
-                    {fmt(totalYield)}
+                    {fmtView(totalYield)}
                   </td>
                 </tr>
               </tfoot>

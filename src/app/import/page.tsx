@@ -190,22 +190,26 @@ export default function ImportPage() {
   const [saveResult, setSaveResult] = useState<string | null>(null)
   const [mappings, setMappings] = useState<MerchantMapping[]>([])
   const [recon, setRecon] = useState<Reconciliation | null>(null)
+  const [fxRates, setFxRates] = useState<Record<string, number> | null>(null)
 
-  // ---- Load real accounts + categories + learned mappings ----
+  // ---- Load real accounts + categories + learned mappings + live FX ----
   useEffect(() => {
     async function load() {
       try {
-        const [accRes, catRes, mapRes] = await Promise.all([
+        const [accRes, catRes, mapRes, fxRes] = await Promise.all([
           fetch('/api/accounts'),
           fetch('/api/categories'),
           fetch('/api/merchant-mappings'),
+          fetch('/api/fx'),
         ])
         const accData = await accRes.json()
         const catData = await catRes.json()
         const mapData = await mapRes.json()
+        const fxData = await fxRes.json()
         setAccounts(accData.accounts || [])
         setCategories(catData.categories || [])
         setMappings(mapData.mappings || [])
+        if (fxData?.rates) setFxRates(fxData.rates)
         if (accData.accounts?.length) setSelectedAccountId(accData.accounts[0].id)
       } catch {
         // Leave lists empty; the UI will prompt to check the connection.
@@ -291,7 +295,7 @@ export default function ImportPage() {
           const lowerDesc = description.toLowerCase()
           const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
           const category = learned?.categoryName ?? suggestCategoryName(description) ?? ''
-          const amountUSD = convertToUSD(amount, account.currency)
+          const amountUSD = convertToUSD(amount, account.currency, fxRates ?? undefined)
 
           transactions.push({
             date: normalizeDate(dateRaw),
@@ -320,7 +324,7 @@ export default function ImportPage() {
         setIsProcessing(false)
       }
     },
-    [account],
+    [account, mappings, fxRates],
   )
 
   const handleCategoryChange = useCallback(
