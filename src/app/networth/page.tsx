@@ -31,6 +31,7 @@ import {
   Clock,
 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+import { convertToUSD } from '@/lib/currency'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -86,7 +87,7 @@ const FALLBACK_ACCOUNTS: Account[] = [
   { accountId: '', account: 'FAB iSavings Account', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 1933546.05, usdValue: 526493, yield: 3.5, annualCashFlow: 18427, isCorporate: false },
   { accountId: '', account: 'FAB Current Account', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T1', currency: 'AED', localBalance: 100050.19, usdValue: 27243, yield: 0, annualCashFlow: 0, isCorporate: false },
   { accountId: '', account: 'FAB 3% FD', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T2.5', currency: 'AED', localBalance: 100000, usdValue: 27229, yield: 3.0, annualCashFlow: 817, isCorporate: false },
-  { accountId: '', account: 'FAB Elite Card Debt', holder: 'Joint', country: 'AE', assetClass: 'Debt', liquidity: 'T1', currency: 'AED', localBalance: 30000, usdValue: 8169, yield: 0, annualCashFlow: 0, isCorporate: false },
+  { accountId: '', account: 'FAB Elite Card Debt', holder: 'Joint', country: 'AE', assetClass: 'Debt', liquidity: 'T1', currency: 'AED', localBalance: -30000, usdValue: -8169, yield: 0, annualCashFlow: 0, isCorporate: false },
   { accountId: '', account: 'HSBC Jersey', holder: 'Joint', country: 'JE', assetClass: 'Cash', liquidity: 'T2.5', currency: 'USD', localBalance: 299000, usdValue: 299000, yield: 4.5, annualCashFlow: 6728, isCorporate: false },
   { accountId: '', account: 'Hargreaves S&P Pension', holder: 'Anjan', country: 'US', assetClass: 'Equities', liquidity: 'T3', currency: 'GBP', localBalance: 21418, usdValue: 28336, yield: 0, annualCashFlow: 0, isCorporate: false },
   { accountId: '', account: 'Axis FD', holder: 'Anjan', country: 'IN', assetClass: 'Cash', liquidity: 'T2.5', currency: 'USD', localBalance: 0, usdValue: 0, yield: 6.0, annualCashFlow: 0, isCorporate: false },
@@ -477,7 +478,9 @@ export default function NetWorthPage() {
 
   // ---- Computed: net worth history ----
   const netWorthHistory: NetWorthSnapshot[] = useMemo(() => {
-    if (snapshotDates.length >= 2) {
+    // Once connected, only ever show real saved snapshots — never the
+    // synthetic spreadsheet projection, which is misleading as "history".
+    if (isDbConnected) {
       return [...snapshotDates]
         .reverse()
         .map((s) => ({
@@ -486,13 +489,26 @@ export default function NetWorthPage() {
         }))
     }
     return FALLBACK_HISTORY
-  }, [snapshotDates])
+  }, [snapshotDates, isDbConnected])
 
   // ---- Date navigation ----
   const currentDateIndex = useMemo(() => {
     if (!selectedDate) return -1
     return snapshotDates.findIndex((s) => s.date === selectedDate)
   }, [selectedDate, snapshotDates])
+
+  // ---- Computed: % change vs the previous (older) snapshot ----
+  const netWorthChange = useMemo<number | undefined>(() => {
+    if (currentDateIndex < 0) return undefined
+    const curr = snapshotDates[currentDateIndex]
+    const prev = snapshotDates[currentDateIndex + 1]
+    if (!curr || !prev || prev.totalNetWorth === 0) return undefined
+    return (
+      ((curr.totalNetWorth - prev.totalNetWorth) /
+        Math.abs(prev.totalNetWorth)) *
+      100
+    )
+  }, [currentDateIndex, snapshotDates])
 
   function goToPrevDate() {
     if (currentDateIndex < snapshotDates.length - 1) {
@@ -544,12 +560,10 @@ export default function NetWorthPage() {
         if (raw === undefined) return a
         const parsed = parseFloat(raw)
         if (isNaN(parsed)) return a
-        const ratio =
-          a.localBalance !== 0 ? a.usdValue / a.localBalance : 1
         return {
           ...a,
           localBalance: parsed,
-          usdValue: Math.round(parsed * ratio),
+          usdValue: Math.round(convertToUSD(parsed, a.currency)),
         }
       })
 
@@ -589,12 +603,10 @@ export default function NetWorthPage() {
         if (raw === undefined) return a
         const parsed = parseFloat(raw)
         if (isNaN(parsed)) return a
-        const ratio =
-          a.localBalance !== 0 ? a.usdValue / a.localBalance : 1
         return {
           ...a,
           localBalance: parsed,
-          usdValue: Math.round(parsed * ratio),
+          usdValue: Math.round(convertToUSD(parsed, a.currency)),
         }
       })
     )
@@ -710,7 +722,7 @@ export default function NetWorthPage() {
           <Card
             title="Total Net Worth"
             value={fmt(totalNetWorth)}
-            change={2.3}
+            change={netWorthChange}
             subtitle={`Personal ${fmt(personalNetWorth)} + Corporate ${fmt(corporateCash)}`}
             icon={<DollarSign className="h-5 w-5" />}
           />
