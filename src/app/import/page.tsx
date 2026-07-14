@@ -14,6 +14,53 @@ interface AccountOption {
   id: string
   name: string
   currency: string
+  institution?: string | null
+}
+
+/**
+ * Best-effort account detection from the statement's filename + first rows.
+ * Scores each account by how strongly the file text references its institution
+ * and name; returns the winner only when the signal is clear enough, otherwise
+ * null so the user picks. Institution match is the strongest signal.
+ */
+function detectAccount(
+  fileName: string,
+  sampleText: string,
+  accounts: AccountOption[],
+): { account: AccountOption; score: number } | null {
+  const hay = `${fileName} ${sampleText}`.toLowerCase()
+  const tokenize = (s: string) =>
+    s
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((t) => t.length >= 3 && !['the', 'and', 'account', 'card'].includes(t))
+
+  let best: { account: AccountOption; score: number } | null = null
+  for (const a of accounts) {
+    let score = 0
+    const inst = (a.institution ?? '').toLowerCase().trim()
+    if (inst && inst.length >= 2 && hay.includes(inst)) score += 3
+    for (const tok of tokenize(a.name)) {
+      if (hay.includes(tok)) score += 1
+    }
+    if (!best || score > best.score) best = { account: a, score }
+  }
+
+  // Require a real signal, and an unambiguous winner.
+  if (!best || best.score < 3) return null
+  const runnerUp = accounts
+    .filter((a) => a.id !== best!.account.id)
+    .reduce((max, a) => {
+      let s = 0
+      const inst = (a.institution ?? '').toLowerCase().trim()
+      if (inst && inst.length >= 2 && hay.includes(inst)) s += 3
+      for (const tok of a.name.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3)) {
+        if (hay.includes(tok)) s += 1
+      }
+      return Math.max(max, s)
+    }, 0)
+  if (best.score - runnerUp < 1) return null // tie — let the user disambiguate
+  return best
 }
 
 interface CategoryOption {
@@ -195,6 +242,8 @@ export default function ImportPage() {
   // Optional statement balances for the reconciliation check (local currency).
   const [openingBalance, setOpeningBalance] = useState('')
   const [closingBalance, setClosingBalance] = useState('')
+  // Whether the current account selection was auto-detected from the file.
+  const [autoDetected, setAutoDetected] = useState(false)
 
   // ---- Load real accounts + categories + learned mappings + live FX ----
   useEffect(() => {
@@ -232,18 +281,32 @@ export default function ImportPage() {
       setParseError(null)
       setSaveResult(null)
 
+      setAutoDetected(false)
       if (!selectedFile.name.toLowerCase().endsWith('.csv')) {
         setParsedTransactions([])
-        return
-      }
-      if (!account) {
-        setParseError('Select a bank account before importing.')
         return
       }
 
       setIsProcessing(true)
       try {
         const text = await selectedFile.text()
+
+        // Figure out which account this statement belongs to from the filename
+        // and header rows, falling back to the current dropdown selection.
+        const detected = detectAccount(selectedFile.name, text.slice(0, 4000), accounts)
+        const activeAccount = detected?.account ?? account
+        if (detected) {
+          setSelectedAccountId(detected.account.id)
+          setAutoDetected(true)
+        }
+        if (!activeAccount) {
+          setParseError(
+            'Could not detect which account this statement is for — pick it from the dropdown, then re-drop the file.',
+          )
+          setIsProcessing(false)
+          return
+        }
+
         const rows = parseCSV(text)
 
         if (rows.length < 2) {
@@ -299,13 +362,13 @@ export default function ImportPage() {
           const lowerDesc = description.toLowerCase()
           const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
           const category = learned?.categoryName ?? suggestCategoryName(description) ?? ''
-          const amountUSD = convertToUSD(amount, account.currency, fxRates ?? undefined)
+          const amountUSD = convertToUSD(amount, activeAccount.currency, fxRates ?? undefined)
 
           transactions.push({
             date: normalizeDate(dateRaw),
             description,
             amount,
-            currency: account.currency,
+            currency: activeAccount.currency,
             amountUSD,
             category,
             status: category ? 'categorised' : 'needs-review',
@@ -329,7 +392,7 @@ export default function ImportPage() {
         setIsProcessing(false)
       }
     },
-    [account, mappings, fxRates],
+    [account, accounts, mappings, fxRates],
   )
 
   const handleCategoryChange = useCallback(
@@ -435,15 +498,38 @@ export default function ImportPage() {
           <p className="mt-1 text-sm text-gray-500">Import Bank Statements</p>
         </div>
 
-        {/* Account selector */}
-        <div className="mb-6">
-          <label htmlFor="account-select" className="mb-2 block text-sm font-medium text-gray-700">
-            Bank Account
+        {/* File upload */}
+        <div className="mb-4">
+          <FileUpload
+            onFileSelect={handleFileSelect}
+            accept=".csv,.pdf"
+            label="Drop your bank statement here"
+            sublabel="CSV or PDF files accepted — the account is detected automatically"
+          />
+        </div>
+
+        {/* Account — auto-detected, overridable */}
+        <div className="mb-8">
+          <label htmlFor="account-select" className="mb-2 flex items-center gap-2 text-sm font-medium text-gray-700">
+            Account
+            {autoDetected ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700">
+                <CheckCircle className="h-3 w-3" />
+                Auto-detected from the file
+              </span>
+            ) : (
+              <span className="text-xs font-normal text-gray-400">
+                (detected from the statement — change only if it&apos;s wrong)
+              </span>
+            )}
           </label>
           <select
             id="account-select"
             value={selectedAccountId}
-            onChange={(e) => setSelectedAccountId(e.target.value)}
+            onChange={(e) => {
+              setSelectedAccountId(e.target.value)
+              setAutoDetected(false)
+            }}
             className="w-full max-w-md rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
             {accounts.length === 0 && <option value="">No accounts found</option>}
@@ -453,16 +539,6 @@ export default function ImportPage() {
               </option>
             ))}
           </select>
-        </div>
-
-        {/* File upload */}
-        <div className="mb-8">
-          <FileUpload
-            onFileSelect={handleFileSelect}
-            accept=".csv,.pdf"
-            label="Drop your bank statement here"
-            sublabel="CSV or PDF files accepted"
-          />
         </div>
 
         {/* Processing indicator */}
