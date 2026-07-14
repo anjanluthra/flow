@@ -244,6 +244,11 @@ export default function ImportPage() {
   const [closingBalance, setClosingBalance] = useState('')
   // Whether the current account selection was auto-detected from the file.
   const [autoDetected, setAutoDetected] = useState(false)
+  // Raw CSV kept so a manual account override can re-parse without re-dropping.
+  const [rawText, setRawText] = useState<string | null>(null)
+  const [rawFileName, setRawFileName] = useState('')
+  // Whether the user has expanded the account picker to override the detection.
+  const [changingAccount, setChangingAccount] = useState(false)
 
   // ---- Load real accounts + categories + learned mappings + live FX ----
   useEffect(() => {
@@ -263,7 +268,7 @@ export default function ImportPage() {
         setCategories(catData.categories || [])
         setMappings(mapData.mappings || [])
         if (fxData?.rates) setFxRates(fxData.rates)
-        if (accData.accounts?.length) setSelectedAccountId(accData.accounts[0].id)
+        // No default account — it's detected from the file (or picked on drop).
       } catch {
         // Leave lists empty; the UI will prompt to check the connection.
       }
@@ -275,14 +280,115 @@ export default function ImportPage() {
   const expenseCategories = categories.filter((c) => c.type === 'expense')
   const incomeCategories = categories.filter((c) => c.type === 'income')
 
+  // Parse a statement's text against a chosen account. When `forced` is passed
+  // (a manual override) detection is skipped; otherwise the account is detected
+  // from the filename + header.
+  const processStatement = useCallback(
+    (text: string, fileName: string, forced?: AccountOption) => {
+      setParseError(null)
+
+      const detected = forced ? null : detectAccount(fileName, text.slice(0, 4000), accounts)
+      const activeAccount = forced ?? detected?.account
+      setAutoDetected(!!detected && !forced)
+
+      if (!activeAccount) {
+        setSelectedAccountId('')
+        setParsedTransactions([])
+        setRecon(null)
+        setChangingAccount(true)
+        setParseError(
+          "Couldn't tell which account this statement is for — choose it below.",
+        )
+        return
+      }
+      setSelectedAccountId(activeAccount.id)
+      setChangingAccount(false)
+
+      const rows = parseCSV(text)
+      if (rows.length < 2) {
+        setParseError('The CSV file appears to be empty or has insufficient data.')
+        return
+      }
+      const mapping = detectColumns(rows[0])
+      if (!mapping) {
+        setParseError(
+          'Could not auto-detect columns. Ensure your CSV has date, description, and amount/debit/credit headers.',
+        )
+        return
+      }
+
+      const transactions: ParsedTransaction[] = []
+      const skipped: SkippedRow[] = []
+      let sumCredits = 0
+      let sumDebits = 0
+      const dataRows = rows.length - 1
+
+      for (let i = 1; i < rows.length; i++) {
+        const row = rows[i]
+        const dateRaw = row[mapping.dateCol] ?? ''
+        const description = row[mapping.descCol] ?? ''
+
+        if (row.length < 2 || (!dateRaw && !description)) {
+          skipped.push({
+            line: i + 1,
+            reason: row.length < 2 ? 'Too few columns' : 'No date or description',
+            raw: row.join(', ').slice(0, 80),
+          })
+          continue
+        }
+
+        let amount = 0
+        if (mapping.amountCol !== -1 && row[mapping.amountCol]) {
+          amount = parseFloat(row[mapping.amountCol].replace(/[^0-9.\-]/g, '')) || 0
+        } else if (mapping.debitCol !== undefined || mapping.creditCol !== undefined) {
+          const debit = mapping.debitCol !== undefined ? parseFloat(row[mapping.debitCol]?.replace(/[^0-9.\-]/g, '') ?? '0') || 0 : 0
+          const credit = mapping.creditCol !== undefined ? parseFloat(row[mapping.creditCol]?.replace(/[^0-9.\-]/g, '') ?? '0') || 0 : 0
+          amount = credit - debit
+        }
+
+        if (amount >= 0) sumCredits += amount
+        else sumDebits += amount
+
+        const lowerDesc = description.toLowerCase()
+        const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
+        const category = learned?.categoryName ?? suggestCategoryName(description) ?? ''
+        const amountUSD = convertToUSD(amount, activeAccount.currency, fxRates ?? undefined)
+
+        transactions.push({
+          date: normalizeDate(dateRaw),
+          description,
+          amount,
+          currency: activeAccount.currency,
+          amountUSD,
+          category,
+          status: category ? 'categorised' : 'needs-review',
+        })
+      }
+
+      setParsedTransactions(transactions)
+      setRecon({
+        fileLines: rows.length,
+        dataRows,
+        parsed: transactions.length,
+        skipped,
+        sumCredits,
+        sumDebits,
+        imported: null,
+        duplicates: null,
+      })
+    },
+    [accounts, mappings, fxRates],
+  )
+
   const handleFileSelect = useCallback(
     async (selectedFile: File) => {
       setFile(selectedFile)
       setParseError(null)
       setSaveResult(null)
-
       setAutoDetected(false)
+
       if (!selectedFile.name.toLowerCase().endsWith('.csv')) {
+        setRawText(null)
         setParsedTransactions([])
         return
       }
@@ -290,109 +396,27 @@ export default function ImportPage() {
       setIsProcessing(true)
       try {
         const text = await selectedFile.text()
-
-        // Figure out which account this statement belongs to from the filename
-        // and header rows, falling back to the current dropdown selection.
-        const detected = detectAccount(selectedFile.name, text.slice(0, 4000), accounts)
-        const activeAccount = detected?.account ?? account
-        if (detected) {
-          setSelectedAccountId(detected.account.id)
-          setAutoDetected(true)
-        }
-        if (!activeAccount) {
-          setParseError(
-            'Could not detect which account this statement is for — pick it from the dropdown, then re-drop the file.',
-          )
-          setIsProcessing(false)
-          return
-        }
-
-        const rows = parseCSV(text)
-
-        if (rows.length < 2) {
-          setParseError('The CSV file appears to be empty or has insufficient data.')
-          setIsProcessing(false)
-          return
-        }
-
-        const mapping = detectColumns(rows[0])
-        if (!mapping) {
-          setParseError(
-            'Could not auto-detect columns. Ensure your CSV has date, description, and amount/debit/credit headers.',
-          )
-          setIsProcessing(false)
-          return
-        }
-
-        const transactions: ParsedTransaction[] = []
-        const skipped: SkippedRow[] = []
-        let sumCredits = 0
-        let sumDebits = 0
-
-        // rows excludes fully-blank lines already; row 0 is the header.
-        const dataRows = rows.length - 1
-
-        for (let i = 1; i < rows.length; i++) {
-          const row = rows[i]
-          const dateRaw = row[mapping.dateCol] ?? ''
-          const description = row[mapping.descCol] ?? ''
-
-          if (row.length < 2 || (!dateRaw && !description)) {
-            skipped.push({
-              line: i + 1,
-              reason: row.length < 2 ? 'Too few columns' : 'No date or description',
-              raw: row.join(', ').slice(0, 80),
-            })
-            continue
-          }
-
-          let amount = 0
-          if (mapping.amountCol !== -1 && row[mapping.amountCol]) {
-            amount = parseFloat(row[mapping.amountCol].replace(/[^0-9.\-]/g, '')) || 0
-          } else if (mapping.debitCol !== undefined || mapping.creditCol !== undefined) {
-            const debit = mapping.debitCol !== undefined ? parseFloat(row[mapping.debitCol]?.replace(/[^0-9.\-]/g, '') ?? '0') || 0 : 0
-            const credit = mapping.creditCol !== undefined ? parseFloat(row[mapping.creditCol]?.replace(/[^0-9.\-]/g, '') ?? '0') || 0 : 0
-            amount = credit - debit
-          }
-
-          if (amount >= 0) sumCredits += amount
-          else sumDebits += amount
-
-          // Learned merchant mappings take precedence over keyword rules.
-          const lowerDesc = description.toLowerCase()
-          const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
-          const category = learned?.categoryName ?? suggestCategoryName(description) ?? ''
-          const amountUSD = convertToUSD(amount, activeAccount.currency, fxRates ?? undefined)
-
-          transactions.push({
-            date: normalizeDate(dateRaw),
-            description,
-            amount,
-            currency: activeAccount.currency,
-            amountUSD,
-            category,
-            status: category ? 'categorised' : 'needs-review',
-          })
-        }
-
-        setParsedTransactions(transactions)
-        setRecon({
-          fileLines: rows.length,
-          dataRows,
-          parsed: transactions.length,
-          skipped,
-          sumCredits,
-          sumDebits,
-          imported: null,
-          duplicates: null,
-        })
+        setRawText(text)
+        setRawFileName(selectedFile.name)
+        processStatement(text, selectedFile.name)
       } catch {
         setParseError('Failed to parse the CSV file. Please check the file format.')
       } finally {
         setIsProcessing(false)
       }
     },
-    [account, accounts, mappings, fxRates],
+    [processStatement],
+  )
+
+  // Manual override: re-parse the same file against the chosen account.
+  const handleAccountChange = useCallback(
+    (accountId: string) => {
+      const acc = accounts.find((a) => a.id === accountId)
+      setSelectedAccountId(accountId)
+      setChangingAccount(false)
+      if (rawText && acc) processStatement(rawText, rawFileName, acc)
+    },
+    [accounts, rawText, rawFileName, processStatement],
   )
 
   const handleCategoryChange = useCallback(
@@ -480,6 +504,11 @@ export default function ImportPage() {
     setRecon(null)
     setOpeningBalance('')
     setClosingBalance('')
+    setRawText(null)
+    setRawFileName('')
+    setAutoDetected(false)
+    setChangingAccount(false)
+    setSelectedAccountId('')
   }
 
   // Summary stats
@@ -508,38 +537,53 @@ export default function ImportPage() {
           />
         </div>
 
-        {/* Account — auto-detected, overridable */}
-        <div className="mb-8">
-          <label htmlFor="account-select" className="mb-2 flex items-center gap-2 text-sm font-medium text-gray-700">
-            Account
-            {autoDetected ? (
-              <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700">
-                <CheckCircle className="h-3 w-3" />
-                Auto-detected from the file
-              </span>
+        {/* Account — only shown once a statement is dropped. Detected
+            automatically; the picker is tucked away unless it's needed. */}
+        {file && (
+          <div className="mb-8">
+            {account && !changingAccount ? (
+              <div className="flex flex-wrap items-center gap-2 text-sm">
+                <span className="text-gray-500">Account:</span>
+                <span className="font-medium text-gray-900">
+                  {account.name} ({account.currency})
+                </span>
+                {autoDetected && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700">
+                    <CheckCircle className="h-3 w-3" />
+                    auto-detected
+                  </span>
+                )}
+                <button
+                  onClick={() => setChangingAccount(true)}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-700 hover:underline"
+                >
+                  Change
+                </button>
+              </div>
             ) : (
-              <span className="text-xs font-normal text-gray-400">
-                (detected from the statement — change only if it&apos;s wrong)
-              </span>
+              <div>
+                <label htmlFor="account-select" className="mb-1.5 block text-sm font-medium text-gray-700">
+                  {account ? 'Change account' : 'Which account is this statement for?'}
+                </label>
+                <select
+                  id="account-select"
+                  value={selectedAccountId}
+                  onChange={(e) => handleAccountChange(e.target.value)}
+                  className="w-full max-w-md rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="" disabled>
+                    Select an account…
+                  </option>
+                  {accounts.map((acc) => (
+                    <option key={acc.id} value={acc.id}>
+                      {acc.name} ({acc.currency})
+                    </option>
+                  ))}
+                </select>
+              </div>
             )}
-          </label>
-          <select
-            id="account-select"
-            value={selectedAccountId}
-            onChange={(e) => {
-              setSelectedAccountId(e.target.value)
-              setAutoDetected(false)
-            }}
-            className="w-full max-w-md rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            {accounts.length === 0 && <option value="">No accounts found</option>}
-            {accounts.map((acc) => (
-              <option key={acc.id} value={acc.id}>
-                {acc.name} ({acc.currency})
-              </option>
-            ))}
-          </select>
-        </div>
+          </div>
+        )}
 
         {/* Processing indicator */}
         {isProcessing && (
