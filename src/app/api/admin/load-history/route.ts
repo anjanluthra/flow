@@ -139,6 +139,9 @@ export async function POST() {
     // 5. Refresh: remove any previously-seeded rows, then insert fresh so
     //    re-running always reflects the latest mapping (and never duplicates).
     const hashes = rows.map((r) => r.dedupeHash)
+    // Clear any previously-seeded 2024 rows. Match both the current hashes and
+    // the notes marker, so rows from an earlier import (whose hashes have since
+    // changed) are still removed and never linger as duplicates.
     let removed = 0
     for (let i = 0; i < hashes.length; i += 1000) {
       const res = await query(`DELETE FROM transactions WHERE dedupe_hash = ANY($1)`, [
@@ -146,6 +149,8 @@ export async function POST() {
       ])
       removed += res.rowCount ?? 0
     }
+    const markerDel = await query(`DELETE FROM transactions WHERE notes LIKE '2024 sheet:%'`)
+    removed += markerDel.rowCount ?? 0
 
     let inserted = 0
     const BATCH = 200

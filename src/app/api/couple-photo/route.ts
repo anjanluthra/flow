@@ -17,9 +17,11 @@ async function ensureTable() {
        slot       text PRIMARY KEY,
        mime_type  text NOT NULL,
        content    bytea NOT NULL,
+       position   text NOT NULL DEFAULT '50% 50%',
        updated_at timestamptz NOT NULL DEFAULT now()
      )`,
   )
+  await query(`ALTER TABLE app_images ADD COLUMN IF NOT EXISTS position text NOT NULL DEFAULT '50% 50%'`)
 }
 
 function toBuffer(content: unknown): Buffer {
