@@ -38,6 +38,18 @@ export async function GET(request: NextRequest) {
   if (!slot || !SLOTS.has(slot)) {
     return new NextResponse(null, { status: 404 })
   }
+
+  // Metadata mode: return the stored focal position (no binary).
+  if (request.nextUrl.searchParams.get('meta') === '1') {
+    try {
+      await ensureTable()
+      const r = await query('SELECT position FROM app_images WHERE slot = $1', [slot])
+      return NextResponse.json({ position: r.rows[0]?.position ?? '50% 50%' })
+    } catch {
+      return NextResponse.json({ position: '50% 50%' })
+    }
+  }
+
   try {
     await ensureTable()
     const result = await query('SELECT mime_type, content FROM app_images WHERE slot = $1', [slot])
@@ -61,13 +73,28 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
 
-    const { slot, contentBase64, mimeType } = (await request.json()) as {
+    const { slot, contentBase64, mimeType, position } = (await request.json()) as {
       slot?: string
       contentBase64?: string
       mimeType?: string
+      position?: string
     }
-    if (!slot || !SLOTS.has(slot) || !contentBase64) {
-      return NextResponse.json({ error: 'slot and contentBase64 are required' }, { status: 400 })
+    if (!slot || !SLOTS.has(slot)) {
+      return NextResponse.json({ error: 'slot is required' }, { status: 400 })
+    }
+
+    await ensureTable()
+
+    // Position-only update (repositioning an existing photo).
+    if (!contentBase64) {
+      if (!position) {
+        return NextResponse.json({ error: 'contentBase64 or position required' }, { status: 400 })
+      }
+      await query('UPDATE app_images SET position = $2, updated_at = now() WHERE slot = $1', [
+        slot,
+        position,
+      ])
+      return NextResponse.json({ success: true })
     }
 
     const content = Buffer.from(contentBase64, 'base64')
@@ -78,15 +105,15 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Image too large' }, { status: 413 })
     }
 
-    await ensureTable()
     await query(
-      `INSERT INTO app_images (slot, mime_type, content, updated_at)
-       VALUES ($1, $2, $3, now())
+      `INSERT INTO app_images (slot, mime_type, content, position, updated_at)
+       VALUES ($1, $2, $3, $4, now())
        ON CONFLICT (slot) DO UPDATE SET
          mime_type = EXCLUDED.mime_type,
          content   = EXCLUDED.content,
+         position  = EXCLUDED.position,
          updated_at = now()`,
-      [slot, mimeType || 'image/jpeg', content],
+      [slot, mimeType || 'image/jpeg', content, position || '50% 50%'],
     )
     return NextResponse.json({ success: true })
   } catch (error) {

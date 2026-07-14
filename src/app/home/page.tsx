@@ -74,8 +74,14 @@ function monthLabel(dateStr: string): string {
 export default function HomePage() {
   const [snapshots, setSnapshots] = useState<SnapshotSummary[]>([])
   const [summary, setSummary] = useState<Summary | null>(null)
+  const [heroPos, setHeroPos] = useState('50% 50%')
 
   useEffect(() => {
+    fetch('/api/couple-photo?meta=1&slot=hero')
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => d.position && setHeroPos(d.position))
+      .catch(() => {})
+
     fetch('/api/snapshots')
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => setSnapshots(d.snapshots || []))
@@ -123,7 +129,10 @@ export default function HomePage() {
             {/* Photo (falls back to the gradient if the file isn't present) */}
             <div
               className="absolute inset-0 bg-cover bg-center opacity-60"
-              style={{ backgroundImage: "url('/api/couple-photo?slot=hero')" }}
+              style={{
+                backgroundImage: "url('/api/couple-photo?slot=hero')",
+                backgroundPosition: heroPos,
+              }}
             />
             <div className="absolute inset-0 bg-gradient-to-r from-slate-900/80 via-slate-900/40 to-transparent" />
             <div className="relative flex flex-col justify-end px-6 py-10 sm:px-10 sm:py-14">

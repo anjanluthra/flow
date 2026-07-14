@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { signIn } from 'next-auth/react'
 import { useRouter } from 'next/navigation'
 import { Waves } from 'lucide-react'
@@ -11,6 +11,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [isLoading, setIsLoading] = useState(false)
+  const [photoPos, setPhotoPos] = useState('50% 50%')
+
+  useEffect(() => {
+    fetch('/api/couple-photo?meta=1&slot=login')
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => d.position && setPhotoPos(d.position))
+      .catch(() => {})
+  }, [])
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -44,7 +52,10 @@ export default function LoginPage() {
         {/* Photo (falls back to the gradient above if the file isn't present) */}
         <div
           className="absolute inset-0 bg-cover bg-center"
-          style={{ backgroundImage: "url('/api/couple-photo?slot=login')" }}
+          style={{
+            backgroundImage: "url('/api/couple-photo?slot=login')",
+            backgroundPosition: photoPos,
+          }}
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-black/30" />
 

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSession } from 'next-auth/react'
 import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Download, Image as ImageIcon } from 'lucide-react'
 
@@ -68,6 +68,39 @@ export default function SettingsPage() {
   // Household photos
   const [photoBusy, setPhotoBusy] = useState<string | null>(null)
   const [photoVersion, setPhotoVersion] = useState(0)
+  const [photoPos, setPhotoPos] = useState<Record<string, { x: number; y: number }>>({
+    login: { x: 50, y: 50 },
+    hero: { x: 50, y: 50 },
+  })
+  const posTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    for (const slot of ['login', 'hero'] as const) {
+      fetch(`/api/couple-photo?meta=1&slot=${slot}`)
+        .then((r) => (r.ok ? r.json() : Promise.reject()))
+        .then((d) => {
+          const [x, y] = String(d.position || '50% 50%').split(' ').map((s: string) => parseInt(s, 10))
+          setPhotoPos((p) => ({ ...p, [slot]: { x: isNaN(x) ? 50 : x, y: isNaN(y) ? 50 : y } }))
+        })
+        .catch(() => {})
+    }
+  }, [])
+
+  function setPos(slot: 'login' | 'hero', axis: 'x' | 'y', value: number) {
+    setPhotoPos((p) => {
+      const next = { ...p, [slot]: { ...p[slot], [axis]: value } }
+      if (posTimer.current) clearTimeout(posTimer.current)
+      posTimer.current = setTimeout(() => {
+        const pos = `${next[slot].x}% ${next[slot].y}%`
+        fetch('/api/couple-photo', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slot, position: pos }),
+        }).catch(() => {})
+      }, 400)
+      return next
+    })
+  }
 
   async function uploadPhoto(slot: 'login' | 'hero', file: File | null) {
     if (!file) return
@@ -75,10 +108,11 @@ export default function SettingsPage() {
     setMessage(null)
     try {
       const { base64, mimeType } = await downscale(file)
+      const pos = `${photoPos[slot].x}% ${photoPos[slot].y}%`
       const res = await fetch('/api/couple-photo', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slot, contentBase64: base64, mimeType }),
+        body: JSON.stringify({ slot, contentBase64: base64, mimeType, position: pos }),
       })
       const data = await res.json()
       if (!res.ok) {
@@ -434,17 +468,39 @@ export default function SettingsPage() {
                   <p className="mb-2 text-sm font-medium text-gray-900">
                     {slot === 'login' ? 'Sign-in page' : 'Home hero'}
                   </p>
-                  <div className="relative mb-3 h-32 overflow-hidden rounded-lg border border-gray-200 bg-gradient-to-br from-blue-700 via-indigo-700 to-slate-900">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      key={photoVersion}
-                      src={`/api/couple-photo?slot=${slot}&v=${photoVersion}`}
-                      alt=""
-                      className="h-full w-full object-cover"
-                      onError={(e) => {
-                        ;(e.currentTarget as HTMLImageElement).style.visibility = 'hidden'
-                      }}
-                    />
+                  <div
+                    className={`mb-3 overflow-hidden rounded-lg border border-gray-200 bg-gradient-to-br from-blue-700 via-indigo-700 to-slate-900 bg-cover ${
+                      slot === 'hero' ? 'h-24' : 'h-40'
+                    }`}
+                    style={{
+                      backgroundImage: `url('/api/couple-photo?slot=${slot}&v=${photoVersion}')`,
+                      backgroundPosition: `${photoPos[slot].x}% ${photoPos[slot].y}%`,
+                    }}
+                  />
+                  {/* Position controls */}
+                  <div className="mb-3 space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <span className="w-14 text-xs text-gray-400">Left/right</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={photoPos[slot].x}
+                        onChange={(e) => setPos(slot, 'x', Number(e.target.value))}
+                        className="flex-1 accent-blue-600"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="w-14 text-xs text-gray-400">Up/down</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={photoPos[slot].y}
+                        onChange={(e) => setPos(slot, 'y', Number(e.target.value))}
+                        className="flex-1 accent-blue-600"
+                      />
+                    </div>
                   </div>
                   <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50">
                     {photoBusy === slot ? 'Uploading…' : 'Choose photo'}
