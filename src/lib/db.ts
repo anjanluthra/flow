@@ -326,6 +326,30 @@ export async function getAnnualActuals(
   )
 }
 
+/**
+ * P&L line items for an arbitrary date range, grouped by type, category and
+ * month. Powers the statement view (income/expense rows × month columns).
+ * Transfers and internal transfers are excluded.
+ */
+export async function getPnLByRange(from: string, to: string) {
+  return query(
+    `SELECT
+        t.type,
+        c.name       AS category_name,
+        c.color_hex  AS category_color,
+        to_char(date_trunc('month', t.date), 'YYYY-MM') AS ym,
+        SUM(COALESCE(t.amount_usd, 0)) AS total_usd
+     FROM transactions t
+     LEFT JOIN categories c ON t.category_id = c.id
+     WHERE t.date >= $1 AND t.date <= $2
+       AND t.type <> 'transfer'
+       AND t.is_internal_transfer = false
+     GROUP BY t.type, c.name, c.color_hex, ym
+     ORDER BY ym`,
+    [from, to],
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Forecasts
 // ---------------------------------------------------------------------------
