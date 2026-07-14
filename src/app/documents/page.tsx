@@ -1,7 +1,7 @@
 'use client'
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { FileText, Upload, Trash2, Download, Eye, CheckCircle, AlertCircle } from 'lucide-react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { FileText, Upload, Trash2, Download, Eye, CheckCircle, AlertCircle, UploadCloud } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,11 +44,14 @@ export default function DocumentsPage() {
   const [filterAccount, setFilterAccount] = useState('all')
   const [isLoading, setIsLoading] = useState(true)
 
-  // Upload state
-  const [uploadAccountId, setUploadAccountId] = useState('')
+  // Upload state — account is optional so you can just dump files.
+  const [uploadAccountId, setUploadAccountId] = useState('') // '' = Unassigned
   const [statementDate, setStatementDate] = useState('')
   const [isUploading, setIsUploading] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
+  const dragDepth = useRef(0)
 
   const load = useCallback(async () => {
     setIsLoading(true)
@@ -61,57 +64,93 @@ export default function DocumentsPage() {
       const docData = await docRes.json()
       setAccounts(accData.accounts || [])
       setDocs(docData.documents || [])
-      if (accData.accounts?.length && !uploadAccountId) {
-        setUploadAccountId(accData.accounts[0].id)
-      }
     } catch {
       // leave empty
     } finally {
       setIsLoading(false)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     load()
   }, [load])
 
-  const handleUpload = async (file: File) => {
-    setIsUploading(true)
-    setMessage(null)
-    try {
-      if (file.size > 4 * 1024 * 1024) {
-        setMessage({ kind: 'err', text: 'File is over the 4 MB limit.' })
-        return
-      }
-      const buf = await file.arrayBuffer()
-      let binary = ''
-      const bytes = new Uint8Array(buf)
-      const chunk = 0x8000
-      for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
-      }
-      const contentBase64 = btoa(binary)
+  const uploadOne = useCallback(
+    async (file: File): Promise<boolean> => {
+      try {
+        const buf = await file.arrayBuffer()
+        let binary = ''
+        const bytes = new Uint8Array(buf)
+        const chunk = 0x8000
+        for (let i = 0; i < bytes.length; i += chunk) {
+          binary += String.fromCharCode(...bytes.subarray(i, i + chunk))
+        }
+        const contentBase64 = btoa(binary)
 
-      const res = await fetch('/api/documents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          accountId: uploadAccountId || null,
-          fileName: file.name,
-          mimeType: file.type || 'application/octet-stream',
-          statementDate: statementDate || null,
-          contentBase64,
-        }),
-      })
-      if (!res.ok) throw new Error('upload failed')
-      setMessage({ kind: 'ok', text: `Saved ${file.name}.` })
-      await load()
-    } catch {
-      setMessage({ kind: 'err', text: 'Upload failed — please try again.' })
-    } finally {
+        const res = await fetch('/api/documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId: uploadAccountId || null,
+            fileName: file.name,
+            mimeType: file.type || 'application/octet-stream',
+            statementDate: statementDate || null,
+            contentBase64,
+          }),
+        })
+        return res.ok
+      } catch {
+        return false
+      }
+    },
+    [uploadAccountId, statementDate],
+  )
+
+  const handleFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return
+      setIsUploading(true)
+      setMessage(null)
+      setProgress({ done: 0, total: files.length })
+
+      let saved = 0
+      let tooBig = 0
+      let failed = 0
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i]
+        if (f.size > 4 * 1024 * 1024) tooBig++
+        else if (await uploadOne(f)) saved++
+        else failed++
+        setProgress({ done: i + 1, total: files.length })
+      }
+
+      setProgress(null)
       setIsUploading(false)
-    }
+      const parts = [`Saved ${saved} file${saved !== 1 ? 's' : ''}`]
+      if (tooBig) parts.push(`${tooBig} over 4 MB skipped`)
+      if (failed) parts.push(`${failed} failed`)
+      setMessage({ kind: tooBig || failed ? 'err' : 'ok', text: parts.join(' · ') })
+      await load()
+    },
+    [uploadOne, load],
+  )
+
+  const onDragEnter = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragDepth.current += 1
+    setIsDragging(true)
+  }
+  const onDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragDepth.current -= 1
+    if (dragDepth.current === 0) setIsDragging(false)
+  }
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setIsDragging(false)
+    dragDepth.current = 0
+    const files = Array.from(e.dataTransfer.files)
+    if (files.length) handleFiles(files)
   }
 
   const handleDelete = async (id: string, name: string) => {
@@ -143,53 +182,39 @@ export default function DocumentsPage() {
         <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">Documents</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Bank statements &amp; records, organised per account
+            The home for all your statements — drop them here and they&apos;re saved for good,
+            organised per account
           </p>
         </div>
 
-        {/* Upload bar */}
-        <div className="mb-6 flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-          <Upload className="h-4 w-4 text-gray-400" />
+        {/* Optional tagging for whatever you drop next */}
+        <div className="mb-3 flex flex-wrap items-center gap-3">
+          <span className="text-xs font-medium text-gray-500">Tag new uploads:</span>
           <select
             value={uploadAccountId}
             onChange={(e) => setUploadAccountId(e.target.value)}
-            className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+            className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
           >
+            <option value="">Unassigned (assign later)</option>
             {accounts.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
               </option>
             ))}
           </select>
-          <label className="text-xs font-medium text-gray-500">Statement date:</label>
           <input
             type="date"
             value={statementDate}
             onChange={(e) => setStatementDate(e.target.value)}
-            className="rounded-lg border border-gray-200 bg-gray-50 px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+            title="Statement date (optional)"
+            className="rounded-lg border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
           />
-          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700">
-            <Upload className="h-3.5 w-3.5" />
-            {isUploading ? 'Uploading…' : 'Upload Statement'}
-            <input
-              type="file"
-              accept=".pdf,.csv,.xlsx,.xls,.png,.jpg,.jpeg"
-              className="hidden"
-              disabled={isUploading}
-              onChange={(e) => {
-                const f = e.target.files?.[0]
-                if (f) handleUpload(f)
-                e.target.value = ''
-              }}
-            />
-          </label>
-
           <div className="ml-auto flex items-center gap-2">
             <label className="text-xs font-medium text-gray-500">View:</label>
             <select
               value={filterAccount}
               onChange={(e) => setFilterAccount(e.target.value)}
-              className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+              className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
             >
               <option value="all">All Accounts</option>
               {accounts.map((a) => (
@@ -200,6 +225,53 @@ export default function DocumentsPage() {
             </select>
           </div>
         </div>
+
+        {/* Drag-and-drop dump zone */}
+        <label
+          onDragEnter={onDragEnter}
+          onDragOver={(e) => e.preventDefault()}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          className={`mb-6 flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed px-6 py-12 text-center transition-colors ${
+            isDragging
+              ? 'border-blue-500 bg-blue-50'
+              : 'border-gray-300 bg-white hover:border-blue-300 hover:bg-blue-50/30'
+          }`}
+        >
+          <input
+            type="file"
+            multiple
+            accept=".pdf,.csv,.xlsx,.xls,.png,.jpg,.jpeg"
+            className="hidden"
+            disabled={isUploading}
+            onChange={(e) => {
+              const files = Array.from(e.target.files ?? [])
+              if (files.length) handleFiles(files)
+              e.target.value = ''
+            }}
+          />
+          <div
+            className={`flex h-14 w-14 items-center justify-center rounded-full ${
+              isDragging ? 'bg-blue-100' : 'bg-gray-100'
+            }`}
+          >
+            <UploadCloud className={`h-7 w-7 ${isDragging ? 'text-blue-600' : 'text-gray-400'}`} />
+          </div>
+          {isUploading && progress ? (
+            <p className="mt-4 text-sm font-medium text-blue-600">
+              Uploading… {progress.done}/{progress.total}
+            </p>
+          ) : (
+            <>
+              <p className={`mt-4 text-base font-semibold ${isDragging ? 'text-blue-700' : 'text-gray-700'}`}>
+                Drop statements here to save them
+              </p>
+              <p className="mt-1 text-sm text-gray-400">
+                Drag in as many files as you like, or click to browse · PDF, CSV, Excel, images · up to 4 MB each
+              </p>
+            </>
+          )}
+        </label>
 
         {message && (
           <div
