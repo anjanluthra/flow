@@ -103,6 +103,7 @@ export async function POST() {
     return NextResponse.json({ text })
   } catch (error) {
     console.error('For-Kate generation failed:', error)
-    return NextResponse.json({ error: 'Generation failed' }, { status: 500 })
+    const detail = error instanceof Error ? error.message : String(error)
+    return NextResponse.json({ error: `Generation failed: ${detail}` }, { status: 500 })
   }
 }

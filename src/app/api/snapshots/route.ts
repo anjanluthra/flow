@@ -180,3 +180,59 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to save snapshot' }, { status: 500 })
   }
 }
+
+// ---------------------------------------------------------------------------
+// PATCH /api/snapshots — re-date an existing snapshot (move every row from one
+// date to another). Body: { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }
+// Any existing rows on the target date are replaced.
+// ---------------------------------------------------------------------------
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const { from, to } = (await request.json()) as { from?: string; to?: string }
+    if (!from || !to) {
+      return NextResponse.json({ error: 'from and to dates are required' }, { status: 400 })
+    }
+    if (from === to) return NextResponse.json({ success: true, from, to })
+
+    // Clear the target date first so the move can't collide, then shift rows.
+    await query(`DELETE FROM balance_snapshots WHERE snapshot_date = $1`, [to])
+    await query(`UPDATE balance_snapshots SET snapshot_date = $1 WHERE snapshot_date = $2`, [to, from])
+
+    // net_worth_snapshots may not exist / may have no matching row — best effort.
+    try {
+      await query(`DELETE FROM net_worth_snapshots WHERE snapshot_date = $1`, [to])
+      await query(`UPDATE net_worth_snapshots SET snapshot_date = $1 WHERE snapshot_date = $2`, [to, from])
+    } catch {
+      /* table may not exist */
+    }
+
+    return NextResponse.json({ success: true, from, to })
+  } catch (error) {
+    console.error('Failed to re-date snapshot:', error)
+    return NextResponse.json({ error: 'Failed to re-date snapshot' }, { status: 500 })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/snapshots?date=YYYY-MM-DD — remove a snapshot entirely.
+// ---------------------------------------------------------------------------
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const date = new URL(request.url).searchParams.get('date')
+    if (!date) return NextResponse.json({ error: 'date is required' }, { status: 400 })
+
+    await query(`DELETE FROM balance_snapshots WHERE snapshot_date = $1`, [date])
+    try {
+      await query(`DELETE FROM net_worth_snapshots WHERE snapshot_date = $1`, [date])
+    } catch {
+      /* table may not exist */
+    }
+
+    return NextResponse.json({ success: true, date })
+  } catch (error) {
+    console.error('Failed to delete snapshot:', error)
+    return NextResponse.json({ error: 'Failed to delete snapshot' }, { status: 500 })
+  }
+}

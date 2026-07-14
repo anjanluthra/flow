@@ -11,8 +11,10 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts'
-import { PiggyBank, DollarSign, Percent, ArrowRight, Landmark, TrendingUp } from 'lucide-react'
+import { PiggyBank, DollarSign, Percent, ArrowRight, Landmark, TrendingUp, Target } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+
+const NET_WORTH_TARGET = 2_000_000
 
 interface SnapshotSummary {
   date: string
@@ -173,6 +175,41 @@ export default function HomePage() {
             icon={<TrendingUp className="h-5 w-5 text-amber-500" />}
           />
         </div>
+
+        {/* $2M target */}
+        {latest && (() => {
+          const pct = Math.max(0, Math.min(100, (latest.totalNetWorth / NET_WORTH_TARGET) * 100))
+          const remaining = Math.max(0, NET_WORTH_TARGET - latest.totalNetWorth)
+          const reached = latest.totalNetWorth >= NET_WORTH_TARGET
+          return (
+            <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
+                    <Target className="h-5 w-5" />
+                  </span>
+                  <div>
+                    <h2 className="text-base font-semibold text-gray-900">Road to {fmtCompact(NET_WORTH_TARGET)}</h2>
+                    <p className="text-xs text-gray-500">
+                      {reached ? 'Target reached 🎉' : `${fmt(remaining)} to go`}
+                    </p>
+                  </div>
+                </div>
+                <p className="text-2xl font-bold text-gray-900">{pct.toFixed(1)}%</p>
+              </div>
+              <div className="mt-4 h-3 w-full overflow-hidden rounded-full bg-gray-100">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-emerald-600 transition-all"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <div className="mt-2 flex justify-between text-xs text-gray-400">
+                <span>{fmt(latest.totalNetWorth)} now</span>
+                <span>{fmtCompact(NET_WORTH_TARGET)} goal</span>
+              </div>
+            </div>
+          )
+        })()}
 
         {/* By year */}
         <div className="mb-8 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">

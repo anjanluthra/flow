@@ -29,6 +29,9 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Target,
+  Trash2,
+  Settings2,
 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { convertToUSD, DEFAULT_FX_RATES } from '@/lib/currency'
@@ -103,7 +106,7 @@ const FALLBACK_ACCOUNTS: Account[] = [
   { accountId: '', account: 'UAE Car', holder: 'Anjan', country: 'AE', assetClass: 'Car', liquidity: 'T3', currency: 'AED', localBalance: 114500, usdValue: 31178, yield: 0, annualCashFlow: 0, isCorporate: false },
   { accountId: '', account: 'Upvolt Debt', holder: 'Anjan', country: 'GB', assetClass: 'Private Debt', liquidity: 'T3', currency: 'USD', localBalance: 50000, usdValue: 50000, yield: 11.0, annualCashFlow: 5500, isCorporate: false },
   { accountId: '', account: 'Trump Meme Coin', holder: 'Anjan', country: 'US', assetClass: 'Crypto', liquidity: 'T2', currency: 'USD', localBalance: 500, usdValue: 500, yield: 0, annualCashFlow: 0, isCorporate: false },
-  { accountId: '', account: 'Corporate Cash Balance', holder: 'Joint', country: 'GB', assetClass: 'Cash', liquidity: 'T2', currency: 'USD', localBalance: 437000, usdValue: 437000, yield: 0, annualCashFlow: 0, isCorporate: true },
+  { accountId: '', account: 'Corporate Cash Balance', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T2', currency: 'USD', localBalance: 437000, usdValue: 437000, yield: 0, annualCashFlow: 0, isCorporate: true },
 ]
 
 const FALLBACK_HISTORY: NetWorthSnapshot[] = [
@@ -134,6 +137,32 @@ const FALLBACK_HISTORY: NetWorthSnapshot[] = [
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const NET_WORTH_TARGET = 2_000_000
+
+// Display label → DB enum (for saving account-detail edits)
+const HOLDER_TO_ENUM: Record<string, string> = { Anjan: 'anjan', Kate: 'kate', Joint: 'joint' }
+const ASSET_CLASS_TO_ENUM: Record<string, string> = {
+  Cash: 'cash',
+  Equities: 'equities',
+  'Private Equity': 'private_equity',
+  'Private Debt': 'private_debt',
+  Crypto: 'crypto',
+  Car: 'car',
+  Debt: 'debt',
+}
+const LIQUIDITY_TO_ENUM: Record<string, string> = {
+  T1: 't1_instant',
+  T2: 't2_days',
+  'T2.5': 't2_5_locked',
+  T3: 't3_locked_years',
+}
+
+const COUNTRY_OPTIONS = ['AE', 'GB', 'US', 'JE', 'IN', 'CH', 'SG']
+const CURRENCY_OPTIONS = ['AED', 'USD', 'GBP', 'INR', 'EUR', 'CHF']
+const HOLDER_OPTIONS: Account['holder'][] = ['Anjan', 'Kate', 'Joint']
+const ASSET_CLASS_OPTIONS: Account['assetClass'][] = ['Cash', 'Equities', 'Private Equity', 'Private Debt', 'Crypto', 'Car', 'Debt']
+const LIQUIDITY_OPTIONS: Account['liquidity'][] = ['T1', 'T2', 'T2.5', 'T3']
 
 function fmt(n: number): string {
   if (n < 0) return `-$${Math.abs(n).toLocaleString('en-US')}`
@@ -302,6 +331,16 @@ export default function NetWorthPage() {
   const [editValues, setEditValues] = useState<Record<string, string>>({})
   const [saveDate, setSaveDate] = useState(todayStr())
   const [isSaving, setIsSaving] = useState(false)
+
+  // ---- Snapshot date management ----
+  const [redating, setRedating] = useState(false)
+  const [redateTo, setRedateTo] = useState('')
+  const [snapMsg, setSnapMsg] = useState<string | null>(null)
+
+  // ---- Account-detail editing (country/holder/currency/class/liquidity) ----
+  const [editingDetails, setEditingDetails] = useState(false)
+  const [detailEdits, setDetailEdits] = useState<Record<string, Partial<Account>>>({})
+  const [savingDetails, setSavingDetails] = useState(false)
 
   // ---- FX state ----
   const [fxRates, setFxRates] = useState<Record<string, number> | null>(null)
@@ -566,6 +605,101 @@ export default function NetWorthPage() {
     }
   }
 
+  // ---- Re-date / delete the selected snapshot ----
+  async function applyRedate() {
+    if (!selectedDate || !redateTo || redateTo === selectedDate) {
+      setRedating(false)
+      return
+    }
+    setSnapMsg(null)
+    try {
+      const res = await fetch('/api/snapshots', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ from: selectedDate, to: redateTo }),
+      })
+      if (!res.ok) throw new Error('Re-date failed')
+      setRedating(false)
+      await fetchSnapshotDates()
+      setSelectedDate(redateTo)
+      setSnapMsg(`Moved to ${formatDateLabel(redateTo)}`)
+    } catch {
+      setSnapMsg('Could not change the date — please try again.')
+    }
+  }
+
+  async function deleteSnapshot() {
+    if (!selectedDate) return
+    if (!confirm(`Delete the snapshot dated ${formatDateLabel(selectedDate)}? This cannot be undone.`)) return
+    setSnapMsg(null)
+    try {
+      const res = await fetch(`/api/snapshots?date=${selectedDate}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Delete failed')
+      setSelectedDate(null)
+      await fetchSnapshotDates()
+      setSnapMsg('Snapshot deleted.')
+    } catch {
+      setSnapMsg('Could not delete — please try again.')
+    }
+  }
+
+  // ---- Account-detail editing ----
+  function startEditingDetails() {
+    setDetailEdits({})
+    setEditingDetails(true)
+  }
+
+  function cancelEditingDetails() {
+    setEditingDetails(false)
+    setDetailEdits({})
+  }
+
+  function setDetail(accountId: string, patch: Partial<Account>) {
+    setDetailEdits((prev) => ({ ...prev, [accountId]: { ...prev[accountId], ...patch } }))
+  }
+
+  async function saveDetails() {
+    if (!isDbConnected) {
+      setEditingDetails(false)
+      return
+    }
+    setSavingDetails(true)
+    try {
+      const ids = Object.keys(detailEdits).filter((id) => id)
+      await Promise.all(
+        ids.map((id) => {
+          const e = detailEdits[id]
+          const payload: Record<string, unknown> = { id }
+          if (e.holder) payload.holder = HOLDER_TO_ENUM[e.holder]
+          if (e.country) payload.country = e.country
+          if (e.currency) payload.currency = e.currency
+          if (e.assetClass) payload.assetClass = ASSET_CLASS_TO_ENUM[e.assetClass]
+          if (e.liquidity) payload.liquidityTier = LIQUIDITY_TO_ENUM[e.liquidity]
+          return fetch('/api/accounts', {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          })
+        }),
+      )
+      // Reflect the edits locally, then refresh the current snapshot from DB.
+      setAccounts((prev) =>
+        prev.map((a) => (detailEdits[a.accountId] ? { ...a, ...detailEdits[a.accountId] } : a)),
+      )
+      setEditingDetails(false)
+      setDetailEdits({})
+    } catch {
+      /* keep local edits visible */
+      setEditingDetails(false)
+    } finally {
+      setSavingDetails(false)
+    }
+  }
+
+  // Effective value for a cell during detail editing.
+  const cellVal = <K extends keyof Account>(a: Account, key: K): Account[K] =>
+    (detailEdits[a.accountId]?.[key] as Account[K]) ?? a[key]
+
   // ---- Edit handlers ----
   function startEditing() {
     const vals: Record<string, string> = {}
@@ -664,6 +798,147 @@ export default function NetWorthPage() {
         .filter(({ account }) => account.isCorporate),
     [accounts]
   )
+
+  const detailSelectCls =
+    'rounded-md border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500'
+
+  function renderAccountRow(a: Account, i: number, corporate: boolean) {
+    return (
+      <tr
+        key={a.accountId || a.account}
+        className={
+          corporate
+            ? 'bg-amber-50/40 transition-colors hover:bg-amber-50/70'
+            : 'transition-colors hover:bg-gray-50/50'
+        }
+      >
+        <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">{a.account}</td>
+
+        {/* Holder */}
+        <td className="px-4 py-3">
+          {editingDetails ? (
+            <select
+              value={cellVal(a, 'holder')}
+              onChange={(e) => setDetail(a.accountId, { holder: e.target.value as Account['holder'] })}
+              className={detailSelectCls}
+            >
+              {HOLDER_OPTIONS.map((h) => (
+                <option key={h} value={h}>{h}</option>
+              ))}
+            </select>
+          ) : (
+            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${HOLDER_STYLES[a.holder]}`}>
+              {a.holder}
+            </span>
+          )}
+        </td>
+
+        {/* Country */}
+        <td className="px-4 py-3 text-center">
+          {editingDetails ? (
+            <select
+              value={cellVal(a, 'country')}
+              onChange={(e) => setDetail(a.accountId, { country: e.target.value })}
+              className={detailSelectCls}
+            >
+              {COUNTRY_OPTIONS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          ) : (
+            <span className="text-sm" title={a.country}>
+              {COUNTRY_FLAGS[a.country] || a.country}{' '}
+              <span className="text-xs text-gray-400">{a.country}</span>
+            </span>
+          )}
+        </td>
+
+        {/* Asset class */}
+        <td className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}>
+          {editingDetails ? (
+            <select
+              value={cellVal(a, 'assetClass')}
+              onChange={(e) => setDetail(a.accountId, { assetClass: e.target.value as Account['assetClass'] })}
+              className={detailSelectCls}
+            >
+              {ASSET_CLASS_OPTIONS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          ) : (
+            a.assetClass
+          )}
+        </td>
+
+        {/* Liquidity */}
+        <td className="px-4 py-3 text-center">
+          {editingDetails ? (
+            <select
+              value={cellVal(a, 'liquidity')}
+              onChange={(e) => setDetail(a.accountId, { liquidity: e.target.value as Account['liquidity'] })}
+              className={detailSelectCls}
+            >
+              {LIQUIDITY_OPTIONS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          ) : (
+            <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${LIQUIDITY_STYLES[a.liquidity]}`}>
+              {a.liquidity}
+            </span>
+          )}
+        </td>
+
+        {/* Currency */}
+        <td className="px-4 py-3 text-center text-gray-500">
+          {editingDetails ? (
+            <select
+              value={cellVal(a, 'currency')}
+              onChange={(e) => setDetail(a.accountId, { currency: e.target.value })}
+              className={detailSelectCls}
+            >
+              {CURRENCY_OPTIONS.map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          ) : (
+            a.currency
+          )}
+        </td>
+
+        {/* Local balance */}
+        <td className="px-4 py-3 text-right tabular-nums">
+          {isEditing ? (
+            <input
+              type="text"
+              value={editValues[i] ?? a.localBalance.toString()}
+              onChange={(e) => setEditValues((prev) => ({ ...prev, [i]: e.target.value }))}
+              className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          ) : (
+            <span className={a.localBalance < 0 ? 'text-red-600' : 'text-gray-900'}>
+              {fmtLocal(a.localBalance, a.currency)}
+            </span>
+          )}
+        </td>
+
+        {/* Converted value */}
+        <td className={`px-4 py-3 text-right tabular-nums font-medium ${a.usdValue < 0 ? 'text-red-600' : 'text-gray-900'}`}>
+          {fmtView(a.usdValue)}
+        </td>
+
+        {/* Yield */}
+        <td className="px-4 py-3 text-right tabular-nums text-gray-600">
+          {a.yield > 0 ? `${a.yield.toFixed(2)}%` : '—'}
+        </td>
+
+        {/* Annual cash flow */}
+        <td className="px-4 py-3 text-right tabular-nums text-gray-600">
+          {a.annualCashFlow > 0 ? fmtView(a.annualCashFlow) : '—'}
+        </td>
+      </tr>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -782,6 +1057,67 @@ export default function NetWorthPage() {
         </div>
 
         {/* ---------------------------------------------------------------- */}
+        {/* Snapshot date management (re-date / delete)                       */}
+        {/* ---------------------------------------------------------------- */}
+        {isDbConnected && selectedDate && snapshotDates.length > 0 && (
+          <div className="mb-8 flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
+            {redating ? (
+              <>
+                <span className="text-sm font-medium text-gray-700">
+                  Move {formatDateLabel(selectedDate)} to:
+                </span>
+                <input
+                  type="date"
+                  value={redateTo}
+                  onChange={(e) => setRedateTo(e.target.value)}
+                  className="rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <button
+                  onClick={applyRedate}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700"
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  Apply
+                </button>
+                <button
+                  onClick={() => setRedating(false)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <>
+                <Calendar className="h-4 w-4 text-gray-400" />
+                <span className="text-sm text-gray-500">
+                  Wrong date on this snapshot?
+                </span>
+                <button
+                  onClick={() => {
+                    setRedateTo(selectedDate)
+                    setSnapMsg(null)
+                    setRedating(true)
+                  }}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+                >
+                  <Edit3 className="h-3.5 w-3.5" />
+                  Change date
+                </button>
+                <button
+                  onClick={deleteSnapshot}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-600 shadow-sm transition-colors hover:bg-red-50"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Delete
+                </button>
+              </>
+            )}
+            {snapMsg && <span className="text-xs text-gray-500">{snapMsg}</span>}
+          </div>
+        )}
+
+        {/* ---------------------------------------------------------------- */}
         {/* Summary Cards                                                    */}
         {/* ---------------------------------------------------------------- */}
         <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -811,6 +1147,46 @@ export default function NetWorthPage() {
             icon={<CreditCard className="h-5 w-5" />}
           />
         </div>
+
+        {/* ---------------------------------------------------------------- */}
+        {/* $2M Net Worth Target                                             */}
+        {/* ---------------------------------------------------------------- */}
+        {(() => {
+          const pct = Math.max(0, Math.min(100, (totalNetWorth / NET_WORTH_TARGET) * 100))
+          const remaining = Math.max(0, NET_WORTH_TARGET - totalNetWorth)
+          const reached = totalNetWorth >= NET_WORTH_TARGET
+          return (
+            <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+              <div className="flex flex-wrap items-end justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-600">
+                    <Target className="h-5 w-5" />
+                  </span>
+                  <div>
+                    <h2 className="text-base font-semibold text-gray-900">Net Worth Target</h2>
+                    <p className="text-xs text-gray-500">Goal: {fmtView(NET_WORTH_TARGET)}</p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <p className="text-2xl font-bold text-gray-900">{pct.toFixed(1)}%</p>
+                  <p className="text-xs text-gray-500">
+                    {reached ? 'Target reached 🎉' : `${fmtView(remaining)} to go`}
+                  </p>
+                </div>
+              </div>
+              <div className="mt-4 h-3 w-full overflow-hidden rounded-full bg-gray-100">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-emerald-400 to-emerald-600 transition-all"
+                  style={{ width: `${pct}%` }}
+                />
+              </div>
+              <div className="mt-2 flex justify-between text-xs text-gray-400">
+                <span>{fmtView(totalNetWorth)} now</span>
+                <span>{fmtView(NET_WORTH_TARGET)}</span>
+              </div>
+            </div>
+          )
+        })()}
 
         {/* ---------------------------------------------------------------- */}
         {/* Asset Allocation Pie + Liquidity Bar                              */}
@@ -960,14 +1336,44 @@ export default function NetWorthPage() {
                     Cancel
                   </button>
                 </>
+              ) : editingDetails ? (
+                <>
+                  <span className="text-xs text-gray-500">
+                    Editing account details — change country, holder, currency, class or liquidity.
+                  </span>
+                  <button
+                    onClick={saveDetails}
+                    disabled={savingDetails}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    {savingDetails ? 'Saving...' : 'Save Details'}
+                  </button>
+                  <button
+                    onClick={cancelEditingDetails}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                    Cancel
+                  </button>
+                </>
               ) : (
-                <button
-                  onClick={startEditing}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
-                >
-                  <Edit3 className="h-3.5 w-3.5" />
-                  Update Balances
-                </button>
+                <>
+                  <button
+                    onClick={startEditing}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+                  >
+                    <Edit3 className="h-3.5 w-3.5" />
+                    Update Balances
+                  </button>
+                  <button
+                    onClick={startEditingDetails}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                    Edit Details
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -1010,84 +1416,7 @@ export default function NetWorthPage() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {/* ---- Personal Accounts ---- */}
-                {personalWithIdx.map(({ account: a, idx: i }) => (
-                  <tr
-                    key={a.accountId || a.account}
-                    className="transition-colors hover:bg-gray-50/50"
-                  >
-                    <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
-                      {a.account}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${HOLDER_STYLES[a.holder]}`}
-                      >
-                        {a.holder}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className="text-sm" title={a.country}>
-                        {COUNTRY_FLAGS[a.country] || a.country}{' '}
-                        <span className="text-xs text-gray-400">
-                          {a.country}
-                        </span>
-                      </span>
-                    </td>
-                    <td
-                      className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}
-                    >
-                      {a.assetClass}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${LIQUIDITY_STYLES[a.liquidity]}`}
-                      >
-                        {a.liquidity}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center text-gray-500">
-                      {a.currency}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
-                      {isEditing ? (
-                        <input
-                          type="text"
-                          value={editValues[i] ?? a.localBalance.toString()}
-                          onChange={(e) =>
-                            setEditValues((prev) => ({
-                              ...prev,
-                              [i]: e.target.value,
-                            }))
-                          }
-                          className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                        />
-                      ) : (
-                        <span
-                          className={
-                            a.localBalance < 0
-                              ? 'text-red-600'
-                              : 'text-gray-900'
-                          }
-                        >
-                          {fmtLocal(a.localBalance, a.currency)}
-                        </span>
-                      )}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right tabular-nums font-medium ${
-                        a.usdValue < 0 ? 'text-red-600' : 'text-gray-900'
-                      }`}
-                    >
-                      {fmtView(a.usdValue)}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-gray-600">
-                      {a.yield > 0 ? `${a.yield.toFixed(2)}%` : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-gray-600">
-                      {a.annualCashFlow > 0 ? fmtView(a.annualCashFlow) : '—'}
-                    </td>
-                  </tr>
-                ))}
+                {personalWithIdx.map(({ account: a, idx: i }) => renderAccountRow(a, i, false))}
 
                 {/* ---- Personal Net Worth Subtotal ---- */}
                 <tr className="border-t-2 border-blue-200 bg-blue-50/60">
@@ -1114,84 +1443,7 @@ export default function NetWorthPage() {
                 </tr>
 
                 {/* ---- Corporate Cash ---- */}
-                {corporateWithIdx.map(({ account: a, idx: i }) => (
-                  <tr
-                    key={a.accountId || a.account}
-                    className="bg-amber-50/40 transition-colors hover:bg-amber-50/70"
-                  >
-                    <td className="whitespace-nowrap px-4 py-3 font-medium text-gray-900">
-                      {a.account}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${HOLDER_STYLES[a.holder]}`}
-                      >
-                        {a.holder}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span className="text-sm" title={a.country}>
-                        {COUNTRY_FLAGS[a.country] || a.country}{' '}
-                        <span className="text-xs text-gray-400">
-                          {a.country}
-                        </span>
-                      </span>
-                    </td>
-                    <td
-                      className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}
-                    >
-                      {a.assetClass}
-                    </td>
-                    <td className="px-4 py-3 text-center">
-                      <span
-                        className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${LIQUIDITY_STYLES[a.liquidity]}`}
-                      >
-                        {a.liquidity}
-                      </span>
-                    </td>
-                    <td className="px-4 py-3 text-center text-gray-500">
-                      {a.currency}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums">
-                      {isEditing ? (
-                        <input
-                          type="text"
-                          value={editValues[i] ?? a.localBalance.toString()}
-                          onChange={(e) =>
-                            setEditValues((prev) => ({
-                              ...prev,
-                              [i]: e.target.value,
-                            }))
-                          }
-                          className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                        />
-                      ) : (
-                        <span
-                          className={
-                            a.localBalance < 0
-                              ? 'text-red-600'
-                              : 'text-gray-900'
-                          }
-                        >
-                          {fmtLocal(a.localBalance, a.currency)}
-                        </span>
-                      )}
-                    </td>
-                    <td
-                      className={`px-4 py-3 text-right tabular-nums font-medium ${
-                        a.usdValue < 0 ? 'text-red-600' : 'text-gray-900'
-                      }`}
-                    >
-                      {fmtView(a.usdValue)}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-gray-600">
-                      {a.yield > 0 ? `${a.yield.toFixed(2)}%` : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right tabular-nums text-gray-600">
-                      {a.annualCashFlow > 0 ? fmtView(a.annualCashFlow) : '—'}
-                    </td>
-                  </tr>
-                ))}
+                {corporateWithIdx.map(({ account: a, idx: i }) => renderAccountRow(a, i, true))}
               </tbody>
 
               {/* ---- Grand Total ---- */}
