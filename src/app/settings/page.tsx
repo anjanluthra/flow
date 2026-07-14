@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react'
 import { useSession } from 'next-auth/react'
-import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle } from 'lucide-react'
+import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Download } from 'lucide-react'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -32,6 +32,9 @@ export default function SettingsPage() {
   const [users, setUsers] = useState<AppUser[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
+
+  // Historical data import
+  const [historyBusy, setHistoryBusy] = useState(false)
 
   // Add-user form
   const [showAdd, setShowAdd] = useState(false)
@@ -88,6 +91,35 @@ export default function SettingsPage() {
       setMessage({ kind: 'err', text: 'Failed to add user.' })
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  async function loadHistory() {
+    if (
+      !confirm(
+        'Import 2024 transactions from your workbook into Flow? It’s safe to run more than once — duplicates are skipped.',
+      )
+    )
+      return
+    setHistoryBusy(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/admin/load-history', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setMessage({ kind: 'err', text: data.error || 'Failed to load history.' })
+        return
+      }
+      setMessage({
+        kind: 'ok',
+        text: `2024 import complete — ${data.inserted} added, ${data.skipped} already present${
+          data.unresolved ? `, ${data.unresolved} could not be matched` : ''
+        }.`,
+      })
+    } catch {
+      setMessage({ kind: 'err', text: 'Failed to load history.' })
+    } finally {
+      setHistoryBusy(false)
     }
   }
 
@@ -297,6 +329,33 @@ export default function SettingsPage() {
             </tbody>
           </table>
         </div>
+
+        {/* Data card */}
+        {isAdmin && (
+          <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="flex items-center gap-2 border-b border-gray-200 px-6 py-4">
+              <Database className="h-4 w-4 text-gray-400" />
+              <h2 className="text-base font-semibold text-gray-900">Data</h2>
+            </div>
+            <div className="flex flex-col gap-4 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-900">Load 2024 history</p>
+                <p className="mt-0.5 text-sm text-gray-500">
+                  Imports 2,031 categorised 2024 transactions from your personal-finance workbook.
+                  Safe to run again — duplicates are skipped.
+                </p>
+              </div>
+              <button
+                onClick={loadHistory}
+                disabled={historyBusy}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+              >
+                <Download className="h-4 w-4" />
+                {historyBusy ? 'Importing…' : 'Load 2024 history'}
+              </button>
+            </div>
+          </div>
+        )}
 
         <p className="mt-4 text-xs text-gray-400">
           The two founding accounts sign in with passwords set via environment variables
