@@ -30,7 +30,6 @@ import {
   ChevronRight,
   Clock,
   Target,
-  Trash2,
   Settings2,
 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
@@ -332,11 +331,6 @@ export default function NetWorthPage() {
   const [saveDate, setSaveDate] = useState(todayStr())
   const [isSaving, setIsSaving] = useState(false)
 
-  // ---- Snapshot date management ----
-  const [redating, setRedating] = useState(false)
-  const [redateTo, setRedateTo] = useState('')
-  const [snapMsg, setSnapMsg] = useState<string | null>(null)
-
   // ---- Account-detail editing (country/holder/currency/class/liquidity) ----
   const [editingDetails, setEditingDetails] = useState(false)
   const [detailEdits, setDetailEdits] = useState<Record<string, Partial<Account>>>({})
@@ -602,44 +596,6 @@ export default function NetWorthPage() {
     } else {
       setSelectedDate(null)
       setAccounts(FALLBACK_ACCOUNTS)
-    }
-  }
-
-  // ---- Re-date / delete the selected snapshot ----
-  async function applyRedate() {
-    if (!selectedDate || !redateTo || redateTo === selectedDate) {
-      setRedating(false)
-      return
-    }
-    setSnapMsg(null)
-    try {
-      const res = await fetch('/api/snapshots', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ from: selectedDate, to: redateTo }),
-      })
-      if (!res.ok) throw new Error('Re-date failed')
-      setRedating(false)
-      await fetchSnapshotDates()
-      setSelectedDate(redateTo)
-      setSnapMsg(`Moved to ${formatDateLabel(redateTo)}`)
-    } catch {
-      setSnapMsg('Could not change the date — please try again.')
-    }
-  }
-
-  async function deleteSnapshot() {
-    if (!selectedDate) return
-    if (!confirm(`Delete the snapshot dated ${formatDateLabel(selectedDate)}? This cannot be undone.`)) return
-    setSnapMsg(null)
-    try {
-      const res = await fetch(`/api/snapshots?date=${selectedDate}`, { method: 'DELETE' })
-      if (!res.ok) throw new Error('Delete failed')
-      setSelectedDate(null)
-      await fetchSnapshotDates()
-      setSnapMsg('Snapshot deleted.')
-    } catch {
-      setSnapMsg('Could not delete — please try again.')
     }
   }
 
@@ -1056,66 +1012,6 @@ export default function NetWorthPage() {
           )}
         </div>
 
-        {/* ---------------------------------------------------------------- */}
-        {/* Snapshot date management (re-date / delete)                       */}
-        {/* ---------------------------------------------------------------- */}
-        {isDbConnected && selectedDate && snapshotDates.length > 0 && (
-          <div className="mb-8 flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
-            {redating ? (
-              <>
-                <span className="text-sm font-medium text-gray-700">
-                  Move {formatDateLabel(selectedDate)} to:
-                </span>
-                <input
-                  type="date"
-                  value={redateTo}
-                  onChange={(e) => setRedateTo(e.target.value)}
-                  className="rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-                <button
-                  onClick={applyRedate}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700"
-                >
-                  <Save className="h-3.5 w-3.5" />
-                  Apply
-                </button>
-                <button
-                  onClick={() => setRedating(false)}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
-                >
-                  <X className="h-3.5 w-3.5" />
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <>
-                <Calendar className="h-4 w-4 text-gray-400" />
-                <span className="text-sm text-gray-500">
-                  Wrong date on this snapshot?
-                </span>
-                <button
-                  onClick={() => {
-                    setRedateTo(selectedDate)
-                    setSnapMsg(null)
-                    setRedating(true)
-                  }}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm transition-colors hover:bg-gray-50"
-                >
-                  <Edit3 className="h-3.5 w-3.5" />
-                  Change date
-                </button>
-                <button
-                  onClick={deleteSnapshot}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-1.5 text-sm font-medium text-red-600 shadow-sm transition-colors hover:bg-red-50"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Delete
-                </button>
-              </>
-            )}
-            {snapMsg && <span className="text-xs text-gray-500">{snapMsg}</span>}
-          </div>
-        )}
 
         {/* ---------------------------------------------------------------- */}
         {/* Summary Cards                                                    */}

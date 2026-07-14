@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSession } from 'next-auth/react'
-import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Download, Image as ImageIcon } from 'lucide-react'
+import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Download, Image as ImageIcon, Calendar } from 'lucide-react'
 
 // Downscale an image file to a modest JPEG data URL so uploads stay small and
 // fast (max edge ~1600px). Returns { base64, mimeType }.
@@ -202,6 +202,35 @@ export default function SettingsPage() {
       setMessage({ kind: 'err', text: 'Failed to load net worth history.' })
     } finally {
       setNwBusy(false)
+    }
+  }
+
+  const [redateBusy, setRedateBusy] = useState(false)
+  async function redateBalances() {
+    if (
+      !confirm(
+        'Date the current balance sheet (your detailed account table) to 1 June 2026, so it becomes the latest snapshot everywhere? Historic graph markers are left untouched.',
+      )
+    )
+      return
+    setRedateBusy(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/admin/redate-balances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ to: '2026-06-01' }),
+      })
+      const data = await res.json()
+      setMessage(
+        res.ok
+          ? { kind: 'ok', text: `Current balances dated to 1 Jun 2026 (moved ${data.moved} accounts).` }
+          : { kind: 'err', text: data.error || 'Failed to re-date balances.' },
+      )
+    } catch {
+      setMessage({ kind: 'err', text: 'Failed to re-date balances.' })
+    } finally {
+      setRedateBusy(false)
     }
   }
 
@@ -486,6 +515,24 @@ export default function SettingsPage() {
               >
                 <Download className="h-4 w-4" />
                 {nwBusy ? 'Importing…' : 'Load net worth history'}
+              </button>
+            </div>
+            <div className="flex flex-col gap-4 border-t border-gray-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-900">Date current balances to 1 Jun 2026</p>
+                <p className="mt-0.5 text-sm text-gray-500">
+                  Your detailed account table holds the current numbers (as of 1 June 2026). This
+                  sets its date so it shows as the latest snapshot on Home and Net Worth. Run once;
+                  update monthly afterwards with “Update Balances”.
+                </p>
+              </div>
+              <button
+                onClick={redateBalances}
+                disabled={redateBusy}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+              >
+                <Calendar className="h-4 w-4" />
+                {redateBusy ? 'Updating…' : 'Set date to 1 Jun 2026'}
               </button>
             </div>
           </div>
