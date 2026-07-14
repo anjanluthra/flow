@@ -5,13 +5,12 @@ import { usePathname } from "next/navigation";
 import {
   Waves,
   House,
+  Scale,
   LayoutDashboard,
   ArrowLeftRight,
-  Upload,
-  PiggyBank,
   CalendarRange,
   TrendingUp,
-  FileText,
+  FolderOpen,
   Settings,
   Repeat,
 } from "lucide-react";
@@ -29,27 +28,31 @@ interface NavSection {
 
 const navSections: NavSection[] = [
   {
-    items: [
-      { href: "/home", label: "Home", icon: House },
-      { href: "/networth", label: "Net Worth", icon: PiggyBank },
-    ],
+    items: [{ href: "/home", label: "Home", icon: House }],
+  },
+  {
+    label: "Net Worth",
+    items: [{ href: "/networth", label: "Balance Sheet", icon: Scale }],
   },
   {
     label: "Cash Flow",
     items: [
-      { href: "/dashboard", label: "Summary", icon: LayoutDashboard },
+      { href: "/dashboard", label: "Monthly Cash Flow", icon: LayoutDashboard },
       { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
-      { href: "/import", label: "Import", icon: Upload },
       { href: "/recurring", label: "Recurring", icon: Repeat },
-      { href: "/annual", label: "Annual & Forecast", icon: CalendarRange },
+      { href: "/annual", label: "Forecasting", icon: CalendarRange },
     ],
   },
   {
-    items: [
-      { href: "/investing", label: "Investing", icon: TrendingUp },
-      { href: "/documents", label: "Documents", icon: FileText },
-      { href: "/settings", label: "Settings", icon: Settings },
-    ],
+    label: "Investing",
+    items: [{ href: "/investing", label: "Portfolio", icon: TrendingUp }],
+  },
+  {
+    label: "Documents",
+    items: [{ href: "/import", label: "Document Hub", icon: FolderOpen }],
+  },
+  {
+    items: [{ href: "/settings", label: "Settings", icon: Settings }],
   },
 ];
 

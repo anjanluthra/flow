@@ -39,15 +39,12 @@ interface Summary {
   trend: { month: number; income: number; expense: number }[]
 }
 
-type Holder = 'all' | 'anjan' | 'kate' | 'joint'
-
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const YEARS = [2024, 2025, 2026]
-const HOLDERS: Holder[] = ['all', 'anjan', 'kate', 'joint']
 
 function fmtUsd(n: number): string {
   return `$${Math.round(n).toLocaleString('en-US')}`
@@ -124,7 +121,6 @@ export default function DashboardPage() {
   const now = new Date()
   const [selectedMonth, setSelectedMonth] = useState<number>(now.getMonth()) // 0-11
   const [selectedYear, setSelectedYear] = useState<number>(now.getFullYear())
-  const [holder, setHolder] = useState<Holder>('all')
   const [summary, setSummary] = useState<Summary | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
@@ -135,7 +131,6 @@ export default function DashboardPage() {
       year: String(selectedYear),
       month: String(selectedMonth + 1),
     })
-    if (holder !== 'all') params.set('holder', holder)
 
     fetch(`/api/summary?${params.toString()}`)
       .then((res) => (res.ok ? res.json() : Promise.reject()))
@@ -152,7 +147,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true
     }
-  }, [selectedMonth, selectedYear, holder])
+  }, [selectedMonth, selectedYear])
 
   const c = summary?.current
   const trendData = (summary?.trend ?? []).map((t) => ({
@@ -195,22 +190,6 @@ export default function DashboardPage() {
               </option>
             ))}
           </select>
-
-          <div className="flex gap-2">
-            {HOLDERS.map((h) => (
-              <button
-                key={h}
-                onClick={() => setHolder(h)}
-                className={`rounded-full px-4 py-1.5 text-sm font-medium capitalize transition-colors ${
-                  holder === h
-                    ? 'bg-gray-900 text-white'
-                    : 'border border-gray-300 bg-white text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                {h === 'all' ? 'All' : h}
-              </button>
-            ))}
-          </div>
 
           {isLoading && <span className="animate-pulse text-xs text-blue-500">Loading…</span>}
         </div>

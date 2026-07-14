@@ -70,7 +70,6 @@ export default function TransactionsPage() {
   const [accountFilter, setAccountFilter] = useState('all')
   const [monthFilter, setMonthFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState<'all' | 'income' | 'expense'>('all')
-  const [holderFilter, setHolderFilter] = useState<'all' | 'anjan' | 'kate' | 'joint'>('all')
 
   // ---- Fetch data on mount ----
   useEffect(() => {
@@ -198,10 +197,9 @@ export default function TransactionsPage() {
         if (txMonth !== MONTHS.indexOf(monthFilter)) return false
       }
       if (typeFilter !== 'all' && tx.type !== typeFilter) return false
-      if (holderFilter !== 'all' && tx.holder !== holderFilter) return false
       return true
     })
-  }, [transactions, search, categoryFilter, accountFilter, monthFilter, typeFilter, holderFilter])
+  }, [transactions, search, categoryFilter, accountFilter, monthFilter, typeFilter])
 
   // ---- Columns ----
   const columns = useMemo(
@@ -461,19 +459,6 @@ export default function TransactionsPage() {
           ))}
         </div>
 
-        <div className="h-6 w-px bg-gray-200" />
-
-        <div className="flex gap-1">
-          {(['all', 'anjan', 'kate', 'joint'] as const).map((h) => (
-            <button
-              key={h}
-              onClick={() => setHolderFilter(h)}
-              className={`rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors ${pillClass(holderFilter === h)}`}
-            >
-              {h === 'all' ? 'All Holders' : h.charAt(0).toUpperCase() + h.slice(1)}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Results count */}

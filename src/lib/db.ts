@@ -357,3 +357,26 @@ export async function upsertForecast(
   )
   return { upserted: 1 }
 }
+
+// ---------------------------------------------------------------------------
+// Account import hints (learned fingerprints for auto-detection)
+// ---------------------------------------------------------------------------
+
+export async function getAccountHints() {
+  return query(
+    `SELECT account_id, hint_type, hint_value FROM account_import_hints`,
+  )
+}
+
+/** Remember that files with this fingerprint belong to an account. Latest wins. */
+export async function upsertAccountHint(accountId: string, hintType: string, hintValue: string) {
+  await query(
+    `INSERT INTO account_import_hints (account_id, hint_type, hint_value)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (hint_type, hint_value)
+     DO UPDATE SET account_id = EXCLUDED.account_id`,
+    [accountId, hintType, hintValue],
+  )
+  return { learned: hintValue }
+}
+

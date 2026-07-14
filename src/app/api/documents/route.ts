@@ -15,7 +15,8 @@ export async function GET(request: NextRequest) {
 
     const result = await query(
       `SELECT d.id, d.account_id, d.file_name, d.mime_type, d.statement_date,
-              d.size_bytes, d.uploaded_at, a.name AS account_name
+              d.size_bytes, d.uploaded_at, d.source, d.format_signature,
+              d.imported_count, d.data_rows, a.name AS account_name
        FROM documents d
        LEFT JOIN accounts a ON d.account_id = a.id
        ${accountId ? 'WHERE d.account_id = $1' : ''}
@@ -32,6 +33,10 @@ export async function GET(request: NextRequest) {
       statementDate: row.statement_date,
       sizeBytes: row.size_bytes,
       uploadedAt: row.uploaded_at,
+      source: row.source ?? 'upload',
+      formatSignature: row.format_signature,
+      importedCount: row.imported_count,
+      dataRows: row.data_rows,
     }))
 
     return NextResponse.json({ documents })
@@ -49,12 +54,26 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { accountId, fileName, mimeType, statementDate, contentBase64 } = body as {
+    const {
+      accountId,
+      fileName,
+      mimeType,
+      statementDate,
+      contentBase64,
+      source,
+      formatSignature,
+      importedCount,
+      dataRows,
+    } = body as {
       accountId: string | null
       fileName: string
       mimeType: string
       statementDate?: string | null
       contentBase64: string
+      source?: string
+      formatSignature?: string | null
+      importedCount?: number | null
+      dataRows?: number | null
     }
 
     if (!fileName || !contentBase64) {
@@ -76,11 +95,15 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await query(
-      `INSERT INTO documents (account_id, file_name, mime_type, statement_date, size_bytes, content)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO documents
+         (account_id, file_name, mime_type, statement_date, size_bytes, content,
+          source, format_signature, imported_count, data_rows)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id`,
       [accountId || null, fileName, mimeType || 'application/octet-stream',
-        statementDate || null, content.length, content],
+        statementDate || null, content.length, content,
+        source || 'upload', formatSignature || null,
+        importedCount ?? null, dataRows ?? null],
     )
 
     return NextResponse.json({ success: true, id: result.rows[0].id })

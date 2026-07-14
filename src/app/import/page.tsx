@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useCallback, useEffect } from 'react'
-import { Upload, CheckCircle, AlertCircle, FileText } from 'lucide-react'
+import { Upload, CheckCircle, AlertCircle, FileText, Eye, Download, Trash2 } from 'lucide-react'
 import { FileUpload } from '@/components/ui/FileUpload'
 import { convertToUSD } from '@/lib/currency'
 import { suggestCategoryName } from '@/lib/categories'
@@ -17,17 +17,48 @@ interface AccountOption {
   institution?: string | null
 }
 
+interface AccountHint {
+  accountId: string
+  hintType: string // 'header_signature' | 'filename_token'
+  hintValue: string
+}
+
+/** A stable fingerprint of a statement's column layout (bank-specific). */
+function headerSignature(text: string): string {
+  const firstLine = text.split(/\r?\n/).find((l) => l.trim() !== '') ?? ''
+  return firstLine
+    .split(',')
+    .map((c) => c.replace(/"/g, '').trim().toLowerCase())
+    .filter(Boolean)
+    .join('|')
+}
+
 /**
- * Best-effort account detection from the statement's filename + first rows.
- * Scores each account by how strongly the file text references its institution
- * and name; returns the winner only when the signal is clear enough, otherwise
- * null so the user picks. Institution match is the strongest signal.
+ * Account detection. A learned fingerprint (you previously told us which account
+ * this bank's format is) wins outright; otherwise fall back to scoring each
+ * account by how strongly the filename + first rows reference its institution
+ * and name, returning null when it's unclear so the user picks.
  */
 function detectAccount(
   fileName: string,
   sampleText: string,
   accounts: AccountOption[],
+  hints: AccountHint[] = [],
 ): { account: AccountOption; score: number } | null {
+  // 1. Learned fingerprints (from a previous manual pick).
+  const sig = headerSignature(sampleText)
+  const fileLower = fileName.toLowerCase()
+  const learnedIds = new Set<string>()
+  for (const h of hints) {
+    if (h.hintType === 'header_signature' && sig && h.hintValue === sig) learnedIds.add(h.accountId)
+    if (h.hintType === 'filename_token' && fileLower.includes(h.hintValue)) learnedIds.add(h.accountId)
+  }
+  if (learnedIds.size === 1) {
+    const acc = accounts.find((a) => a.id === [...learnedIds][0])
+    if (acc) return { account: acc, score: 100 }
+  }
+
+  // 2. Heuristic scoring.
   const hay = `${fileName} ${sampleText}`.toLowerCase()
   const tokenize = (s: string) =>
     s
@@ -67,6 +98,19 @@ interface CategoryOption {
   id: string
   name: string
   type: 'income' | 'expense' | 'transfer'
+}
+
+interface StatementDoc {
+  id: string
+  accountId: string | null
+  accountName: string | null
+  fileName: string
+  statementDate: string | null
+  sizeBytes: number
+  uploadedAt: string
+  source: string | null // 'upload' | 'import'
+  formatSignature: string | null
+  importedCount: number | null
 }
 
 interface ParsedTransaction {
@@ -257,32 +301,49 @@ export default function ImportPage() {
   const [rawFileName, setRawFileName] = useState('')
   // Whether the user has expanded the account picker to override the detection.
   const [changingAccount, setChangingAccount] = useState(false)
+  // Learned account fingerprints + the archived statement library.
+  const [hints, setHints] = useState<AccountHint[]>([])
+  const [documents, setDocuments] = useState<StatementDoc[]>([])
 
-  // ---- Load real accounts + categories + learned mappings + live FX ----
+  const loadDocuments = useCallback(async () => {
+    try {
+      const res = await fetch('/api/documents')
+      const data = await res.json()
+      setDocuments(data.documents || [])
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  // ---- Load real accounts + categories + learned mappings + FX + hints ----
   useEffect(() => {
     async function load() {
       try {
-        const [accRes, catRes, mapRes, fxRes] = await Promise.all([
+        const [accRes, catRes, mapRes, fxRes, hintRes] = await Promise.all([
           fetch('/api/accounts'),
           fetch('/api/categories'),
           fetch('/api/merchant-mappings'),
           fetch('/api/fx'),
+          fetch('/api/account-hints'),
         ])
         const accData = await accRes.json()
         const catData = await catRes.json()
         const mapData = await mapRes.json()
         const fxData = await fxRes.json()
+        const hintData = await hintRes.json()
         setAccounts(accData.accounts || [])
         setCategories(catData.categories || [])
         setMappings(mapData.mappings || [])
         if (fxData?.rates) setFxRates(fxData.rates)
+        setHints(hintData.hints || [])
         // No default account — it's detected from the file (or picked on drop).
       } catch {
         // Leave lists empty; the UI will prompt to check the connection.
       }
     }
     load()
-  }, [])
+    loadDocuments()
+  }, [loadDocuments])
 
   const account = accounts.find((a) => a.id === selectedAccountId)
   const expenseCategories = categories.filter((c) => c.type === 'expense')
@@ -296,7 +357,7 @@ export default function ImportPage() {
     (text: string, fileName: string, forced?: AccountOption) => {
       setParseError(null)
 
-      const detected = forced ? null : detectAccount(fileName, text.slice(0, 4000), accounts)
+      const detected = forced ? null : detectAccount(fileName, text.slice(0, 4000), accounts, hints)
       const activeAccount = forced ?? detected?.account
       setAutoDetected(!!detected && !forced)
 
@@ -399,7 +460,7 @@ export default function ImportPage() {
         duplicates: null,
       })
     },
-    [accounts, mappings, fxRates],
+    [accounts, mappings, fxRates, hints],
   )
 
   const handleFileSelect = useCallback(
@@ -409,9 +470,40 @@ export default function ImportPage() {
       setSaveResult(null)
       setAutoDetected(false)
 
+      // Non-CSV (PDF, image, xlsx…): can't parse transactions, so just archive
+      // it to the statement library.
       if (!selectedFile.name.toLowerCase().endsWith('.csv')) {
         setRawText(null)
         setParsedTransactions([])
+        setIsProcessing(true)
+        try {
+          const buf = await selectedFile.arrayBuffer()
+          let bin = ''
+          const bytes = new Uint8Array(buf)
+          const step = 0x8000
+          for (let i = 0; i < bytes.length; i += step) {
+            bin += String.fromCharCode(...bytes.subarray(i, i + step))
+          }
+          const res = await fetch('/api/documents', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              accountId: null,
+              fileName: selectedFile.name,
+              mimeType: selectedFile.type || 'application/octet-stream',
+              contentBase64: btoa(bin),
+              source: 'upload',
+            }),
+          })
+          if (!res.ok) throw new Error('save failed')
+          setSaveResult(`Saved ${selectedFile.name} to your statements.`)
+          await loadDocuments()
+        } catch {
+          setParseError('Could not save that file — it may be over the 4 MB limit.')
+        } finally {
+          setIsProcessing(false)
+          setFile(null)
+        }
         return
       }
 
@@ -427,16 +519,32 @@ export default function ImportPage() {
         setIsProcessing(false)
       }
     },
-    [processStatement],
+    [processStatement, loadDocuments],
   )
 
-  // Manual override: re-parse the same file against the chosen account.
+  // Manual override: re-parse the same file against the chosen account, and
+  // remember this account's fingerprint so its format auto-detects next time.
   const handleAccountChange = useCallback(
     (accountId: string) => {
       const acc = accounts.find((a) => a.id === accountId)
       setSelectedAccountId(accountId)
       setChangingAccount(false)
-      if (rawText && acc) processStatement(rawText, rawFileName, acc)
+      if (rawText && acc) {
+        processStatement(rawText, rawFileName, acc)
+        fetch('/api/account-hints', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId,
+            headerSignature: headerSignature(rawText),
+            fileName: rawFileName,
+          }),
+        })
+          .then(() => fetch('/api/account-hints'))
+          .then((r) => r.json())
+          .then((d) => setHints(d.hints || []))
+          .catch(() => {})
+      }
     },
     [accounts, rawText, rawFileName, processStatement],
   )
@@ -514,6 +622,27 @@ export default function ImportPage() {
       setRecon((prev) =>
         prev ? { ...prev, imported: data.inserted, duplicates: data.skipped ?? 0 } : prev,
       )
+
+      // Archive the raw statement to the library, tagged with its format.
+      if (rawText) {
+        fetch('/api/documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId: account.id,
+            fileName: rawFileName || 'statement.csv',
+            mimeType: 'text/csv',
+            contentBase64: btoa(unescape(encodeURIComponent(rawText))),
+            source: 'import',
+            formatSignature: headerSignature(rawText),
+            importedCount: data.inserted,
+            dataRows: recon?.dataRows ?? null,
+          }),
+        })
+          .then(() => loadDocuments())
+          .catch(() => {})
+      }
+
       setParsedTransactions([])
       setFile(null)
     } catch {
@@ -538,6 +667,27 @@ export default function ImportPage() {
     setSelectedAccountId('')
   }
 
+  const handleDeleteDoc = async (id: string, name: string) => {
+    if (!confirm(`Delete ${name}? This cannot be undone.`)) return
+    await fetch(`/api/documents/${id}`, { method: 'DELETE' })
+    await loadDocuments()
+  }
+
+  const fmtBytes = (b: number) =>
+    b >= 1024 * 1024 ? `${(b / (1024 * 1024)).toFixed(1)} MB` : b >= 1024 ? `${(b / 1024).toFixed(0)} KB` : `${b} B`
+  const fmtDocDate = (d: string) =>
+    new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+
+  // Group archived statements per account for browsing.
+  const docsByAccount = Array.from(
+    documents.reduce((m, d) => {
+      const key = d.accountName ?? 'Unassigned'
+      if (!m.has(key)) m.set(key, [])
+      m.get(key)!.push(d)
+      return m
+    }, new Map<string, StatementDoc[]>()),
+  )
+
   // Summary stats
   const totalTransactions = parsedTransactions.length
   const autoCategorised = parsedTransactions.filter((tx) => tx.status === 'categorised').length
@@ -550,8 +700,11 @@ export default function ImportPage() {
       <div className="mx-auto max-w-7xl px-6 py-10">
         {/* Header */}
         <div className="mb-8">
-          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Import</h1>
-          <p className="mt-1 text-sm text-gray-500">Import Bank Statements</p>
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Document Hub</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            Drop a statement to import it and file it — CSVs are parsed into transactions, everything
+            is archived below
+          </p>
         </div>
 
         {/* File upload */}
@@ -940,6 +1093,98 @@ export default function ImportPage() {
             </button>
           </div>
         )}
+
+        {/* ------------------------------------------------------------------ */}
+        {/* Saved statements — the archive + per-bank format history           */}
+        {/* ------------------------------------------------------------------ */}
+        <div className="mt-12">
+          <h2 className="mb-1 text-lg font-semibold text-gray-900">Saved statements</h2>
+          <p className="mb-4 text-sm text-gray-500">
+            Every imported or uploaded statement is kept here, grouped by account, with the format it
+            came in.
+          </p>
+
+          {docsByAccount.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center">
+              <FileText className="mx-auto h-7 w-7 text-gray-300" />
+              <p className="mt-2 text-sm text-gray-500">
+                No statements saved yet — import one above and it&apos;ll be filed here.
+              </p>
+            </div>
+          ) : (
+            docsByAccount.map(([accountName, docs]) => (
+              <div
+                key={accountName}
+                className="mb-5 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"
+              >
+                <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50/60 px-5 py-3">
+                  <h3 className="text-sm font-semibold text-gray-900">{accountName}</h3>
+                  <span className="text-xs text-gray-400">
+                    {docs.length} statement{docs.length !== 1 ? 's' : ''}
+                  </span>
+                </div>
+                <table className="w-full text-sm">
+                  <tbody className="divide-y divide-gray-100">
+                    {docs.map((d) => (
+                      <tr key={d.id} className="hover:bg-gray-50/50">
+                        <td className="w-8 py-3 pl-5">
+                          <FileText className="h-4 w-4 text-gray-300" />
+                        </td>
+                        <td className="px-3 py-3">
+                          <p className="font-medium text-gray-900">{d.fileName}</p>
+                          <p className="text-xs text-gray-400">
+                            {d.source === 'import' ? 'Imported' : 'Uploaded'} ·{' '}
+                            {fmtDocDate(d.uploadedAt)} · {fmtBytes(d.sizeBytes)}
+                            {d.importedCount != null ? ` · ${d.importedCount} transactions` : ''}
+                          </p>
+                        </td>
+                        <td className="px-3 py-3">
+                          {d.formatSignature ? (
+                            <span
+                              className="inline-block max-w-[220px] truncate rounded bg-gray-100 px-2 py-0.5 font-mono text-[11px] text-gray-500"
+                              title={d.formatSignature}
+                            >
+                              {d.formatSignature.split('|').length} cols: {d.formatSignature.replace(/\|/g, ', ')}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-300">—</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-3 text-right">
+                          <div className="flex items-center justify-end gap-1 pr-4">
+                            <a
+                              href={`/api/documents/${d.id}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              title="View"
+                              className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
+                            >
+                              <Eye className="h-4 w-4" />
+                            </a>
+                            <a
+                              href={`/api/documents/${d.id}?download=1`}
+                              title="Download"
+                              className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
+                            >
+                              <Download className="h-4 w-4" />
+                            </a>
+                            <button
+                              onClick={() => handleDeleteDoc(d.id, d.fileName)}
+                              title="Delete"
+                              className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ))
+          )}
+        </div>
       </div>
     </div>
   )

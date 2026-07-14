@@ -27,11 +27,8 @@ interface MonthRow {
   forecastExpense: number | null
 }
 
-type Holder = 'all' | 'anjan' | 'kate' | 'joint'
-
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const YEARS = [2024, 2025, 2026, 2027]
-const HOLDERS: Holder[] = ['all', 'anjan', 'kate', 'joint']
 
 function fmtUsd(n: number): string {
   const abs = Math.abs(Math.round(n)).toLocaleString('en-US')
@@ -50,7 +47,6 @@ interface Edit {
 export default function AnnualPage() {
   const now = new Date()
   const [year, setYear] = useState<number>(now.getFullYear())
-  const [holder, setHolder] = useState<Holder>('all')
   const [months, setMonths] = useState<MonthRow[]>([])
   const [edits, setEdits] = useState<Record<number, Edit>>({})
   const [isLoading, setIsLoading] = useState(true)
@@ -59,7 +55,6 @@ export default function AnnualPage() {
   const loadForecast = useCallback(async () => {
     setIsLoading(true)
     const params = new URLSearchParams({ year: String(year) })
-    if (holder !== 'all') params.set('holder', holder)
     try {
       const res = await fetch(`/api/forecast?${params.toString()}`)
       const data = await res.json()
@@ -91,7 +86,7 @@ export default function AnnualPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [year, holder])
+  }, [year])
 
   useEffect(() => {
     loadForecast()
@@ -186,22 +181,6 @@ export default function AnnualPage() {
                 </option>
               ))}
             </select>
-          </div>
-
-          <div className="flex gap-2">
-            {HOLDERS.map((h) => (
-              <button
-                key={h}
-                onClick={() => setHolder(h)}
-                className={`rounded-full px-4 py-1.5 text-sm font-medium capitalize transition-colors ${
-                  holder === h
-                    ? 'bg-gray-900 text-white'
-                    : 'border border-gray-300 bg-white text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                {h === 'all' ? 'All' : h}
-              </button>
-            ))}
           </div>
 
           <button
