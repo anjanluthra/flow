@@ -364,11 +364,16 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
 // ---------------------------------------------------------------------------
 
 export async function getForecasts(year: number) {
-  return query(
-    `SELECT year, month, forecast_income_usd, forecast_expense_usd, notes
-     FROM forecasts WHERE year = $1 ORDER BY month`,
-    [year],
-  )
+  try {
+    return await query(
+      `SELECT year, month, forecast_income_usd, forecast_expense_usd, notes
+       FROM forecasts WHERE year = $1 ORDER BY month`,
+      [year],
+    )
+  } catch {
+    // The forecasts table is optional; treat a missing table as "no forecasts".
+    return { rows: [] as Record<string, unknown>[] } as Awaited<ReturnType<typeof query>>
+  }
 }
 
 export async function upsertForecast(

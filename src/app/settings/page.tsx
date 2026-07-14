@@ -209,26 +209,22 @@ export default function SettingsPage() {
   async function redateBalances() {
     if (
       !confirm(
-        'Date the current balance sheet (your detailed account table) to 1 June 2026, so it becomes the latest snapshot everywhere? Historic graph markers are left untouched.',
+        'Save your current balance sheet as the 1 June 2026 snapshot? This creates real, editable account balances (the latest snapshot everywhere), sets Corporate Cash Balance to the UAE, and adds your Barclaycard so its statements can be filed. Safe to run again. Historic graph markers are left untouched.',
       )
     )
       return
     setRedateBusy(true)
     setMessage(null)
     try {
-      const res = await fetch('/api/admin/redate-balances', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ to: '2026-06-01' }),
-      })
+      const res = await fetch('/api/admin/seed-current', { method: 'POST' })
       const data = await res.json()
       setMessage(
         res.ok
-          ? { kind: 'ok', text: `Current balances dated to 1 Jun 2026 (moved ${data.moved} accounts).` }
-          : { kind: 'err', text: data.error || 'Failed to re-date balances.' },
+          ? { kind: 'ok', text: `Saved current balance sheet as 1 Jun 2026 (${data.accounts} accounts).` }
+          : { kind: 'err', text: data.error || 'Failed to save current balance sheet.' },
       )
     } catch {
-      setMessage({ kind: 'err', text: 'Failed to re-date balances.' })
+      setMessage({ kind: 'err', text: 'Failed to save current balance sheet.' })
     } finally {
       setRedateBusy(false)
     }
@@ -519,11 +515,11 @@ export default function SettingsPage() {
             </div>
             <div className="flex flex-col gap-4 border-t border-gray-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="text-sm font-medium text-gray-900">Date current balances to 1 Jun 2026</p>
+                <p className="text-sm font-medium text-gray-900">Save current balance sheet (1 Jun 2026)</p>
                 <p className="mt-0.5 text-sm text-gray-500">
-                  Your detailed account table holds the current numbers (as of 1 June 2026). This
-                  sets its date so it shows as the latest snapshot on Home and Net Worth. Run once;
-                  update monthly afterwards with “Update Balances”.
+                  Writes your current account balances as the latest snapshot (as of 1 June 2026),
+                  sets Corporate Cash Balance to the UAE, and adds your Barclaycard so its statements
+                  can be filed. Run once; update monthly afterwards with “Update Balances”.
                 </p>
               </div>
               <button
@@ -532,7 +528,7 @@ export default function SettingsPage() {
                 className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
               >
                 <Calendar className="h-4 w-4" />
-                {redateBusy ? 'Updating…' : 'Set date to 1 Jun 2026'}
+                {redateBusy ? 'Saving…' : 'Save 1 Jun 2026 snapshot'}
               </button>
             </div>
           </div>

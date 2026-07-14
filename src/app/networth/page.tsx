@@ -1189,6 +1189,50 @@ export default function NetWorthPage() {
         </div>
 
         {/* ---------------------------------------------------------------- */}
+        {/* Net Worth History Line Chart                                      */}
+        {/* ---------------------------------------------------------------- */}
+        <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+          <h2 className="mb-4 text-base font-semibold text-gray-900">
+            Net Worth History
+            {snapshotDates.length >= 2 && (
+              <span className="ml-2 text-sm font-normal text-gray-400">
+                from saved snapshots
+              </span>
+            )}
+          </h2>
+          <ResponsiveContainer width="100%" height={320}>
+            <LineChart
+              data={netWorthHistory}
+              margin={{ top: 5, right: 20, left: 20, bottom: 5 }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis
+                dataKey="month"
+                tick={{ fontSize: 12, fill: '#6B7280' }}
+                axisLine={false}
+                tickLine={false}
+              />
+              <YAxis
+                tickFormatter={(v: number) => fmtCompact(v)}
+                tick={{ fontSize: 12, fill: '#6B7280' }}
+                axisLine={false}
+                tickLine={false}
+                domain={['auto', 'auto']}
+              />
+              <Tooltip content={<LineTooltip />} />
+              <Line
+                type="monotone"
+                dataKey="value"
+                stroke="#3B82F6"
+                strokeWidth={2.5}
+                dot={{ fill: '#3B82F6', r: 4, strokeWidth: 2, stroke: '#fff' }}
+                activeDot={{ r: 6, fill: '#3B82F6', stroke: '#fff', strokeWidth: 2 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        {/* ---------------------------------------------------------------- */}
         {/* Account Table                                                    */}
         {/* ---------------------------------------------------------------- */}
         <div className="mb-8 rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -1371,98 +1415,6 @@ export default function NetWorthPage() {
           </div>
         </div>
 
-        {/* ---------------------------------------------------------------- */}
-        {/* Net Worth History Line Chart                                      */}
-        {/* ---------------------------------------------------------------- */}
-        <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <h2 className="mb-4 text-base font-semibold text-gray-900">
-            Net Worth History
-            {snapshotDates.length >= 2 && (
-              <span className="ml-2 text-sm font-normal text-gray-400">
-                from saved snapshots
-              </span>
-            )}
-          </h2>
-          <ResponsiveContainer width="100%" height={320}>
-            <LineChart
-              data={netWorthHistory}
-              margin={{ top: 5, right: 20, left: 20, bottom: 5 }}
-            >
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis
-                dataKey="month"
-                tick={{ fontSize: 12, fill: '#6B7280' }}
-                axisLine={false}
-                tickLine={false}
-              />
-              <YAxis
-                tickFormatter={(v: number) => fmtCompact(v)}
-                tick={{ fontSize: 12, fill: '#6B7280' }}
-                axisLine={false}
-                tickLine={false}
-                domain={['auto', 'auto']}
-              />
-              <Tooltip content={<LineTooltip />} />
-              <Line
-                type="monotone"
-                dataKey="value"
-                stroke="#3B82F6"
-                strokeWidth={2.5}
-                dot={{
-                  fill: '#3B82F6',
-                  r: 4,
-                  strokeWidth: 2,
-                  stroke: '#fff',
-                }}
-                activeDot={{
-                  r: 6,
-                  fill: '#3B82F6',
-                  stroke: '#fff',
-                  strokeWidth: 2,
-                }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* ---------------------------------------------------------------- */}
-        {/* Breakdown of the selected snapshot (imported historical markers)  */}
-        {/* ---------------------------------------------------------------- */}
-        {(() => {
-          const snap = snapshotDates.find((s) => s.date === selectedDate)
-          if (!snap?.lines?.length) return null
-          const groups: Record<string, { label: string; amountUsd: number }[]> = {}
-          for (const l of snap.lines) (groups[l.group] ??= []).push(l)
-          return (
-            <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-              <h2 className="text-base font-semibold text-gray-900">Breakdown</h2>
-              <p className="mb-4 text-sm text-gray-400">
-                as of {formatDateLabel(snap.date)} · {fmtView(snap.totalNetWorth)} total
-              </p>
-              <div className="grid gap-6 sm:grid-cols-2">
-                {Object.entries(groups).map(([g, items]) => {
-                  const subtotal = items.reduce((s, i) => s + i.amountUsd, 0)
-                  return (
-                    <div key={g}>
-                      <div className="mb-2 flex items-center justify-between border-b border-gray-100 pb-1">
-                        <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">{g}</span>
-                        <span className="text-sm font-semibold text-gray-900">{fmtView(subtotal)}</span>
-                      </div>
-                      <div className="space-y-1.5">
-                        {items.map((i) => (
-                          <div key={i.label} className="flex items-center justify-between text-sm">
-                            <span className="text-gray-600">{i.label}</span>
-                            <span className="tabular-nums text-gray-800">{fmtView(i.amountUsd)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          )
-        })()}
       </div>
     </div>
   )
