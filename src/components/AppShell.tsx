@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import { Menu, Waves } from 'lucide-react'
 import { Sidebar } from '@/components/ui/Sidebar'
@@ -14,6 +14,23 @@ function isBareRoute(pathname: string): boolean {
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
+
+  // Restore the persisted collapse preference.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    setCollapsed(window.localStorage.getItem('flow.sidebarCollapsed') === '1')
+  }, [])
+
+  const toggleCollapse = () => {
+    setCollapsed((v) => {
+      const next = !v
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('flow.sidebarCollapsed', next ? '1' : '0')
+      }
+      return next
+    })
+  }
 
   if (isBareRoute(pathname)) {
     return <>{children}</>
@@ -21,9 +38,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   return (
     <div>
-      <Sidebar open={menuOpen} onClose={() => setMenuOpen(false)} />
+      <Sidebar
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        collapsed={collapsed}
+        onToggleCollapse={toggleCollapse}
+      />
 
-      <div className="md:ml-64">
+      <div className={`transition-[margin] duration-200 ${collapsed ? 'md:ml-16' : 'md:ml-64'}`}>
         {/* Mobile top bar */}
         <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-gray-200 bg-white/90 px-4 backdrop-blur md:hidden">
           <button

@@ -110,11 +110,16 @@ export default function SettingsPage() {
         setMessage({ kind: 'err', text: data.error || 'Failed to load history.' })
         return
       }
+      const bits: string[] = []
+      if (data.unresolved) {
+        const names = [...(data.missingAccounts || []), ...(data.missingCategories || [])]
+        bits.push(
+          `${data.unresolved} could not be matched${names.length ? ` (missing: ${names.join(', ')})` : ''}`,
+        )
+      }
       setMessage({
-        kind: 'ok',
-        text: `2024 import complete — ${data.inserted} added, ${data.skipped} already present${
-          data.unresolved ? `, ${data.unresolved} could not be matched` : ''
-        }.`,
+        kind: data.unresolved ? 'err' : 'ok',
+        text: `2024 import complete — ${data.inserted} added${bits.length ? `. ${bits.join('; ')}` : '.'}`,
       })
     } catch {
       setMessage({ kind: 'err', text: 'Failed to load history.' })

@@ -14,6 +14,8 @@ import {
   Settings,
   Repeat,
   X,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 
 interface NavItem {
@@ -57,16 +59,25 @@ export const navSections: NavSection[] = [
   },
 ];
 
-function NavList({ onNavigate }: { onNavigate?: () => void }) {
+function NavList({
+  onNavigate,
+  collapsed = false,
+}: {
+  onNavigate?: () => void;
+  collapsed?: boolean;
+}) {
   const pathname = usePathname();
   return (
     <nav className="mt-2 flex flex-1 flex-col gap-1 overflow-y-auto px-3 pb-4">
       {navSections.map((section, si) => (
         <div key={si} className={si > 0 ? "mt-4" : undefined}>
-          {section.label && (
+          {section.label && !collapsed && (
             <p className="mb-1 px-3 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
               {section.label}
             </p>
+          )}
+          {section.label && collapsed && si > 0 && (
+            <div className="mx-2 mb-2 mt-1 border-t border-gray-100" />
           )}
           <div className="flex flex-col gap-1">
             {section.items.map(({ href, label, icon: Icon }) => {
@@ -77,19 +88,22 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
                   key={href}
                   href={href}
                   onClick={onNavigate}
-                  className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-default ${
+                  title={collapsed ? label : undefined}
+                  className={`flex items-center gap-3 rounded-lg py-2.5 text-sm font-medium transition-default ${
+                    collapsed ? "justify-center px-0" : "px-3"
+                  } ${
                     isActive
                       ? "bg-blue-50 text-blue-700"
                       : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
                   }`}
                 >
                   <Icon
-                    className={`h-5 w-5 ${
+                    className={`h-5 w-5 shrink-0 ${
                       isActive ? "text-blue-600" : "text-slate-400"
                     }`}
                     strokeWidth={isActive ? 2 : 1.75}
                   />
-                  {label}
+                  {!collapsed && label}
                 </Link>
               );
             })}
@@ -100,14 +114,26 @@ function NavList({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-function Brand({ onClose }: { onClose?: () => void }) {
+function Brand({
+  onClose,
+  collapsed = false,
+}: {
+  onClose?: () => void;
+  collapsed?: boolean;
+}) {
   return (
-    <div className="flex h-16 items-center justify-between px-6">
+    <div
+      className={`flex h-16 items-center ${
+        collapsed ? "justify-center px-0" : "justify-between px-6"
+      }`}
+    >
       <div className="flex items-center gap-2.5">
-        <Waves className="h-6 w-6 text-accent" strokeWidth={2.25} />
-        <span className="text-2xl font-bold tracking-tight text-accent">Flow</span>
+        <Waves className="h-6 w-6 shrink-0 text-accent" strokeWidth={2.25} />
+        {!collapsed && (
+          <span className="text-2xl font-bold tracking-tight text-accent">Flow</span>
+        )}
       </div>
-      {onClose && (
+      {onClose && !collapsed && (
         <button
           onClick={onClose}
           aria-label="Close menu"
@@ -123,22 +149,46 @@ function Brand({ onClose }: { onClose?: () => void }) {
 export function Sidebar({
   open,
   onClose,
+  collapsed,
+  onToggleCollapse,
 }: {
   open: boolean;
   onClose: () => void;
+  collapsed: boolean;
+  onToggleCollapse: () => void;
 }) {
   return (
     <>
       {/* Desktop rail */}
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 flex-col border-r border-gray-200 bg-white md:flex">
-        <Brand />
-        <NavList />
-        <div className="border-t border-gray-100 px-6 py-4">
-          <p className="text-xs text-text-muted">Personal Finance</p>
+      <aside
+        className={`fixed inset-y-0 left-0 z-30 hidden flex-col border-r border-gray-200 bg-white transition-[width] duration-200 md:flex ${
+          collapsed ? "w-16" : "w-64"
+        }`}
+      >
+        <Brand collapsed={collapsed} />
+        <NavList collapsed={collapsed} />
+        <div className="border-t border-gray-100 p-3">
+          <button
+            onClick={onToggleCollapse}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={`flex w-full items-center gap-2 rounded-lg py-2 text-xs font-medium text-slate-500 hover:bg-slate-50 hover:text-slate-700 ${
+              collapsed ? "justify-center px-0" : "px-3"
+            }`}
+          >
+            {collapsed ? (
+              <PanelLeftOpen className="h-5 w-5" />
+            ) : (
+              <>
+                <PanelLeftClose className="h-5 w-5" />
+                Collapse
+              </>
+            )}
+          </button>
         </div>
       </aside>
 
-      {/* Mobile drawer */}
+      {/* Mobile drawer (always full width) */}
       <div
         className={`fixed inset-0 z-40 bg-black/40 transition-opacity md:hidden ${
           open ? "opacity-100" : "pointer-events-none opacity-0"

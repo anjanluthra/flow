@@ -29,10 +29,20 @@ interface HistoryRow {
   notes: string
 }
 
-// Accounts referenced by the 2024 data that aren't in the base seed.
+// Every account the 2024 data references, with sensible defaults. Each is
+// created only if an account with that exact name doesn't already exist, so
+// this never disturbs the user's existing accounts — it just guarantees the
+// import can resolve all of them.
 const EXTRA_ACCOUNTS: Array<[string, string, string, string, string, string, string, string]> = [
+  ['FAB Current Account', 'FAB', 'AE', 'AED', 'checking', 'joint', 'cash', 't1_instant'],
+  ['FAB iSavings', 'FAB', 'AE', 'AED', 'savings', 'joint', 'cash', 't2_days'],
+  ['Santander/NS&I', 'Santander', 'GB', 'GBP', 'savings', 'anjan', 'cash', 't2_days'],
+  ['Revolut', 'Revolut', 'GB', 'GBP', 'checking', 'anjan', 'cash', 't1_instant'],
+  ['Monzo Joint', 'Monzo', 'GB', 'GBP', 'checking', 'joint', 'cash', 't1_instant'],
+  ['Barclaycard Credit Card', 'Barclays', 'GB', 'GBP', 'credit', 'anjan', 'debt', 't1_instant'],
   ['Kroo', 'Kroo', 'GB', 'GBP', 'checking', 'anjan', 'cash', 't1_instant'],
   ['Moneybox', 'Moneybox', 'GB', 'GBP', 'savings', 'anjan', 'cash', 't2_days'],
+  ['Wio Personal (Anjan)', 'Wio', 'AE', 'AED', 'checking', 'anjan', 'cash', 't1_instant'],
 ]
 
 const PALETTE = [
@@ -99,11 +109,15 @@ export async function POST() {
 
     // 4. Resolve rows to NewTransaction, skipping anything unresolvable.
     const unresolved: string[] = []
+    const missingAccounts = new Set<string>()
+    const missingCategories = new Set<string>()
     const toInsert: NewTransaction[] = []
     for (const r of rows) {
       const accountId = accById.get(r.accountName)
       const categoryId = catById.get(r.categoryName)
       if (!accountId || !categoryId) {
+        if (!accountId) missingAccounts.add(r.accountName)
+        if (!categoryId) missingCategories.add(r.categoryName)
         unresolved.push(`${r.date} ${r.description} (${r.accountName}/${r.categoryName})`)
         continue
       }
@@ -147,7 +161,8 @@ export async function POST() {
       inserted,
       categories: catType.size,
       unresolved: unresolved.length,
-      unresolvedSample: unresolved.slice(0, 10),
+      missingAccounts: Array.from(missingAccounts),
+      missingCategories: Array.from(missingCategories),
     })
   } catch (error) {
     console.error('Failed to load history:', error)
