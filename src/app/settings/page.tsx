@@ -186,6 +186,25 @@ export default function SettingsPage() {
     }
   }
 
+  const [nwBusy, setNwBusy] = useState(false)
+  async function loadNetWorth() {
+    setNwBusy(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/admin/load-networth', { method: 'POST' })
+      const data = await res.json()
+      setMessage(
+        res.ok
+          ? { kind: 'ok', text: `Loaded ${data.upserted} historical net-worth markers.` }
+          : { kind: 'err', text: data.error || 'Failed to load net worth history.' },
+      )
+    } catch {
+      setMessage({ kind: 'err', text: 'Failed to load net worth history.' })
+    } finally {
+      setNwBusy(false)
+    }
+  }
+
   async function loadHistory() {
     if (
       !confirm(
@@ -450,6 +469,23 @@ export default function SettingsPage() {
               >
                 <Download className="h-4 w-4" />
                 {historyBusy ? 'Importing…' : 'Load 2024 history'}
+              </button>
+            </div>
+            <div className="flex flex-col gap-4 border-t border-gray-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-medium text-gray-900">Load net worth history</p>
+                <p className="mt-0.5 text-sm text-gray-500">
+                  Seeds 14 approximate net-worth markers from June 2024 to Jan 2026 so the
+                  progression chart has your history. Safe to run again.
+                </p>
+              </div>
+              <button
+                onClick={loadNetWorth}
+                disabled={nwBusy}
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+              >
+                <Download className="h-4 w-4" />
+                {nwBusy ? 'Importing…' : 'Load net worth history'}
               </button>
             </div>
           </div>

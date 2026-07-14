@@ -47,12 +47,37 @@ export async function GET() {
       ORDER BY bs.snapshot_date DESC
     `)
 
-    const snapshots = result.rows.map((row) => ({
-      date: row.snapshot_date,
-      totalNetWorth: parseFloat(row.total_net_worth),
-      personalNetWorth: parseFloat(row.personal_net_worth),
-      corporateCash: parseFloat(row.corporate_cash),
-    }))
+    const byDate = new Map<string, { date: string; totalNetWorth: number; personalNetWorth: number; corporateCash: number }>()
+    for (const row of result.rows) {
+      const date = String(row.snapshot_date)
+      byDate.set(date, {
+        date: row.snapshot_date,
+        totalNetWorth: parseFloat(row.total_net_worth),
+        personalNetWorth: parseFloat(row.personal_net_worth),
+        corporateCash: parseFloat(row.corporate_cash),
+      })
+    }
+
+    // Merge in manually-logged net-worth totals (e.g. historical points) for
+    // any date not already covered by per-account balance snapshots.
+    try {
+      const nws = await query(`SELECT snapshot_date, total_net_worth_usd, data FROM net_worth_snapshots`)
+      for (const row of nws.rows) {
+        const date = String(row.snapshot_date)
+        if (byDate.has(date)) continue
+        const data = typeof row.data === 'string' ? JSON.parse(row.data || '{}') : row.data || {}
+        byDate.set(date, {
+          date: row.snapshot_date,
+          totalNetWorth: parseFloat(row.total_net_worth_usd),
+          personalNetWorth: Number(data.personalNetWorth ?? 0),
+          corporateCash: Number(data.corporateCash ?? 0),
+        })
+      }
+    } catch {
+      /* net_worth_snapshots may not exist yet */
+    }
+
+    const snapshots = Array.from(byDate.values()).sort((a, b) => String(b.date).localeCompare(String(a.date)))
 
     return NextResponse.json({ snapshots })
   } catch (error) {
