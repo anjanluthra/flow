@@ -5,6 +5,8 @@ import { Upload, FileText, X } from 'lucide-react'
 
 interface FileUploadProps {
   onFileSelect: (file: File) => void
+  onFilesSelect?: (files: File[]) => void
+  multiple?: boolean
   accept?: string
   label?: string
   sublabel?: string
@@ -13,6 +15,8 @@ interface FileUploadProps {
 
 export function FileUpload({
   onFileSelect,
+  onFilesSelect,
+  multiple = false,
   accept,
   label = 'Drop your bank statement here',
   sublabel = 'CSV or PDF files accepted',
@@ -60,21 +64,27 @@ export function FileUpload({
       dragCounterRef.current = 0
 
       const files = e.dataTransfer.files
-      if (files.length > 0) {
+      if (files.length === 0) return
+      if (multiple && onFilesSelect && files.length > 1) {
+        onFilesSelect(Array.from(files))
+      } else {
         handleFile(files[0])
       }
     },
-    [handleFile]
+    [handleFile, multiple, onFilesSelect]
   )
 
   const handleChange = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files
-      if (files && files.length > 0) {
+      if (!files || files.length === 0) return
+      if (multiple && onFilesSelect && files.length > 1) {
+        onFilesSelect(Array.from(files))
+      } else {
         handleFile(files[0])
       }
     },
-    [handleFile]
+    [handleFile, multiple, onFilesSelect]
   )
 
   const handleClick = () => {
@@ -112,6 +122,7 @@ export function FileUpload({
         ref={inputRef}
         type="file"
         accept={accept}
+        multiple={multiple}
         onChange={handleChange}
         className="hidden"
       />

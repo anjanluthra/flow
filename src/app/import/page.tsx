@@ -269,6 +269,19 @@ function normalizeDate(raw: string): string {
   return s
 }
 
+// Best-effort year from a statement filename, e.g. "…23-JAN-26…" -> 2026,
+// "…2024…" -> 2024. Used to file bulk uploads by year.
+function yearFromFileName(name: string): number | null {
+  const mon = name.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[-_ ]?(\d{2})\b/i)
+  if (mon) {
+    const y = parseInt(mon[2], 10)
+    if (y >= 15 && y <= 45) return 2000 + y
+  }
+  const m4 = name.match(/20(\d{2})/)
+  if (m4) return parseInt(`20${m4[1]}`, 10)
+  return null
+}
+
 function formatLocal(amount: number, currency: string): string {
   const symbol =
     currency === 'USD' ? '$' : currency === 'GBP' ? '£' : currency === 'AED' ? 'AED ' : `${currency} `
@@ -312,6 +325,8 @@ export default function ImportPage() {
   >(null)
   const [pdfDoc, setPdfDoc] = useState<{ base64: string; fileName: string; format: string } | null>(null)
   const [viewer, setViewer] = useState<DocViewerTarget | null>(null)
+  const [bulk, setBulk] = useState<{ done: number; total: number; results: string[] } | null>(null)
+  const [archiveFilter, setArchiveFilter] = useState<{ account: string; year: string } | null>(null)
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -812,20 +827,94 @@ export default function ImportPage() {
     await loadDocuments()
   }
 
+  // Bulk archive: file many statements at once, auto-filing each by account
+  // (detected) and year (from the filename). No per-file review — just saved.
+  const handleBulkFiles = useCallback(
+    async (files: File[]) => {
+      setSaveResult(null)
+      setParseError(null)
+      setBulk({ done: 0, total: files.length, results: [] })
+      for (const f of files) {
+        try {
+          const bytes = new Uint8Array(await f.arrayBuffer())
+          let bin = ''
+          const step = 0x8000
+          for (let i = 0; i < bytes.length; i += step) bin += String.fromCharCode(...bytes.subarray(i, i + step))
+          let sample = ''
+          if (f.name.toLowerCase().endsWith('.csv')) {
+            try {
+              sample = (await f.text()).slice(0, 4000)
+            } catch {
+              /* ignore */
+            }
+          }
+          const detected = detectAccount(f.name, sample, accounts, hints)
+          const year = yearFromFileName(f.name)
+          const res = await fetch('/api/documents', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              accountId: detected?.account?.id ?? null,
+              fileName: f.name,
+              mimeType: f.type || 'application/octet-stream',
+              contentBase64: btoa(bin),
+              source: 'upload',
+              statementDate: year ? `${year}-01-01` : null,
+            }),
+          })
+          const label = `${f.name} → ${detected?.account?.name ?? 'Unassigned'}${year ? ` · ${year}` : ''}${res.ok ? '' : ' (failed)'}`
+          setBulk((p) => (p ? { ...p, done: p.done + 1, results: [...p.results, label] } : p))
+        } catch {
+          setBulk((p) => (p ? { ...p, done: p.done + 1, results: [...p.results, `${f.name} → failed`] } : p))
+        }
+      }
+      await loadDocuments()
+    },
+    [accounts, hints, loadDocuments],
+  )
+
+  // Reassign an archived statement's account or year.
+  const patchDoc = async (id: string, patch: { accountId?: string | null; statementDate?: string | null }) => {
+    await fetch(`/api/documents/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    })
+    await loadDocuments()
+  }
+
   const fmtBytes = (b: number) =>
     b >= 1024 * 1024 ? `${(b / (1024 * 1024)).toFixed(1)} MB` : b >= 1024 ? `${(b / 1024).toFixed(0)} KB` : `${b} B`
   const fmtDocDate = (d: string) =>
     new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
-  // Group archived statements per account for browsing.
-  const docsByAccount = Array.from(
-    documents.reduce((m, d) => {
-      const key = d.accountName ?? 'Unassigned'
-      if (!m.has(key)) m.set(key, [])
-      m.get(key)!.push(d)
-      return m
-    }, new Map<string, StatementDoc[]>()),
-  )
+  // Year for an archived doc: statement date if set, else guessed from filename.
+  const docYear = (d: StatementDoc): string => {
+    if (d.statementDate) return String(new Date(d.statementDate).getUTCFullYear())
+    const y = yearFromFileName(d.fileName)
+    return y ? String(y) : 'Unknown'
+  }
+  const docAccount = (d: StatementDoc): string => d.accountName ?? 'Unassigned'
+
+  // Build the year × account matrix.
+  const archiveYears = Array.from(new Set(documents.map(docYear))).sort((a, b) => b.localeCompare(a))
+  const archiveAccounts = Array.from(new Set(documents.map(docAccount))).sort()
+  const matrix = new Map<string, Map<string, number>>()
+  for (const d of documents) {
+    const a = docAccount(d)
+    const y = docYear(d)
+    if (!matrix.has(a)) matrix.set(a, new Map())
+    const row = matrix.get(a)!
+    row.set(y, (row.get(y) ?? 0) + 1)
+  }
+  const filteredDocs = documents
+    .filter((d) => {
+      if (!archiveFilter) return true
+      const okA = archiveFilter.account === 'all' || docAccount(d) === archiveFilter.account
+      const okY = archiveFilter.year === 'all' || docYear(d) === archiveFilter.year
+      return okA && okY
+    })
+    .sort((a, b) => (b.uploadedAt ?? '').localeCompare(a.uploadedAt ?? ''))
 
   // Summary stats
   const totalTransactions = parsedTransactions.length
@@ -850,11 +939,40 @@ export default function ImportPage() {
         <div className="mb-4">
           <FileUpload
             onFileSelect={handleFileSelect}
-            accept=".csv,.pdf"
-            label="Drop your bank statement here"
-            sublabel="CSV or PDF files accepted — the account is detected automatically"
+            onFilesSelect={handleBulkFiles}
+            multiple
+            accept=".csv,.pdf,.png,.jpg,.jpeg"
+            label="Drop a statement — or drag in many at once"
+            sublabel="One file opens for review & import · many files are filed by account and year"
           />
         </div>
+
+        {/* Bulk archive progress */}
+        {bulk && (
+          <div className="mb-8 rounded-xl border border-blue-200 bg-blue-50/60 p-4">
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-sm font-medium text-blue-800">
+                {bulk.done < bulk.total ? `Filing statements… ${bulk.done}/${bulk.total}` : `Filed ${bulk.total} statement${bulk.total !== 1 ? 's' : ''}`}
+              </p>
+              {bulk.done >= bulk.total && (
+                <button onClick={() => setBulk(null)} className="text-xs font-medium text-blue-600 hover:underline">
+                  Dismiss
+                </button>
+              )}
+            </div>
+            <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-blue-100">
+              <div className="h-full bg-blue-500 transition-all" style={{ width: `${bulk.total ? (bulk.done / bulk.total) * 100 : 0}%` }} />
+            </div>
+            <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs text-blue-900/80">
+              {bulk.results.map((r, i) => (
+                <li key={i}>{r}</li>
+              ))}
+            </ul>
+            {bulk.done >= bulk.total && bulk.results.some((r) => r.includes('Unassigned')) && (
+              <p className="mt-2 text-xs text-blue-700">Some couldn’t be matched to an account — set them in the grid below.</p>
+            )}
+          </div>
+        )}
 
         {/* Account — only shown once a statement is dropped. Detected
             automatically; the picker is tucked away unless it's needed. */}
@@ -1239,83 +1357,137 @@ export default function ImportPage() {
         <div className="mt-12">
           <h2 className="mb-1 text-lg font-semibold text-gray-900">Saved statements</h2>
           <p className="mb-4 text-sm text-gray-500">
-            Every imported or uploaded statement is kept here, grouped by account, with the format it
-            came in.
+            Every statement, filed by account and year. Click a number to see those statements.
           </p>
 
-          {docsByAccount.length === 0 ? (
+          {documents.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center">
               <FileText className="mx-auto h-7 w-7 text-gray-300" />
               <p className="mt-2 text-sm text-gray-500">
-                No statements saved yet — import one above and it&apos;ll be filed here.
+                No statements saved yet — drop one (or many) above and they&apos;ll be filed here.
               </p>
             </div>
           ) : (
-            docsByAccount.map(([accountName, docs]) => (
-              <div
-                key={accountName}
-                className="mb-5 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm"
-              >
-                <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50/60 px-5 py-3">
-                  <h3 className="text-sm font-semibold text-gray-900">{accountName}</h3>
-                  <span className="text-xs text-gray-400">
-                    {docs.length} statement{docs.length !== 1 ? 's' : ''}
-                  </span>
-                </div>
+            <>
+              {/* Year × account matrix */}
+              <div className="mb-6 overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-gray-200 bg-gray-50/60 text-left">
+                      <th className="px-4 py-3 font-medium text-gray-500">Account</th>
+                      {archiveYears.map((y) => (
+                        <th key={y} className="px-4 py-3 text-center font-medium text-gray-500">{y}</th>
+                      ))}
+                      <th className="px-4 py-3 text-center font-medium text-gray-500">All</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100">
+                    {archiveAccounts.map((a) => {
+                      const row = matrix.get(a)
+                      const rowTotal = archiveYears.reduce((s, y) => s + (row?.get(y) ?? 0), 0)
+                      return (
+                        <tr key={a} className="hover:bg-gray-50/40">
+                          <td className="whitespace-nowrap px-4 py-2.5 font-medium text-gray-900">{a}</td>
+                          {archiveYears.map((y) => {
+                            const n = row?.get(y) ?? 0
+                            const active = archiveFilter?.account === a && archiveFilter?.year === y
+                            return (
+                              <td key={y} className="px-4 py-2.5 text-center">
+                                {n > 0 ? (
+                                  <button
+                                    onClick={() => setArchiveFilter(active ? null : { account: a, year: y })}
+                                    className={`inline-flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs font-medium ${active ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`}
+                                  >
+                                    {n}
+                                  </button>
+                                ) : (
+                                  <span className="text-gray-300">·</span>
+                                )}
+                              </td>
+                            )
+                          })}
+                          <td className="px-4 py-2.5 text-center">
+                            <button
+                              onClick={() =>
+                                setArchiveFilter(
+                                  archiveFilter?.account === a && archiveFilter?.year === 'all' ? null : { account: a, year: 'all' },
+                                )
+                              }
+                              className="text-xs font-semibold text-gray-700 hover:underline"
+                            >
+                              {rowTotal}
+                            </button>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Filtered list */}
+              <div className="mb-3 flex items-center gap-2 text-sm">
+                <span className="text-gray-500">
+                  {archiveFilter
+                    ? `${archiveFilter.account}${archiveFilter.year !== 'all' ? ` · ${archiveFilter.year}` : ''}`
+                    : 'All statements'}
+                  {' '}({filteredDocs.length})
+                </span>
+                {archiveFilter && (
+                  <button onClick={() => setArchiveFilter(null)} className="text-xs font-medium text-blue-600 hover:underline">
+                    Clear filter
+                  </button>
+                )}
+              </div>
+              <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
                 <table className="w-full text-sm">
                   <tbody className="divide-y divide-gray-100">
-                    {docs.map((d) => (
+                    {filteredDocs.map((d) => (
                       <tr key={d.id} className="hover:bg-gray-50/50">
-                        <td className="w-8 py-3 pl-5">
-                          <FileText className="h-4 w-4 text-gray-300" />
-                        </td>
+                        <td className="w-8 py-3 pl-5"><FileText className="h-4 w-4 text-gray-300" /></td>
                         <td className="px-3 py-3">
                           <p className="font-medium text-gray-900">{d.fileName}</p>
                           <p className="text-xs text-gray-400">
-                            {d.source === 'import' ? 'Imported' : 'Uploaded'} ·{' '}
-                            {fmtDocDate(d.uploadedAt)} · {fmtBytes(d.sizeBytes)}
+                            {d.source === 'import' ? 'Imported' : 'Uploaded'} · {fmtDocDate(d.uploadedAt)} · {fmtBytes(d.sizeBytes)}
                             {d.importedCount != null ? ` · ${d.importedCount} transactions` : ''}
                           </p>
                         </td>
                         <td className="px-3 py-3">
-                          {d.formatSignature ? (
-                            <span
-                              className="inline-block max-w-[220px] truncate rounded bg-gray-100 px-2 py-0.5 font-mono text-[11px] text-gray-500"
-                              title={d.formatSignature}
-                            >
-                              {d.formatSignature.split('|').length} cols: {d.formatSignature.replace(/\|/g, ', ')}
-                            </span>
-                          ) : (
-                            <span className="text-xs text-gray-300">—</span>
-                          )}
+                          <select
+                            value={accounts.find((a) => a.name === d.accountName)?.id ?? ''}
+                            onChange={(e) => patchDoc(d.id, { accountId: e.target.value || null })}
+                            className="max-w-[150px] rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-400 focus:outline-none"
+                          >
+                            <option value="">Unassigned</option>
+                            {accounts.map((a) => (
+                              <option key={a.id} value={a.id}>{a.name}</option>
+                            ))}
+                          </select>
+                        </td>
+                        <td className="px-3 py-3">
+                          <select
+                            value={docYear(d)}
+                            onChange={(e) => patchDoc(d.id, { statementDate: `${e.target.value}-01-01` })}
+                            className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-400 focus:outline-none"
+                          >
+                            {['Unknown', '2023', '2024', '2025', '2026', '2027'].map((y) => (
+                              <option key={y} value={y} disabled={y === 'Unknown'}>{y}</option>
+                            ))}
+                          </select>
                         </td>
                         <td className="px-3 py-3 text-right">
                           <div className="flex items-center justify-end gap-1 pr-4">
                             <button
-                              onClick={() =>
-                                setViewer({
-                                  url: `/api/documents/${d.id}`,
-                                  downloadUrl: `/api/documents/${d.id}?download=1`,
-                                  fileName: d.fileName,
-                                })
-                              }
+                              onClick={() => setViewer({ url: `/api/documents/${d.id}`, downloadUrl: `/api/documents/${d.id}?download=1`, fileName: d.fileName })}
                               title="View"
                               className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
                             >
                               <Eye className="h-4 w-4" />
                             </button>
-                            <a
-                              href={`/api/documents/${d.id}?download=1`}
-                              title="Download"
-                              className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
-                            >
+                            <a href={`/api/documents/${d.id}?download=1`} title="Download" className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600">
                               <Download className="h-4 w-4" />
                             </a>
-                            <button
-                              onClick={() => handleDeleteDoc(d.id, d.fileName)}
-                              title="Delete"
-                              className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
-                            >
+                            <button onClick={() => handleDeleteDoc(d.id, d.fileName)} title="Delete" className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
                               <Trash2 className="h-4 w-4" />
                             </button>
                           </div>
@@ -1325,7 +1497,7 @@ export default function ImportPage() {
                   </tbody>
                 </table>
               </div>
-            ))
+            </>
           )}
         </div>
       </div>
