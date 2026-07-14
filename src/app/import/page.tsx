@@ -304,6 +304,12 @@ export default function ImportPage() {
   // Learned account fingerprints + the archived statement library.
   const [hints, setHints] = useState<AccountHint[]>([])
   const [documents, setDocuments] = useState<StatementDoc[]>([])
+  // PDF import: rows extracted by Claude, held so the account picker can rebuild,
+  // plus the raw PDF for archiving on confirm.
+  const [pendingPdfRows, setPendingPdfRows] = useState<
+    { date: string; description: string; amount: number }[] | null
+  >(null)
+  const [pdfDoc, setPdfDoc] = useState<{ base64: string; fileName: string; format: string } | null>(null)
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -463,27 +469,117 @@ export default function ImportPage() {
     [accounts, mappings, fxRates, hints],
   )
 
+  // Build the review list from already-extracted rows (used by the PDF path,
+  // where Claude has done the parsing). Mirrors the CSV categorisation + FX.
+  const buildPdfTransactions = useCallback(
+    (rows: { date: string; description: string; amount: number }[], activeAccount: AccountOption) => {
+      const transactions: ParsedTransaction[] = []
+      let sumCredits = 0
+      let sumDebits = 0
+      for (const r of rows) {
+        const amount = r.amount
+        if (amount >= 0) sumCredits += amount
+        else sumDebits += amount
+        const lowerDesc = r.description.toLowerCase()
+        const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
+        const category = learned?.categoryName ?? suggestCategoryName(r.description) ?? ''
+        transactions.push({
+          date: normalizeDate(r.date),
+          description: r.description,
+          amount,
+          currency: activeAccount.currency,
+          amountUSD: convertToUSD(amount, activeAccount.currency, fxRates ?? undefined),
+          category,
+          status: category ? 'categorised' : 'needs-review',
+        })
+      }
+      setParsedTransactions(transactions)
+      setRecon({
+        fileLines: rows.length,
+        dataRows: rows.length,
+        parsed: transactions.length,
+        skipped: [],
+        sumCredits,
+        sumDebits,
+        imported: null,
+        duplicates: null,
+      })
+    },
+    [mappings, fxRates],
+  )
+
   const handleFileSelect = useCallback(
     async (selectedFile: File) => {
       setFile(selectedFile)
       setParseError(null)
       setSaveResult(null)
       setAutoDetected(false)
+      setPendingPdfRows(null)
+      setPdfDoc(null)
 
-      // Non-CSV (PDF, image, xlsx…): can't parse transactions, so just archive
-      // it to the statement library.
-      if (!selectedFile.name.toLowerCase().endsWith('.csv')) {
+      const isPdf = selectedFile.name.toLowerCase().endsWith('.pdf')
+      const isCsv = selectedFile.name.toLowerCase().endsWith('.csv')
+
+      // Read the file to base64 once (used for PDF parsing and/or archiving).
+      const readBase64 = async () => {
+        const bytes = new Uint8Array(await selectedFile.arrayBuffer())
+        let bin = ''
+        const step = 0x8000
+        for (let i = 0; i < bytes.length; i += step) bin += String.fromCharCode(...bytes.subarray(i, i + step))
+        return btoa(bin)
+      }
+
+      // PDF: extract transactions with Claude, then run the normal review flow.
+      if (isPdf) {
         setRawText(null)
         setParsedTransactions([])
         setIsProcessing(true)
         try {
-          const buf = await selectedFile.arrayBuffer()
-          let bin = ''
-          const bytes = new Uint8Array(buf)
-          const step = 0x8000
-          for (let i = 0; i < bytes.length; i += step) {
-            bin += String.fromCharCode(...bytes.subarray(i, i + step))
+          const base64 = await readBase64()
+          const res = await fetch('/api/parse-pdf', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contentBase64: base64 }),
+          })
+          const data = await res.json()
+          if (!res.ok) {
+            setParseError(data.error || 'Could not read that PDF.')
+            return
           }
+          const rows: { date: string; description: string; amount: number }[] = data.transactions || []
+          if (rows.length === 0) {
+            setParseError('No transactions found in that PDF.')
+            return
+          }
+          const format = `PDF · ${data.bankHint || 'statement'}`
+          setPendingPdfRows(rows)
+          setPdfDoc({ base64, fileName: selectedFile.name, format })
+
+          const detected = detectAccount(selectedFile.name, String(data.bankHint || ''), accounts, hints)
+          setAutoDetected(!!detected)
+          if (detected?.account) {
+            setSelectedAccountId(detected.account.id)
+            setChangingAccount(false)
+            buildPdfTransactions(rows, detected.account)
+          } else {
+            setSelectedAccountId('')
+            setChangingAccount(true)
+            setParseError("Read the statement — now choose which account it's for below.")
+          }
+        } catch {
+          setParseError('Failed to read that PDF. Try a CSV export instead.')
+        } finally {
+          setIsProcessing(false)
+        }
+        return
+      }
+
+      // Other non-CSV files (images, xlsx…): archive only.
+      if (!isCsv) {
+        setRawText(null)
+        setParsedTransactions([])
+        setIsProcessing(true)
+        try {
           const res = await fetch('/api/documents', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -491,7 +587,7 @@ export default function ImportPage() {
               accountId: null,
               fileName: selectedFile.name,
               mimeType: selectedFile.type || 'application/octet-stream',
-              contentBase64: btoa(bin),
+              contentBase64: await readBase64(),
               source: 'upload',
             }),
           })
@@ -519,7 +615,7 @@ export default function ImportPage() {
         setIsProcessing(false)
       }
     },
-    [processStatement, loadDocuments],
+    [processStatement, loadDocuments, accounts, hints, buildPdfTransactions],
   )
 
   // Manual override: re-parse the same file against the chosen account, and
@@ -529,7 +625,29 @@ export default function ImportPage() {
       const acc = accounts.find((a) => a.id === accountId)
       setSelectedAccountId(accountId)
       setChangingAccount(false)
-      if (rawText && acc) {
+      if (!acc) return
+
+      // PDF: rebuild from the rows Claude extracted; learn the filename + format.
+      if (pendingPdfRows) {
+        setParseError(null)
+        buildPdfTransactions(pendingPdfRows, acc)
+        fetch('/api/account-hints', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId,
+            headerSignature: pdfDoc?.format ?? '',
+            fileName: pdfDoc?.fileName ?? '',
+          }),
+        })
+          .then(() => fetch('/api/account-hints'))
+          .then((r) => r.json())
+          .then((d) => setHints(d.hints || []))
+          .catch(() => {})
+        return
+      }
+
+      if (rawText) {
         processStatement(rawText, rawFileName, acc)
         fetch('/api/account-hints', {
           method: 'POST',
@@ -546,7 +664,7 @@ export default function ImportPage() {
           .catch(() => {})
       }
     },
-    [accounts, rawText, rawFileName, processStatement],
+    [accounts, rawText, rawFileName, processStatement, pendingPdfRows, pdfDoc, buildPdfTransactions],
   )
 
   const handleCategoryChange = useCallback(
@@ -624,7 +742,24 @@ export default function ImportPage() {
       )
 
       // Archive the raw statement to the library, tagged with its format.
-      if (rawText) {
+      if (pdfDoc) {
+        fetch('/api/documents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId: account.id,
+            fileName: pdfDoc.fileName,
+            mimeType: 'application/pdf',
+            contentBase64: pdfDoc.base64,
+            source: 'import',
+            formatSignature: pdfDoc.format,
+            importedCount: data.inserted,
+            dataRows: recon?.dataRows ?? null,
+          }),
+        })
+          .then(() => loadDocuments())
+          .catch(() => {})
+      } else if (rawText) {
         fetch('/api/documents', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -645,6 +780,8 @@ export default function ImportPage() {
 
       setParsedTransactions([])
       setFile(null)
+      setPendingPdfRows(null)
+      setPdfDoc(null)
     } catch {
       setSaveResult('Import failed — could not save to the database. Please try again.')
     } finally {
@@ -702,8 +839,8 @@ export default function ImportPage() {
         <div className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">Document Hub</h1>
           <p className="mt-1 text-sm text-gray-500">
-            Drop a statement to import it and file it — CSVs are parsed into transactions, everything
-            is archived below
+            Drop a statement to import it and file it — CSVs and PDFs are parsed into transactions
+            (Claude reads PDFs), everything is archived below
           </p>
         </div>
 
@@ -790,11 +927,11 @@ export default function ImportPage() {
         )}
 
         {/* PDF notice */}
-        {file && file.name.toLowerCase().endsWith('.pdf') && parsedTransactions.length === 0 && !parseError && (
-          <div className="mb-8 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
-            <FileText className="h-4 w-4 shrink-0 text-amber-500" />
-            <p className="text-sm text-amber-700">
-              PDF parsing isn&apos;t supported yet — export your statement as CSV and re-upload.
+        {file && file.name.toLowerCase().endsWith('.pdf') && isProcessing && (
+          <div className="mb-8 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
+            <FileText className="h-4 w-4 shrink-0 text-blue-500" />
+            <p className="text-sm text-blue-700">
+              Reading the PDF with Claude and extracting transactions…
             </p>
           </div>
         )}
