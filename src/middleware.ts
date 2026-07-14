@@ -7,9 +7,11 @@ export async function middleware(request: NextRequest) {
 
   const isAuthPage = request.nextUrl.pathname.startsWith('/auth/login')
   const isApiAuth = request.nextUrl.pathname.startsWith('/api/auth')
+  // Household photos are shown on the (unauthenticated) login page.
+  const isPublicPhoto = request.nextUrl.pathname.startsWith('/api/couple-photo')
 
-  // Allow auth-related routes
-  if (isApiAuth) {
+  // Allow auth-related and public routes
+  if (isApiAuth || isPublicPhoto) {
     return NextResponse.next()
   }
 

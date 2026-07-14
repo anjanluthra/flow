@@ -2,7 +2,36 @@
 
 import React, { useState, useEffect, useCallback } from 'react'
 import { useSession } from 'next-auth/react'
-import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Download } from 'lucide-react'
+import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Download, Image as ImageIcon } from 'lucide-react'
+
+// Downscale an image file to a modest JPEG data URL so uploads stay small and
+// fast (max edge ~1600px). Returns { base64, mimeType }.
+async function downscale(file: File): Promise<{ base64: string; mimeType: string }> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const r = new FileReader()
+    r.onload = () => resolve(r.result as string)
+    r.onerror = reject
+    r.readAsDataURL(file)
+  })
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const i = new window.Image()
+    i.onload = () => resolve(i)
+    i.onerror = reject
+    i.src = dataUrl
+  })
+  const maxEdge = 1600
+  const scale = Math.min(1, maxEdge / Math.max(img.width, img.height))
+  const w = Math.round(img.width * scale)
+  const h = Math.round(img.height * scale)
+  const canvas = document.createElement('canvas')
+  canvas.width = w
+  canvas.height = h
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return { base64: dataUrl.split(',')[1] ?? '', mimeType: file.type || 'image/jpeg' }
+  ctx.drawImage(img, 0, 0, w, h)
+  const out = canvas.toDataURL('image/jpeg', 0.85)
+  return { base64: out.split(',')[1] ?? '', mimeType: 'image/jpeg' }
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +64,35 @@ export default function SettingsPage() {
 
   // Historical data import
   const [historyBusy, setHistoryBusy] = useState(false)
+
+  // Household photos
+  const [photoBusy, setPhotoBusy] = useState<string | null>(null)
+  const [photoVersion, setPhotoVersion] = useState(0)
+
+  async function uploadPhoto(slot: 'login' | 'hero', file: File | null) {
+    if (!file) return
+    setPhotoBusy(slot)
+    setMessage(null)
+    try {
+      const { base64, mimeType } = await downscale(file)
+      const res = await fetch('/api/couple-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slot, contentBase64: base64, mimeType }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setMessage({ kind: 'err', text: data.error || 'Failed to upload photo.' })
+        return
+      }
+      setPhotoVersion((v) => v + 1)
+      setMessage({ kind: 'ok', text: `${slot === 'login' ? 'Sign-in' : 'Home'} photo updated.` })
+    } catch {
+      setMessage({ kind: 'err', text: 'Failed to process that image.' })
+    } finally {
+      setPhotoBusy(null)
+    }
+  }
 
   // Add-user form
   const [showAdd, setShowAdd] = useState(false)
@@ -360,6 +418,51 @@ export default function SettingsPage() {
                 {historyBusy ? 'Importing…' : 'Load 2024 history'}
               </button>
             </div>
+          </div>
+        )}
+
+        {/* Household photos card */}
+        {isAdmin && (
+          <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="flex items-center gap-2 border-b border-gray-200 px-6 py-4">
+              <ImageIcon className="h-4 w-4 text-gray-400" />
+              <h2 className="text-base font-semibold text-gray-900">Household photos</h2>
+            </div>
+            <div className="grid gap-5 px-6 py-5 sm:grid-cols-2">
+              {(['login', 'hero'] as const).map((slot) => (
+                <div key={slot}>
+                  <p className="mb-2 text-sm font-medium text-gray-900">
+                    {slot === 'login' ? 'Sign-in page' : 'Home hero'}
+                  </p>
+                  <div className="relative mb-3 h-32 overflow-hidden rounded-lg border border-gray-200 bg-gradient-to-br from-blue-700 via-indigo-700 to-slate-900">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      key={photoVersion}
+                      src={`/api/couple-photo?slot=${slot}&v=${photoVersion}`}
+                      alt=""
+                      className="h-full w-full object-cover"
+                      onError={(e) => {
+                        ;(e.currentTarget as HTMLImageElement).style.visibility = 'hidden'
+                      }}
+                    />
+                  </div>
+                  <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50">
+                    {photoBusy === slot ? 'Uploading…' : 'Choose photo'}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      disabled={photoBusy === slot}
+                      onChange={(e) => uploadPhoto(slot, e.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                </div>
+              ))}
+            </div>
+            <p className="px-6 pb-5 text-xs text-gray-400">
+              Photos are resized automatically and stored privately in your database. The sign-in
+              photo looks best portrait; the home hero looks best landscape.
+            </p>
           </div>
         )}
 

@@ -123,7 +123,7 @@ export default function HomePage() {
             {/* Photo (falls back to the gradient if the file isn't present) */}
             <div
               className="absolute inset-0 bg-cover bg-center opacity-60"
-              style={{ backgroundImage: "url('/couple/hero.jpg')" }}
+              style={{ backgroundImage: "url('/api/couple-photo?slot=hero')" }}
             />
             <div className="absolute inset-0 bg-gradient-to-r from-slate-900/80 via-slate-900/40 to-transparent" />
             <div className="relative flex flex-col justify-end px-6 py-10 sm:px-10 sm:py-14">

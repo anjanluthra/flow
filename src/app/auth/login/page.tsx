@@ -44,7 +44,7 @@ export default function LoginPage() {
         {/* Photo (falls back to the gradient above if the file isn't present) */}
         <div
           className="absolute inset-0 bg-cover bg-center"
-          style={{ backgroundImage: "url('/couple/login.jpg')" }}
+          style={{ backgroundImage: "url('/api/couple-photo?slot=login')" }}
         />
         <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-black/30" />
 
