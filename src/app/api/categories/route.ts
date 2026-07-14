@@ -11,7 +11,7 @@ export async function GET() {
     const categories = result.rows.map((row) => ({
       id: row.id,
       name: row.name,
-      type: row.type as 'income' | 'expense',
+      type: row.type as 'income' | 'expense' | 'transfer',
       color: row.color_hex,
       iconName: row.icon_name,
       sortOrder: row.sort_order,

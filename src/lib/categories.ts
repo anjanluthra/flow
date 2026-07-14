@@ -51,6 +51,16 @@ export const INCOME_CATEGORIES: CategoryDefinition[] = [
 ]
 
 // ────────────────────────────────────────────────
+// Transfer categories (excluded from P&L — money moving between your own
+// pockets or into investments, not income or spending)
+// ────────────────────────────────────────────────
+
+export const TRANSFER_CATEGORIES: CategoryDefinition[] = [
+  { id: 'txf_internal',   name: 'Internal Transfer', iconName: 'arrow-left-right', colorHex: '#64748B' },
+  { id: 'txf_investment', name: 'Investments',        iconName: 'trending-up',      colorHex: '#0D9488' },
+]
+
+// ────────────────────────────────────────────────
 // Keyword-to-category mapping for auto-categorization
 // ────────────────────────────────────────────────
 
@@ -144,6 +154,14 @@ export const CATEGORY_KEYWORDS: Record<string, string[]> = {
   inc_inheritance: [
     'inheritance', 'estate',
   ],
+
+  // Transfers / investments (kept out of P&L)
+  txf_internal: [
+    'instant access savings', 'to savings', 'internal transfer', 'savings account',
+  ],
+  txf_investment: [
+    'upvolt', 'vanguard', 'brokerage', 'to investment',
+  ],
 }
 
 // ────────────────────────────────────────────────
@@ -153,6 +171,7 @@ export const CATEGORY_KEYWORDS: Record<string, string[]> = {
 export const ALL_CATEGORIES: CategoryDefinition[] = [
   ...EXPENSE_CATEGORIES,
   ...INCOME_CATEGORIES,
+  ...TRANSFER_CATEGORIES,
 ]
 
 // ────────────────────────────────────────────────

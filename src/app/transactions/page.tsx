@@ -33,7 +33,7 @@ interface Transaction {
 interface Category {
   id: string
   name: string
-  type: 'income' | 'expense'
+  type: 'income' | 'expense' | 'transfer'
   color: string
 }
 
@@ -109,6 +109,10 @@ export default function TransactionsPage() {
     () => categories.filter((c) => c.type === 'income'),
     [categories],
   )
+  const transferCategories = useMemo(
+    () => categories.filter((c) => c.type === 'transfer'),
+    [categories],
+  )
   const accountNames = useMemo(
     () =>
       Array.from(
@@ -122,6 +126,10 @@ export default function TransactionsPage() {
     async (id: string, categoryId: string) => {
       const cat = categories.find((c) => c.id === categoryId)
       const tx = transactions.find((t) => t.id === id)
+      // The transaction type follows the category type; a transfer category also
+      // marks it as internal so the P&L excludes it.
+      const newType = cat?.type ?? tx?.type ?? 'expense'
+      const isInternal = cat?.type === 'transfer' && cat?.name === 'Internal Transfer'
       // Optimistic update.
       setTransactions((prev) =>
         prev.map((t) =>
@@ -131,6 +139,8 @@ export default function TransactionsPage() {
                 categoryId,
                 categoryName: cat?.name ?? t.categoryName,
                 categoryColor: cat?.color ?? t.categoryColor,
+                type: newType,
+                isInternalTransfer: isInternal,
               }
             : t,
         ),
@@ -139,7 +149,7 @@ export default function TransactionsPage() {
         await fetch(`/api/transactions/${id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ categoryId }),
+          body: JSON.stringify({ categoryId, type: newType, isInternalTransfer: isInternal }),
         })
         // Self-learning: teach the merchant -> category mapping so the next
         // statement auto-categorises this merchant correctly.
@@ -269,6 +279,15 @@ export default function TransactionsPage() {
                   </option>
                 ))}
               </optgroup>
+              {transferCategories.length > 0 && (
+                <optgroup label="Transfers & Investments">
+                  {transferCategories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </div>
         ),
@@ -333,7 +352,7 @@ export default function TransactionsPage() {
         },
       },
     ],
-    [expenseCategories, incomeCategories, handleCategoryChange, handleBusinessToggle],
+    [expenseCategories, incomeCategories, transferCategories, handleCategoryChange, handleBusinessToggle],
   )
 
   const getRowClassName = (tx: Transaction) =>
@@ -391,6 +410,15 @@ export default function TransactionsPage() {
               </option>
             ))}
           </optgroup>
+          {transferCategories.length > 0 && (
+            <optgroup label="Transfers & Investments">
+              {transferCategories.map((c) => (
+                <option key={c.id} value={c.name}>
+                  {c.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
         </select>
 
         <select

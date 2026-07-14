@@ -66,7 +66,7 @@ function detectAccount(
 interface CategoryOption {
   id: string
   name: string
-  type: 'income' | 'expense'
+  type: 'income' | 'expense' | 'transfer'
 }
 
 interface ParsedTransaction {
@@ -85,7 +85,13 @@ interface ColumnMapping {
   amountCol: number
   debitCol?: number
   creditCol?: number
+  stateCol?: number
 }
+
+// Only these statuses actually moved money; anything else (reverted, declined,
+// failed, pending…) is on the statement but never hit the balance, so importing
+// it would break reconciliation.
+const COMPLETED_STATES = new Set(['completed', 'complete', 'settled', 'posted', 'success', 'successful'])
 
 interface MerchantMapping {
   pattern: string
@@ -165,6 +171,7 @@ function detectColumns(headers: string[]): ColumnMapping | null {
   let amountCol = -1
   let debitCol: number | undefined
   let creditCol: number | undefined
+  let stateCol: number | undefined
 
   for (let i = 0; i < lower.length; i++) {
     const h = lower[i]
@@ -179,6 +186,7 @@ function detectColumns(headers: string[]): ColumnMapping | null {
     if (amountCol === -1 && h === 'amount') amountCol = i
     if (h.includes('debit') || h.includes('withdrawal')) debitCol = i
     if (h.includes('credit') || h.includes('deposit')) creditCol = i
+    if (stateCol === undefined && (h === 'state' || h === 'status')) stateCol = i
   }
 
   if (amountCol === -1 && debitCol === undefined && creditCol === undefined) {
@@ -195,7 +203,7 @@ function detectColumns(headers: string[]): ColumnMapping | null {
 
   if (amountCol === -1 && debitCol === undefined && creditCol === undefined) return null
 
-  return { dateCol, descCol, amountCol, debitCol, creditCol }
+  return { dateCol, descCol, amountCol, debitCol, creditCol, stateCol }
 }
 
 /**
@@ -279,6 +287,7 @@ export default function ImportPage() {
   const account = accounts.find((a) => a.id === selectedAccountId)
   const expenseCategories = categories.filter((c) => c.type === 'expense')
   const incomeCategories = categories.filter((c) => c.type === 'income')
+  const transferCategories = categories.filter((c) => c.type === 'transfer')
 
   // Parse a statement's text against a chosen account. When `forced` is passed
   // (a manual override) detection is skipped; otherwise the account is detected
@@ -335,6 +344,19 @@ export default function ImportPage() {
             raw: row.join(', ').slice(0, 80),
           })
           continue
+        }
+
+        // Skip rows that never actually moved money (reverted, declined, …).
+        if (mapping.stateCol !== undefined) {
+          const state = (row[mapping.stateCol] ?? '').trim().toLowerCase()
+          if (state && !COMPLETED_STATES.has(state)) {
+            skipped.push({
+              line: i + 1,
+              reason: `Not completed (${row[mapping.stateCol]})`,
+              raw: `${description} ${row[mapping.amountCol] ?? ''}`.slice(0, 80),
+            })
+            continue
+          }
         }
 
         let amount = 0
@@ -449,16 +471,20 @@ export default function ImportPage() {
     setIsSaving(true)
     setSaveResult(null)
     try {
-      const incomeNames = new Set(incomeCategories.map((c) => c.name))
+      const catByName = new Map(categories.map((c) => [c.name, c]))
       const payload = parsedTransactions.map((tx) => {
-        // Category type wins over sign (e.g. a positive Salary credit is income);
-        // otherwise fall back to the debit/credit sign.
-        const type: 'income' | 'expense' =
-          tx.category && incomeNames.has(tx.category)
-            ? 'income'
-            : tx.amount < 0
-              ? 'expense'
-              : 'income'
+        const cat = tx.category ? catByName.get(tx.category) : undefined
+        // Category type wins over sign: a transfer category → 'transfer' (kept
+        // out of P&L); an income category → 'income'; otherwise fall back to the
+        // debit/credit sign.
+        const type: 'income' | 'expense' | 'transfer' =
+          cat?.type === 'transfer'
+            ? 'transfer'
+            : cat?.type === 'income'
+              ? 'income'
+              : tx.amount < 0
+                ? 'expense'
+                : 'income'
         return {
           accountId: account.id,
           date: tx.date,
@@ -468,6 +494,7 @@ export default function ImportPage() {
           amountUsd: Math.abs(tx.amountUSD),
           categoryName: tx.category || null,
           type,
+          isInternalTransfer: cat?.type === 'transfer' && cat?.name === 'Internal Transfer',
         }
       })
 
@@ -862,6 +889,15 @@ export default function ImportPage() {
                               </option>
                             ))}
                           </optgroup>
+                          {transferCategories.length > 0 && (
+                            <optgroup label="Transfers & Investments">
+                              {transferCategories.map((cat) => (
+                                <option key={cat.id} value={cat.name}>
+                                  {cat.name}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
                         </select>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3">
