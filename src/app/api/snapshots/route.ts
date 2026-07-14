@@ -55,7 +55,14 @@ export async function GET() {
       return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10)
     }
 
-    const byDate = new Map<string, { date: string; totalNetWorth: number; personalNetWorth: number; corporateCash: number }>()
+    interface Snap {
+      date: string
+      totalNetWorth: number
+      personalNetWorth: number
+      corporateCash: number
+      lines?: { group: string; label: string; amountUsd: number }[]
+    }
+    const byDate = new Map<string, Snap>()
     for (const row of result.rows) {
       const date = ymd(row.snapshot_date)
       byDate.set(date, {
@@ -79,6 +86,7 @@ export async function GET() {
           totalNetWorth: parseFloat(row.total_net_worth_usd),
           personalNetWorth: Number(data.personalNetWorth ?? 0),
           corporateCash: Number(data.corporateCash ?? 0),
+          lines: Array.isArray(data.lines) ? data.lines : undefined,
         })
       }
     } catch {
