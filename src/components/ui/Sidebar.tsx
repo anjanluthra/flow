@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { signOut } from "next-auth/react";
 import {
   Waves,
   House,
@@ -16,7 +17,24 @@ import {
   X,
   PanelLeftClose,
   PanelLeftOpen,
+  LogOut,
 } from "lucide-react";
+
+function SignOutButton({ collapsed = false }: { collapsed?: boolean }) {
+  return (
+    <button
+      onClick={() => signOut({ callbackUrl: "/auth/login" })}
+      title={collapsed ? "Sign out" : undefined}
+      aria-label="Sign out"
+      className={`flex w-full items-center gap-3 rounded-lg py-2.5 text-sm font-medium text-slate-600 transition-default hover:bg-slate-50 hover:text-slate-900 ${
+        collapsed ? "justify-center px-0" : "px-3"
+      }`}
+    >
+      <LogOut className="h-5 w-5 shrink-0 text-slate-400" strokeWidth={1.75} />
+      {!collapsed && "Sign out"}
+    </button>
+  );
+}
 
 interface NavItem {
   href: string;
@@ -168,6 +186,7 @@ export function Sidebar({
         <Brand collapsed={collapsed} />
         <NavList collapsed={collapsed} />
         <div className="border-t border-gray-100 p-3">
+          <SignOutButton collapsed={collapsed} />
           <button
             onClick={onToggleCollapse}
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
@@ -203,8 +222,8 @@ export function Sidebar({
       >
         <Brand onClose={onClose} />
         <NavList onNavigate={onClose} />
-        <div className="border-t border-gray-100 px-6 py-4">
-          <p className="text-xs text-text-muted">Personal Finance</p>
+        <div className="border-t border-gray-100 p-3">
+          <SignOutButton />
         </div>
       </aside>
     </>
