@@ -18,6 +18,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   LogOut,
+  ShieldCheck,
 } from "lucide-react";
 
 function SignOutButton({ collapsed = false }: { collapsed?: boolean }) {
@@ -71,6 +72,10 @@ export const navSections: NavSection[] = [
   {
     label: "Documents",
     items: [{ href: "/import", label: "Document Hub", icon: FolderOpen }],
+  },
+  {
+    label: "Vault",
+    items: [{ href: "/vault", label: "Wills & Estate", icon: ShieldCheck }],
   },
   {
     items: [{ href: "/settings", label: "Settings", icon: Settings }],
