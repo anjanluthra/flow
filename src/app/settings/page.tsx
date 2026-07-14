@@ -341,8 +341,9 @@ export default function SettingsPage() {
               <div>
                 <p className="text-sm font-medium text-gray-900">Load 2024 history</p>
                 <p className="mt-0.5 text-sm text-gray-500">
-                  Imports 2,031 categorised 2024 transactions from your personal-finance workbook.
-                  Safe to run again — duplicates are skipped.
+                  Imports 2,031 2024 transactions from your personal-finance workbook, keeping the
+                  sheet&rsquo;s own categories so the P&amp;L matches it exactly. Re-running refreshes
+                  the import.
                 </p>
               </div>
               <button

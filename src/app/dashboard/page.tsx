@@ -8,31 +8,38 @@ import { Card } from '@/components/ui/Card'
 // Types
 // ---------------------------------------------------------------------------
 
+interface Amt {
+  usd: number
+  gbp: number
+}
+
 interface Line {
   category: string
   color: string
-  monthly: Record<string, number>
-  total: number
+  monthly: Record<string, Amt>
+  total: Amt
 }
 
 interface PnL {
   from: string
   to: string
   months: string[]
+  gbpRate: number
   income: Line[]
   expense: Line[]
   totals: {
-    incomeByMonth: Record<string, number>
-    expenseByMonth: Record<string, number>
-    netByMonth: Record<string, number>
-    incomeTotal: number
-    expenseTotal: number
-    net: number
+    incomeByMonth: Record<string, Amt>
+    expenseByMonth: Record<string, Amt>
+    netByMonth: Record<string, Amt>
+    incomeTotal: Amt
+    expenseTotal: Amt
+    net: Amt
     savingsRate: number
   }
 }
 
 type Mode = 'year' | 'month' | 'custom'
+type Currency = 'USD' | 'GBP'
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -40,17 +47,13 @@ const MONTHS = [
 ]
 const YEARS = [2024, 2025, 2026, 2027]
 
-type Currency = 'USD' | 'GBP'
-
-// Figures are stored in USD; GBP = USD / (USD-per-GBP rate).
-function makeFmt(currency: Currency, gbpUsd: number) {
-  return (n: number): string => {
-    const v = currency === 'GBP' && gbpUsd > 0 ? n / gbpUsd : n
-    const sym = currency === 'GBP' ? '£' : '$'
-    const abs = Math.abs(Math.round(v)).toLocaleString('en-US')
-    return `${v < 0 ? '-' : ''}${sym}${abs}`
-  }
+function fmtMoney(n: number, currency: Currency): string {
+  const sym = currency === 'GBP' ? '£' : '$'
+  const abs = Math.abs(Math.round(n)).toLocaleString('en-US')
+  return `${n < 0 ? '-' : ''}${sym}${abs}`
 }
+
+const pick = (a: Amt | undefined, c: Currency): number => (!a ? 0 : c === 'GBP' ? a.gbp : a.usd)
 
 function monthHeader(ym: string): string {
   const [y, m] = ym.split('-').map(Number)
@@ -58,7 +61,7 @@ function monthHeader(ym: string): string {
 }
 
 function lastDay(year: number, month1: number): string {
-  const d = new Date(Date.UTC(year, month1, 0)) // month1 is 1-12; day 0 -> last of prev
+  const d = new Date(Date.UTC(year, month1, 0))
   return `${year}-${String(month1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
 }
 
@@ -70,25 +73,12 @@ export default function CashFlowPage() {
   const now = new Date()
   const [mode, setMode] = useState<Mode>('year')
   const [year, setYear] = useState(now.getFullYear())
-  const [month, setMonth] = useState(now.getMonth()) // 0-11
+  const [month, setMonth] = useState(now.getMonth())
   const [customFrom, setCustomFrom] = useState(`${now.getFullYear()}-01-01`)
   const [customTo, setCustomTo] = useState(now.toISOString().slice(0, 10))
   const [pnl, setPnl] = useState<PnL | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [currency, setCurrency] = useState<Currency>('USD')
-  const [gbpUsd, setGbpUsd] = useState(1.3231)
-
-  useEffect(() => {
-    fetch('/api/fx')
-      .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => {
-        const rate = d?.rates?.GBP_USD
-        if (typeof rate === 'number' && rate > 0) setGbpUsd(rate)
-      })
-      .catch(() => {})
-  }, [])
-
-  const fmt = useMemo(() => makeFmt(currency, gbpUsd), [currency, gbpUsd])
 
   const { from, to } = useMemo(() => {
     if (mode === 'year') return { from: `${year}-01-01`, to: `${year}-12-31` }
@@ -116,6 +106,8 @@ export default function CashFlowPage() {
     load()
   }, [load])
 
+  const fmt = useCallback((n: number) => fmtMoney(n, currency), [currency])
+
   const months = pnl?.months ?? []
   const showMonthCols = months.length > 1
   const t = pnl?.totals
@@ -131,7 +123,6 @@ export default function CashFlowPage() {
 
         {/* Period controls */}
         <div className="mb-6 flex flex-wrap items-center gap-3">
-          {/* Segmented mode toggle */}
           <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
             {(['year', 'month', 'custom'] as Mode[]).map((m) => (
               <button
@@ -208,9 +199,9 @@ export default function CashFlowPage() {
 
         {/* Summary cards */}
         <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Card title="Income" value={fmt(t?.incomeTotal ?? 0)} subtitle="for the period" icon={<DollarSign className="h-5 w-5 text-green-500" />} />
-          <Card title="Expenses" value={fmt(t?.expenseTotal ?? 0)} subtitle="for the period" icon={<TrendingDown className="h-5 w-5 text-red-500" />} />
-          <Card title="Net" value={fmt(t?.net ?? 0)} subtitle="income − expenses" icon={<Wallet className="h-5 w-5 text-blue-500" />} />
+          <Card title="Income" value={fmt(pick(t?.incomeTotal, currency))} subtitle="for the period" icon={<DollarSign className="h-5 w-5 text-green-500" />} />
+          <Card title="Expenses" value={fmt(pick(t?.expenseTotal, currency))} subtitle="for the period" icon={<TrendingDown className="h-5 w-5 text-red-500" />} />
+          <Card title="Net" value={fmt(pick(t?.net, currency))} subtitle="income − expenses" icon={<Wallet className="h-5 w-5 text-blue-500" />} />
           <Card title="Savings Rate" value={`${(t?.savingsRate ?? 0).toFixed(1)}%`} subtitle="net / income" icon={<Percent className="h-5 w-5 text-purple-500" />} />
         </div>
 
@@ -239,22 +230,19 @@ export default function CashFlowPage() {
                   </tr>
                 ) : (
                   <>
-                    {/* Income */}
                     <SectionRow label="Income" span={months.length} showMonthCols={showMonthCols} tone="income" />
                     {pnl.income.map((l) => (
-                      <LineRow key={`i-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} fmt={fmt} />
+                      <LineRow key={`i-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} />
                     ))}
-                    <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" fmt={fmt} />
+                    <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} />
 
-                    {/* Expenses */}
                     <SectionRow label="Expenses" span={months.length} showMonthCols={showMonthCols} tone="expense" />
                     {pnl.expense.map((l) => (
-                      <LineRow key={`e-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} fmt={fmt} />
+                      <LineRow key={`e-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} />
                     ))}
-                    <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" fmt={fmt} />
+                    <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} />
 
-                    {/* Net */}
-                    <TotalRow label="Net Cash Flow" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" fmt={fmt} />
+                    <TotalRow label="Net Cash Flow" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} />
                   </>
                 )}
               </tbody>
@@ -262,9 +250,8 @@ export default function CashFlowPage() {
           </div>
         </div>
         <p className="mt-3 text-xs text-gray-400">
-          Figures shown in {currency}
-          {currency === 'GBP' ? ` (converted at ${gbpUsd.toFixed(4)} USD/GBP)` : ''}. Internal
-          transfers and investments are excluded from the P&amp;L.
+          Figures shown in {currency}. GBP uses each transaction&rsquo;s recorded pound amount where
+          available. Internal transfers and investments are excluded from the P&amp;L.
         </p>
       </div>
     </div>
@@ -290,7 +277,19 @@ function SectionRow({ label, span, showMonthCols, tone }: { label: string; span:
   )
 }
 
-function LineRow({ line, months, showMonthCols, fmt }: { line: Line; months: string[]; showMonthCols: boolean; fmt: (n: number) => string }) {
+function LineRow({
+  line,
+  months,
+  showMonthCols,
+  currency,
+  fmt,
+}: {
+  line: Line
+  months: string[]
+  showMonthCols: boolean
+  currency: Currency
+  fmt: (n: number) => string
+}) {
   return (
     <tr className="hover:bg-gray-50/50">
       <td className="sticky left-0 z-10 bg-white px-4 py-2.5">
@@ -300,12 +299,15 @@ function LineRow({ line, months, showMonthCols, fmt }: { line: Line; months: str
         </div>
       </td>
       {showMonthCols &&
-        months.map((ym) => (
-          <td key={ym} className="px-4 py-2.5 text-right tabular-nums text-gray-500">
-            {line.monthly[ym] ? fmt(line.monthly[ym]) : '·'}
-          </td>
-        ))}
-      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900">{fmt(line.total)}</td>
+        months.map((ym) => {
+          const v = pick(line.monthly[ym], currency)
+          return (
+            <td key={ym} className="px-4 py-2.5 text-right tabular-nums text-gray-500">
+              {v ? fmt(v) : '·'}
+            </td>
+          )
+        })}
+      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900">{fmt(pick(line.total, currency))}</td>
     </tr>
   )
 }
@@ -317,31 +319,37 @@ function TotalRow({
   months,
   showMonthCols,
   tone,
+  currency,
   fmt,
 }: {
   label: string
-  byMonth: Record<string, number>
-  total: number
+  byMonth: Record<string, Amt>
+  total: Amt
   months: string[]
   showMonthCols: boolean
   tone: 'income' | 'expense' | 'net'
+  currency: Currency
   fmt: (n: number) => string
 }) {
+  const totalVal = pick(total, currency)
   const color =
     tone === 'net'
-      ? total >= 0 ? 'text-emerald-700' : 'text-rose-700'
+      ? totalVal >= 0 ? 'text-emerald-700' : 'text-rose-700'
       : tone === 'income' ? 'text-emerald-700' : 'text-rose-700'
   const bg = tone === 'net' ? 'bg-blue-50/70 border-t-2 border-gray-300' : 'bg-gray-50/70'
   return (
     <tr className={`font-semibold ${bg}`}>
       <td className={`sticky left-0 z-10 px-4 py-2.5 ${bg} ${color}`}>{label}</td>
       {showMonthCols &&
-        months.map((ym) => (
-          <td key={ym} className={`px-4 py-2.5 text-right tabular-nums ${color}`}>
-            {byMonth[ym] ? fmt(byMonth[ym]) : '·'}
-          </td>
-        ))}
-      <td className={`px-4 py-2.5 text-right tabular-nums ${color}`}>{fmt(total)}</td>
+        months.map((ym) => {
+          const v = pick(byMonth[ym], currency)
+          return (
+            <td key={ym} className={`px-4 py-2.5 text-right tabular-nums ${color}`}>
+              {v ? fmt(v) : '·'}
+            </td>
+          )
+        })}
+      <td className={`px-4 py-2.5 text-right tabular-nums ${color}`}>{fmt(totalVal)}</td>
     </tr>
   )
 }

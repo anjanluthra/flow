@@ -9,9 +9,10 @@ export const dynamic = 'force-dynamic'
 // POST /api/admin/load-history — one-click import of historical actuals.
 //
 // Loads the bundled 2024 transactions (from the personal-finance workbook)
-// into the transactions table. Idempotent: every row carries a dedupe_hash so
-// re-running never double-counts. Creates any accounts/categories the data
-// references that don't exist yet, then resolves everything by name.
+// using the workbook's own account and category names, so the P&L matches the
+// source sheet row-for-row and to the penny. Re-running fully refreshes the
+// import: previously-seeded rows (identified by dedupe_hash) are removed first,
+// then re-inserted — so it's safe to click repeatedly.
 // ---------------------------------------------------------------------------
 
 interface HistoryRow {
@@ -30,31 +31,26 @@ interface HistoryRow {
 
 // Accounts referenced by the 2024 data that aren't in the base seed.
 const EXTRA_ACCOUNTS: Array<[string, string, string, string, string, string, string, string]> = [
-  // name, institution, country, currency, type, holder, asset_class, liquidity_tier
   ['Kroo', 'Kroo', 'GB', 'GBP', 'checking', 'anjan', 'cash', 't1_instant'],
   ['Moneybox', 'Moneybox', 'GB', 'GBP', 'savings', 'anjan', 'cash', 't2_days'],
 ]
 
-// Categories referenced by the 2024 data that aren't in the base seed.
-const EXTRA_CATEGORIES: Array<[string, string, string, string, number]> = [
-  // name, type, icon_name, color_hex, sort_order
-  ['Taxes', 'expense', 'landmark', '#64748B', 18],
-  ['Insurance', 'expense', 'shield', '#0EA5E9', 19],
-  ['Wedding', 'expense', 'heart', '#F43F5E', 20],
-  ['Rent', 'expense', 'home', '#14B8A6', 21],
+const PALETTE = [
+  '#F97316', '#84CC16', '#EC4899', '#A855F7', '#6366F1', '#8B5CF6', '#14B8A6', '#64748B',
+  '#EF4444', '#3B82F6', '#06B6D4', '#78716C', '#F59E0B', '#D946EF', '#71717A', '#10B981',
+  '#0EA5E9', '#F43F5E', '#22C55E', '#0D9488',
 ]
 
 export async function POST() {
   try {
-    // 0. Ensure the schema this import relies on exists (idempotent), so the
-    //    button works even if migrations 008–010 weren't applied by hand.
+    const rows = history as HistoryRow[]
+
+    // 0. Ensure the schema this import relies on exists (idempotent).
     await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS dedupe_hash text`)
     await query(
       `CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_dedupe_hash
          ON transactions (dedupe_hash) WHERE dedupe_hash IS NOT NULL`,
     )
-    // ALTER TYPE ... ADD VALUE must commit before the value is used; @vercel/postgres
-    // runs each query() in autocommit, so this separate statement is safe.
     await query(`ALTER TYPE category_type ADD VALUE IF NOT EXISTS 'transfer'`)
     await query(
       `INSERT INTO categories (name, type, icon_name, color_hex, sort_order)
@@ -73,14 +69,24 @@ export async function POST() {
       )
     }
 
-    // 2. Ensure the extra categories exist.
-    for (const [name, type, icon, color, sort] of EXTRA_CATEGORIES) {
+    // 2. Ensure every category the workbook uses exists, keeping the sheet's
+    //    own names so the statement mirrors it. A name gets the type of its
+    //    first occurrence; the P&L sections by transaction type regardless.
+    const catType = new Map<string, 'income' | 'expense'>()
+    for (const r of rows) {
+      if (r.categoryName === 'Internal Transfer' || r.categoryName === 'Investments') continue
+      if (r.type === 'transfer') continue
+      if (!catType.has(r.categoryName)) catType.set(r.categoryName, r.type)
+    }
+    let ci = 100
+    for (const [name, type] of catType) {
       await query(
         `INSERT INTO categories (name, type, icon_name, color_hex, sort_order)
-         VALUES ($1, $2::category_type, $3, $4, $5)
+         VALUES ($1, $2::category_type, 'circle', $3, $4)
          ON CONFLICT (name) DO NOTHING`,
-        [name, type, icon, color, sort],
+        [name, type, PALETTE[ci % PALETTE.length], ci],
       )
+      ci++
     }
 
     // 3. Build name -> id maps.
@@ -92,7 +98,6 @@ export async function POST() {
     const catById = new Map<string, string>(cats.rows.map((r) => [r.name, r.id]))
 
     // 4. Resolve rows to NewTransaction, skipping anything unresolvable.
-    const rows = history as HistoryRow[]
     const unresolved: string[] = []
     const toInsert: NewTransaction[] = []
     for (const r of rows) {
@@ -117,21 +122,30 @@ export async function POST() {
       })
     }
 
-    // 5. Insert in batches (idempotent via dedupe_hash).
+    // 5. Refresh: remove any previously-seeded rows, then insert fresh so
+    //    re-running always reflects the latest mapping (and never duplicates).
+    const hashes = rows.map((r) => r.dedupeHash)
+    let removed = 0
+    for (let i = 0; i < hashes.length; i += 1000) {
+      const res = await query(`DELETE FROM transactions WHERE dedupe_hash = ANY($1)`, [
+        hashes.slice(i, i + 1000),
+      ])
+      removed += res.rowCount ?? 0
+    }
+
     let inserted = 0
-    let skipped = 0
     const BATCH = 200
     for (let i = 0; i < toInsert.length; i += BATCH) {
       const res = await createTransactions(toInsert.slice(i, i + BATCH))
       inserted += res.inserted
-      skipped += res.skipped
     }
 
     return NextResponse.json({
       success: true,
       total: rows.length,
+      removed,
       inserted,
-      skipped,
+      categories: catType.size,
       unresolved: unresolved.length,
       unresolvedSample: unresolved.slice(0, 10),
     })
