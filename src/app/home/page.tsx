@@ -107,13 +107,37 @@ export default function HomePage() {
   const topSpending = summary?.current.byCategory.slice(0, 5) ?? []
   const monthName = new Date().toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
 
+  const greeting = (() => {
+    const h = new Date().getHours()
+    if (h < 12) return 'Good morning'
+    if (h < 18) return 'Good afternoon'
+    return 'Good evening'
+  })()
+
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Home</h1>
-          <p className="mt-1 text-sm text-gray-500">Your money at a glance — {monthName}</p>
+      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+        {/* Hero */}
+        <div className="mb-8 overflow-hidden rounded-2xl bg-gradient-to-br from-blue-700 via-indigo-700 to-slate-900 shadow-sm">
+          <div className="relative">
+            {/* Photo (falls back to the gradient if the file isn't present) */}
+            <div
+              className="absolute inset-0 bg-cover bg-center opacity-60"
+              style={{ backgroundImage: "url('/couple/hero.jpg')" }}
+            />
+            <div className="absolute inset-0 bg-gradient-to-r from-slate-900/80 via-slate-900/40 to-transparent" />
+            <div className="relative flex flex-col justify-end px-6 py-10 sm:px-10 sm:py-14">
+              <p className="text-sm font-medium text-blue-100">{greeting}, Anjan &amp; Kate</p>
+              <h1 className="mt-1 text-2xl font-bold tracking-tight text-white sm:text-3xl">
+                {latest ? fmt(latest.totalNetWorth) : 'Your money at a glance'}
+              </h1>
+              <p className="mt-1 text-sm text-white/80">
+                {latest
+                  ? `Total net worth${nwChange !== undefined ? ` · ${nwChange >= 0 ? '+' : ''}${nwChange.toFixed(1)}% vs last snapshot` : ''} — ${monthName}`
+                  : `Here's where things stand — ${monthName}`}
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Key stats */}
