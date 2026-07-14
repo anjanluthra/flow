@@ -160,14 +160,17 @@ export interface NewTransaction {
   isInternalTransfer?: boolean
   isBusinessExpense?: boolean
   notes?: string | null
+  dedupeHash?: string | null
 }
 
 /**
- * Bulk-insert transactions (used by the CSV importer). Returns the number of
- * rows inserted. Runs as a single multi-row INSERT for efficiency.
+ * Bulk-insert transactions (used by the CSV importer). Rows whose dedupe_hash
+ * already exists are silently skipped (ON CONFLICT DO NOTHING), so re-importing
+ * a statement never double-counts. Returns how many rows were actually inserted
+ * and how many were skipped as duplicates.
  */
 export async function createTransactions(rows: NewTransaction[]) {
-  if (rows.length === 0) return { inserted: 0 }
+  if (rows.length === 0) return { inserted: 0, skipped: 0 }
 
   const values: string[] = []
   const params: unknown[] = []
@@ -175,7 +178,7 @@ export async function createTransactions(rows: NewTransaction[]) {
 
   for (const r of rows) {
     values.push(
-      `($${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++})`,
+      `($${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++}, $${i++})`,
     )
     params.push(
       r.date,
@@ -189,19 +192,22 @@ export async function createTransactions(rows: NewTransaction[]) {
       r.isInternalTransfer ?? false,
       r.isBusinessExpense ?? false,
       r.notes ?? null,
+      r.dedupeHash ?? null,
     )
   }
 
-  await query(
+  const result = await query(
     `INSERT INTO transactions
        (date, description, amount_local, currency, amount_usd,
         category_id, account_id, type, is_internal_transfer,
-        is_business_expense, notes)
-     VALUES ${values.join(', ')}`,
+        is_business_expense, notes, dedupe_hash)
+     VALUES ${values.join(', ')}
+     ON CONFLICT (dedupe_hash) WHERE dedupe_hash IS NOT NULL DO NOTHING`,
     params,
   )
 
-  return { inserted: rows.length }
+  const inserted = result.rowCount ?? 0
+  return { inserted, skipped: rows.length - inserted }
 }
 
 export interface TransactionPatch {

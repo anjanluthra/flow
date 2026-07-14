@@ -59,7 +59,8 @@ interface Reconciliation {
   skipped: SkippedRow[]
   sumCredits: number // local currency
   sumDebits: number
-  imported: number | null // set after save
+  imported: number | null // rows saved (after save)
+  duplicates: number | null // rows skipped as already-imported (after save)
 }
 
 // ---------------------------------------------------------------------------
@@ -191,6 +192,9 @@ export default function ImportPage() {
   const [mappings, setMappings] = useState<MerchantMapping[]>([])
   const [recon, setRecon] = useState<Reconciliation | null>(null)
   const [fxRates, setFxRates] = useState<Record<string, number> | null>(null)
+  // Optional statement balances for the reconciliation check (local currency).
+  const [openingBalance, setOpeningBalance] = useState('')
+  const [closingBalance, setClosingBalance] = useState('')
 
   // ---- Load real accounts + categories + learned mappings + live FX ----
   useEffect(() => {
@@ -317,6 +321,7 @@ export default function ImportPage() {
           sumCredits,
           sumDebits,
           imported: null,
+          duplicates: null,
         })
       } catch {
         setParseError('Failed to parse the CSV file. Please check the file format.')
@@ -387,8 +392,14 @@ export default function ImportPage() {
       if (!res.ok) throw new Error('Save failed')
       const data = await res.json()
 
-      setSaveResult(`Imported ${data.inserted} transaction${data.inserted !== 1 ? 's' : ''} into ${account.name}.`)
-      setRecon((prev) => (prev ? { ...prev, imported: data.inserted } : prev))
+      const dupNote =
+        data.skipped > 0 ? ` (${data.skipped} duplicate${data.skipped !== 1 ? 's' : ''} skipped)` : ''
+      setSaveResult(
+        `Imported ${data.inserted} transaction${data.inserted !== 1 ? 's' : ''} into ${account.name}${dupNote}.`,
+      )
+      setRecon((prev) =>
+        prev ? { ...prev, imported: data.inserted, duplicates: data.skipped ?? 0 } : prev,
+      )
       setParsedTransactions([])
       setFile(null)
     } catch {
@@ -404,6 +415,8 @@ export default function ImportPage() {
     setParseError(null)
     setSaveResult(null)
     setRecon(null)
+    setOpeningBalance('')
+    setClosingBalance('')
   }
 
   // Summary stats
@@ -583,11 +596,66 @@ export default function ImportPage() {
                   </div>
                 </div>
 
+                {/* Balance assertion — opening + net movement should equal closing */}
+                <div className="mt-4 border-t border-gray-100 pt-4">
+                  <p className="mb-2 text-xs font-medium text-gray-500">
+                    Balance check{' '}
+                    <span className="font-normal text-gray-400">
+                      (optional — enter the statement&apos;s opening &amp; closing balance to verify)
+                    </span>
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="Opening balance"
+                      value={openingBalance}
+                      onChange={(e) => setOpeningBalance(e.target.value)}
+                      className="w-36 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    <span className="text-gray-400">+</span>
+                    <span className="font-mono text-sm text-gray-600">
+                      {formatLocal(net, account?.currency ?? 'USD')}
+                    </span>
+                    <span className="text-gray-400">=</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="Closing balance"
+                      value={closingBalance}
+                      onChange={(e) => setClosingBalance(e.target.value)}
+                      className="w-36 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    {openingBalance.trim() !== '' && closingBalance.trim() !== '' && (() => {
+                      const open = parseFloat(openingBalance.replace(/[^0-9.\-]/g, ''))
+                      const close = parseFloat(closingBalance.replace(/[^0-9.\-]/g, ''))
+                      if (isNaN(open) || isNaN(close)) return null
+                      const diff = open + net - close
+                      const ok = Math.abs(diff) < 0.01
+                      return (
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
+                            ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+                          }`}
+                        >
+                          {ok ? <CheckCircle className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
+                          {ok
+                            ? 'Balances reconcile ✓'
+                            : `Off by ${formatLocal(diff, account?.currency ?? 'USD')}`}
+                        </span>
+                      )
+                    })()}
+                  </div>
+                </div>
+
                 {recon.imported !== null && (
                   <div className="mt-4 flex items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-700">
                     <CheckCircle className="h-4 w-4" />
-                    Saved {recon.imported} of {recon.parsed} parsed rows to the database
-                    {recon.imported === recon.parsed ? ' — full match ✓' : ' — review the difference'}
+                    Saved {recon.imported} of {recon.parsed} parsed rows
+                    {recon.duplicates ? `, ${recon.duplicates} skipped as already-imported` : ''}
+                    {recon.imported + (recon.duplicates ?? 0) === recon.parsed
+                      ? ' — all accounted for ✓'
+                      : ' — review the difference'}
                   </div>
                 )}
 

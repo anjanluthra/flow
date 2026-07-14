@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { createHash } from 'crypto'
 import {
   getTransactions,
   createTransactions,
@@ -6,6 +7,24 @@ import {
   type NewTransaction,
   type TransactionFilters,
 } from '@/lib/db'
+
+/**
+ * Content hash for de-duplication. The occurrence index disambiguates
+ * genuinely-repeated transactions (e.g. two identical coffees the same day):
+ * the first gets occurrence 0, the second occurrence 1, so both survive — but
+ * re-importing the same statement reproduces the exact same hashes, which the
+ * unique index then skips.
+ */
+function dedupeHash(t: IncomingTransaction, occurrence: number): string {
+  const key = [
+    t.accountId ?? '',
+    t.date,
+    t.amountLocal,
+    t.description.trim().toLowerCase(),
+    occurrence,
+  ].join('|')
+  return createHash('sha256').update(key).digest('hex')
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/transactions — list with optional filters
@@ -105,23 +124,39 @@ export async function POST(request: NextRequest) {
       nameToId.set((c.name as string).toLowerCase(), c.id as string)
     }
 
-    const rows: NewTransaction[] = incoming.map((t) => ({
-      date: t.date,
-      description: t.description,
-      amountLocal: t.amountLocal,
-      currency: t.currency,
-      amountUsd: t.amountUsd ?? null,
-      categoryId:
-        t.categoryId ??
-        (t.categoryName ? nameToId.get(t.categoryName.toLowerCase()) ?? null : null),
-      accountId: t.accountId,
-      type: t.type,
-      isInternalTransfer: t.isInternalTransfer ?? false,
-      isBusinessExpense: t.isBusinessExpense ?? false,
-    }))
+    // Assign an occurrence index within each identical (account,date,amount,
+    // description) group so repeated-but-genuine rows don't collide.
+    const seen = new Map<string, number>()
 
-    const { inserted } = await createTransactions(rows)
-    return NextResponse.json({ success: true, inserted })
+    const rows: NewTransaction[] = incoming.map((t) => {
+      const groupKey = [
+        t.accountId ?? '',
+        t.date,
+        t.amountLocal,
+        t.description.trim().toLowerCase(),
+      ].join('|')
+      const occurrence = seen.get(groupKey) ?? 0
+      seen.set(groupKey, occurrence + 1)
+
+      return {
+        date: t.date,
+        description: t.description,
+        amountLocal: t.amountLocal,
+        currency: t.currency,
+        amountUsd: t.amountUsd ?? null,
+        categoryId:
+          t.categoryId ??
+          (t.categoryName ? nameToId.get(t.categoryName.toLowerCase()) ?? null : null),
+        accountId: t.accountId,
+        type: t.type,
+        isInternalTransfer: t.isInternalTransfer ?? false,
+        isBusinessExpense: t.isBusinessExpense ?? false,
+        dedupeHash: dedupeHash(t, occurrence),
+      }
+    })
+
+    const { inserted, skipped } = await createTransactions(rows)
+    return NextResponse.json({ success: true, inserted, skipped })
   } catch (error) {
     console.error('Failed to create transactions:', error)
     return NextResponse.json({ error: 'Failed to create transactions' }, { status: 500 })
