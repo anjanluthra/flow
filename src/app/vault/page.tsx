@@ -10,6 +10,7 @@ import {
   Trash2,
   Heart,
   CheckCircle,
+  Sparkles,
 } from 'lucide-react'
 import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 
@@ -92,7 +93,33 @@ export default function VaultPage() {
   const [upTitle, setUpTitle] = useState('')
   const [uploading, setUploading] = useState(false)
   const [viewer, setViewer] = useState<DocViewerTarget | null>(null)
+  const [generating, setGenerating] = useState(false)
+  const [genError, setGenError] = useState<string | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  async function generateForKate() {
+    if (
+      note.trim() &&
+      !confirm('Rewrite the For Kate note with Claude from your current finances? This replaces the text below (you can still edit it after).')
+    )
+      return
+    setGenerating(true)
+    setGenError(null)
+    try {
+      const res = await fetch('/api/vault/for-kate', { method: 'POST' })
+      const data = await res.json()
+      if (!res.ok) {
+        setGenError(data.error || 'Could not generate the note.')
+        return
+      }
+      setNote(data.text)
+      setNoteSaved(true)
+    } catch {
+      setGenError('Could not generate the note.')
+    } finally {
+      setGenerating(false)
+    }
+  }
 
   // For-Kate note
   const [note, setNote] = useState('')
@@ -199,16 +226,27 @@ export default function VaultPage() {
               <Heart className="h-4 w-4 text-rose-500" />
               <h2 className="text-base font-semibold text-gray-900">For Kate</h2>
             </div>
-            <span className="text-xs text-gray-400">
-              {noteSaved ? (
-                <span className="inline-flex items-center gap-1 text-emerald-600">
-                  <CheckCircle className="h-3.5 w-3.5" /> Saved
-                </span>
-              ) : (
-                'Saving…'
-              )}
-            </span>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-gray-400">
+                {noteSaved ? (
+                  <span className="inline-flex items-center gap-1 text-emerald-600">
+                    <CheckCircle className="h-3.5 w-3.5" /> Saved
+                  </span>
+                ) : (
+                  'Saving…'
+                )}
+              </span>
+              <button
+                onClick={generateForKate}
+                disabled={generating}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-rose-700 disabled:opacity-50"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                {generating ? 'Writing…' : note.trim() ? 'Rewrite with Claude' : 'Write with Claude'}
+              </button>
+            </div>
           </div>
+          {genError && <p className="border-b border-rose-100 bg-rose-50 px-6 py-2 text-xs text-rose-600">{genError}</p>}
           <div className="p-4">
             <textarea
               value={note}
