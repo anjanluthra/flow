@@ -13,6 +13,7 @@ import {
   TrendingUp,
   FileText,
   Settings,
+  Repeat,
 } from "lucide-react";
 
 interface NavItem {
@@ -39,6 +40,7 @@ const navSections: NavSection[] = [
       { href: "/dashboard", label: "Summary", icon: LayoutDashboard },
       { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
       { href: "/import", label: "Import", icon: Upload },
+      { href: "/recurring", label: "Recurring", icon: Repeat },
       { href: "/annual", label: "Annual & Forecast", icon: CalendarRange },
     ],
   },
