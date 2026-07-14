@@ -19,6 +19,7 @@ interface SeedDoc {
   fileName: string
   mimeType: string
   contentBase64: string
+  textContent?: string
   seedHash: string
 }
 
@@ -32,10 +33,12 @@ async function ensureTables() {
        mime_type   text NOT NULL,
        size_bytes  int  NOT NULL,
        content     bytea NOT NULL,
+       text_content text,
        seed_hash   text UNIQUE,
        uploaded_at timestamptz NOT NULL DEFAULT now()
      )`,
   )
+  await query(`ALTER TABLE tax_documents ADD COLUMN IF NOT EXISTS text_content text`)
   await query(
     `CREATE TABLE IF NOT EXISTS app_settings (
        key text PRIMARY KEY, value text NOT NULL DEFAULT '', updated_at timestamptz NOT NULL DEFAULT now()
@@ -47,10 +50,12 @@ async function seedIfNeeded() {
   for (const d of taxDocs as SeedDoc[]) {
     const content = Buffer.from(d.contentBase64, 'base64')
     await query(
-      `INSERT INTO tax_documents (category, title, file_name, mime_type, size_bytes, content, seed_hash)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       ON CONFLICT (seed_hash) DO NOTHING`,
-      [d.category, d.title, d.fileName, d.mimeType, content.length, content, d.seedHash],
+      `INSERT INTO tax_documents (category, title, file_name, mime_type, size_bytes, content, text_content, seed_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       ON CONFLICT (seed_hash) DO UPDATE SET
+         category = EXCLUDED.category, title = EXCLUDED.title,
+         file_name = EXCLUDED.file_name, text_content = EXCLUDED.text_content`,
+      [d.category, d.title, d.fileName, d.mimeType, content.length, content, d.textContent ?? null, d.seedHash],
     )
   }
 }

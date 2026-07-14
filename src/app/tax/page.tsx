@@ -13,6 +13,7 @@ import {
   AlertTriangle,
   Pin,
 } from 'lucide-react'
+import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 
 interface TaxDoc {
   id: string
@@ -97,6 +98,7 @@ export default function TaxPage() {
   const [upCategory, setUpCategory] = useState('Other')
   const [upTitle, setUpTitle] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [viewer, setViewer] = useState<DocViewerTarget | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -366,9 +368,21 @@ export default function TaxPage() {
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
-                        <a href={`/api/tax/${d.id}`} target="_blank" rel="noreferrer" title="View" className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700">
+                        <button
+                          onClick={() =>
+                            setViewer({
+                              url: `/api/tax/${d.id}`,
+                              downloadUrl: `/api/tax/${d.id}?download=1`,
+                              textUrl: `/api/tax/${d.id}?text=1`,
+                              fileName: d.fileName,
+                              mimeType: d.mimeType,
+                            })
+                          }
+                          title="View"
+                          className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                        >
                           <Eye className="h-4 w-4" />
-                        </a>
+                        </button>
                         <a href={`/api/tax/${d.id}?download=1`} title="Download" className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700">
                           <Download className="h-4 w-4" />
                         </a>
@@ -384,6 +398,7 @@ export default function TaxPage() {
           </div>
         )}
       </div>
+      <DocViewer target={viewer} onClose={() => setViewer(null)} />
     </div>
   )
 }

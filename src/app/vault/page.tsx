@@ -11,6 +11,7 @@ import {
   Heart,
   CheckCircle,
 } from 'lucide-react'
+import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 
 interface VaultDoc {
   id: string
@@ -90,6 +91,7 @@ export default function VaultPage() {
   const [upType, setUpType] = useState('Will')
   const [upTitle, setUpTitle] = useState('')
   const [uploading, setUploading] = useState(false)
+  const [viewer, setViewer] = useState<DocViewerTarget | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
 
   // For-Kate note
@@ -296,15 +298,20 @@ export default function VaultPage() {
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
-                        <a
-                          href={`/api/vault/${d.id}`}
-                          target="_blank"
-                          rel="noreferrer"
+                        <button
+                          onClick={() =>
+                            setViewer({
+                              url: `/api/vault/${d.id}`,
+                              downloadUrl: `/api/vault/${d.id}?download=1`,
+                              fileName: d.fileName,
+                              mimeType: d.mimeType,
+                            })
+                          }
                           title="View"
                           className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
                         >
                           <Eye className="h-4 w-4" />
-                        </a>
+                        </button>
                         <a
                           href={`/api/vault/${d.id}?download=1`}
                           title="Download"
@@ -328,6 +335,7 @@ export default function VaultPage() {
           </div>
         )}
       </div>
+      <DocViewer target={viewer} onClose={() => setViewer(null)} />
     </div>
   )
 }

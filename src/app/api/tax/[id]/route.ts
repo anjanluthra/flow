@@ -8,6 +8,13 @@ export async function GET(
   try {
     const { id } = await params
     const download = request.nextUrl.searchParams.get('download') === '1'
+
+    // Text mode: return the extracted plain-text for in-app preview.
+    if (request.nextUrl.searchParams.get('text') === '1') {
+      const t = await query(`SELECT text_content FROM tax_documents WHERE id = $1`, [id])
+      return NextResponse.json({ text: t.rows[0]?.text_content ?? '' })
+    }
+
     const result = await query(
       `SELECT file_name, mime_type, content FROM tax_documents WHERE id = $1`,
       [id],

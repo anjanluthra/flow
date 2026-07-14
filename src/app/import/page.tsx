@@ -2,6 +2,7 @@
 
 import React, { useState, useCallback, useEffect } from 'react'
 import { Upload, CheckCircle, AlertCircle, FileText, Eye, Download, Trash2 } from 'lucide-react'
+import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 import { FileUpload } from '@/components/ui/FileUpload'
 import { convertToUSD } from '@/lib/currency'
 import { suggestCategoryName } from '@/lib/categories'
@@ -310,6 +311,7 @@ export default function ImportPage() {
     { date: string; description: string; amount: number }[] | null
   >(null)
   const [pdfDoc, setPdfDoc] = useState<{ base64: string; fileName: string; format: string } | null>(null)
+  const [viewer, setViewer] = useState<DocViewerTarget | null>(null)
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -1289,15 +1291,19 @@ export default function ImportPage() {
                         </td>
                         <td className="px-3 py-3 text-right">
                           <div className="flex items-center justify-end gap-1 pr-4">
-                            <a
-                              href={`/api/documents/${d.id}`}
-                              target="_blank"
-                              rel="noreferrer"
+                            <button
+                              onClick={() =>
+                                setViewer({
+                                  url: `/api/documents/${d.id}`,
+                                  downloadUrl: `/api/documents/${d.id}?download=1`,
+                                  fileName: d.fileName,
+                                })
+                              }
                               title="View"
                               className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
                             >
                               <Eye className="h-4 w-4" />
-                            </a>
+                            </button>
                             <a
                               href={`/api/documents/${d.id}?download=1`}
                               title="Download"
@@ -1323,6 +1329,7 @@ export default function ImportPage() {
           )}
         </div>
       </div>
+      <DocViewer target={viewer} onClose={() => setViewer(null)} />
     </div>
   )
 }
