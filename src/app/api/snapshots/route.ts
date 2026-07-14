@@ -47,11 +47,19 @@ export async function GET() {
       ORDER BY bs.snapshot_date DESC
     `)
 
+    // Normalise any date/timestamp to a plain YYYY-MM-DD string.
+    const ymd = (v: unknown): string => {
+      if (!v) return ''
+      if (typeof v === 'string') return v.slice(0, 10)
+      const d = new Date(v as string)
+      return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10)
+    }
+
     const byDate = new Map<string, { date: string; totalNetWorth: number; personalNetWorth: number; corporateCash: number }>()
     for (const row of result.rows) {
-      const date = String(row.snapshot_date)
+      const date = ymd(row.snapshot_date)
       byDate.set(date, {
-        date: row.snapshot_date,
+        date,
         totalNetWorth: parseFloat(row.total_net_worth),
         personalNetWorth: parseFloat(row.personal_net_worth),
         corporateCash: parseFloat(row.corporate_cash),
@@ -63,11 +71,11 @@ export async function GET() {
     try {
       const nws = await query(`SELECT snapshot_date, total_net_worth_usd, data FROM net_worth_snapshots`)
       for (const row of nws.rows) {
-        const date = String(row.snapshot_date)
-        if (byDate.has(date)) continue
+        const date = ymd(row.snapshot_date)
+        if (!date || byDate.has(date)) continue
         const data = typeof row.data === 'string' ? JSON.parse(row.data || '{}') : row.data || {}
         byDate.set(date, {
-          date: row.snapshot_date,
+          date,
           totalNetWorth: parseFloat(row.total_net_worth_usd),
           personalNetWorth: Number(data.personalNetWorth ?? 0),
           corporateCash: Number(data.corporateCash ?? 0),
