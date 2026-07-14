@@ -2,6 +2,9 @@ import { NextResponse } from 'next/server'
 import { query, createTransactions, type NewTransaction } from '@/lib/db'
 import history from '@/data/history.json'
 
+export const maxDuration = 60
+export const dynamic = 'force-dynamic'
+
 // ---------------------------------------------------------------------------
 // POST /api/admin/load-history — one-click import of historical actuals.
 //
@@ -43,6 +46,23 @@ const EXTRA_CATEGORIES: Array<[string, string, string, string, number]> = [
 
 export async function POST() {
   try {
+    // 0. Ensure the schema this import relies on exists (idempotent), so the
+    //    button works even if migrations 008–010 weren't applied by hand.
+    await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS dedupe_hash text`)
+    await query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_transactions_dedupe_hash
+         ON transactions (dedupe_hash) WHERE dedupe_hash IS NOT NULL`,
+    )
+    // ALTER TYPE ... ADD VALUE must commit before the value is used; @vercel/postgres
+    // runs each query() in autocommit, so this separate statement is safe.
+    await query(`ALTER TYPE category_type ADD VALUE IF NOT EXISTS 'transfer'`)
+    await query(
+      `INSERT INTO categories (name, type, icon_name, color_hex, sort_order)
+       VALUES ('Internal Transfer', 'transfer', 'arrow-left-right', '#64748B', 1),
+              ('Investments', 'transfer', 'trending-up', '#0D9488', 2)
+       ON CONFLICT (name) DO NOTHING`,
+    )
+
     // 1. Ensure the extra accounts exist.
     for (const [name, inst, country, ccy, type, holder, ac, liq] of EXTRA_ACCOUNTS) {
       await query(
@@ -100,7 +120,7 @@ export async function POST() {
     // 5. Insert in batches (idempotent via dedupe_hash).
     let inserted = 0
     let skipped = 0
-    const BATCH = 500
+    const BATCH = 200
     for (let i = 0; i < toInsert.length; i += BATCH) {
       const res = await createTransactions(toInsert.slice(i, i + BATCH))
       inserted += res.inserted
@@ -117,6 +137,7 @@ export async function POST() {
     })
   } catch (error) {
     console.error('Failed to load history:', error)
-    return NextResponse.json({ error: 'Failed to load history' }, { status: 500 })
+    const detail = error instanceof Error ? error.message : String(error)
+    return NextResponse.json({ error: `Failed to load history: ${detail}` }, { status: 500 })
   }
 }
