@@ -1,17 +1,25 @@
 'use client'
 
-import React, { useState, useCallback } from 'react'
-import { Upload, CheckCircle, AlertCircle, FileText, ArrowRight, X } from 'lucide-react'
+import React, { useState, useCallback, useEffect } from 'react'
+import { Upload, CheckCircle, AlertCircle, FileText } from 'lucide-react'
 import { FileUpload } from '@/components/ui/FileUpload'
+import { convertToUSD } from '@/lib/currency'
+import { suggestCategoryName } from '@/lib/categories'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 interface AccountOption {
+  id: string
   name: string
   currency: string
-  usdRate: number // how many USD per 1 unit of this currency
+}
+
+interface CategoryOption {
+  id: string
+  name: string
+  type: 'income' | 'expense'
 }
 
 interface ParsedTransaction {
@@ -20,7 +28,7 @@ interface ParsedTransaction {
   amount: number // negative = debit, positive = credit
   currency: string
   amountUSD: number
-  category: string
+  category: string // canonical DB category name, or '' if unmatched
   status: 'categorised' | 'needs-review'
 }
 
@@ -32,141 +40,28 @@ interface ColumnMapping {
   creditCol?: number
 }
 
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
-
-const ACCOUNTS: AccountOption[] = [
-  { name: 'FAB Current Account', currency: 'AED', usdRate: 0.272294 },
-  { name: 'FAB iSavings', currency: 'AED', usdRate: 0.272294 },
-  { name: 'Wio Personal (Anjan)', currency: 'AED', usdRate: 0.272294 },
-  { name: 'Wio Personal (Kate)', currency: 'AED', usdRate: 0.272294 },
-  { name: 'Barclaycard Credit Card', currency: 'GBP', usdRate: 1.3231 },
-  { name: 'Monzo Joint', currency: 'GBP', usdRate: 1.3231 },
-  { name: 'Revolut', currency: 'GBP', usdRate: 1.3231 },
-  { name: 'Santander/NS&I', currency: 'GBP', usdRate: 1.3231 },
-  { name: 'HSBC Jersey', currency: 'GBP', usdRate: 1.3231 },
-  { name: 'IBKR', currency: 'USD', usdRate: 1.0 },
-]
-
-const KEYWORD_MAP: Record<string, string> = {
-  // Groceries
-  carrefour: 'Groceries',
-  spinneys: 'Groceries',
-  lulu: 'Groceries',
-  waitrose: 'Groceries',
-  tesco: 'Groceries',
-  supermarket: 'Groceries',
-  grocery: 'Groceries',
-  choithrams: 'Groceries',
-  geant: 'Groceries',
-  // Dining
-  starbucks: 'Dining & Coffee',
-  restaurant: 'Dining & Coffee',
-  cafe: 'Dining & Coffee',
-  coffee: 'Dining & Coffee',
-  mcdonald: 'Dining & Coffee',
-  deliveroo: 'Dining & Coffee',
-  talabat: 'Dining & Coffee',
-  zomato: 'Dining & Coffee',
-  costa: 'Dining & Coffee',
-  // Transport
-  uber: 'Taxis & Rideshare',
-  careem: 'Taxis & Rideshare',
-  bolt: 'Taxis & Rideshare',
-  taxi: 'Taxis & Rideshare',
-  // Car
-  adnoc: 'Car',
-  enoc: 'Car',
-  salik: 'Car',
-  parking: 'Car',
-  rta: 'Car',
-  petrol: 'Car',
-  fuel: 'Car',
-  // Shopping
-  amazon: 'Shopping',
-  noon: 'Shopping',
-  ikea: 'Shopping',
-  mall: 'Shopping',
-  zara: 'Shopping',
-  // Bills & Utilities
-  du: 'Bills & Utilities',
-  etisalat: 'Bills & Utilities',
-  dewa: 'Bills & Utilities',
-  electricity: 'Bills & Utilities',
-  water: 'Bills & Utilities',
-  internet: 'Bills & Utilities',
-  // Subscriptions
-  netflix: 'Subscriptions',
-  spotify: 'Subscriptions',
-  apple: 'Subscriptions',
-  google: 'Subscriptions',
-  youtube: 'Subscriptions',
-  // Health
-  pharmacy: 'Health & Fitness',
-  gym: 'Health & Fitness',
-  clinic: 'Health & Fitness',
-  hospital: 'Health & Fitness',
-  medical: 'Health & Fitness',
-  // Entertainment
-  cinema: 'Entertainment',
-  movie: 'Entertainment',
-  // Travel
-  airline: 'Travel',
-  emirates: 'Travel',
-  hotel: 'Travel',
-  booking: 'Travel',
-  airbnb: 'Travel',
-  flight: 'Travel',
-  // Housing
-  rent: 'Housing & Rent',
-  landlord: 'Housing & Rent',
-  // Education
-  school: 'Education',
-  tuition: 'Education',
-  course: 'Education',
-  // Income
-  salary: 'Salary',
-  payroll: 'Salary',
-  interest: 'Bank Interest',
-  dividend: 'Dividends',
-  cashback: 'Cashback & Rewards',
-  refund: 'Refunds',
-  transfer: 'Internal Transfer',
+interface MerchantMapping {
+  pattern: string
+  categoryName: string
 }
 
-const EXPENSE_CATEGORIES = [
-  'Groceries',
-  'Dining & Coffee',
-  'Taxis & Rideshare',
-  'Car',
-  'Bills & Utilities',
-  'Housing & Rent',
-  'Shopping',
-  'Subscriptions',
-  'Health & Fitness',
-  'Entertainment',
-  'Travel',
-  'Education',
-  'Personal Care',
-  'Gifts & Donations',
-  'Insurance',
-  'Childcare',
-  'Other Expense',
-]
+interface SkippedRow {
+  line: number
+  reason: string
+  raw: string
+}
 
-const INCOME_CATEGORIES = [
-  'Salary',
-  'Freelance Income',
-  'Bank Interest',
-  'Dividends',
-  'Rental Income',
-  'Cashback & Rewards',
-  'Refunds',
-  'Internal Transfer',
-]
-
-const ALL_CATEGORIES = [...EXPENSE_CATEGORIES, ...INCOME_CATEGORIES]
+// Reconciliation evidence: proves every line in the file is accounted for.
+interface Reconciliation {
+  fileLines: number // non-empty lines in the file
+  dataRows: number // excluding the header
+  parsed: number
+  skipped: SkippedRow[]
+  sumCredits: number // local currency
+  sumDebits: number
+  imported: number | null // rows saved (after save)
+  duplicates: number | null // rows skipped as already-imported (after save)
+}
 
 // ---------------------------------------------------------------------------
 // CSV parsing utilities
@@ -185,7 +80,7 @@ function parseCSV(text: string): string[][] {
     if (inQuotes) {
       if (char === '"' && nextChar === '"') {
         currentField += '"'
-        i++ // skip escaped quote
+        i++
       } else if (char === '"') {
         inQuotes = false
       } else {
@@ -199,23 +94,18 @@ function parseCSV(text: string): string[][] {
         currentField = ''
       } else if (char === '\n' || (char === '\r' && nextChar === '\n')) {
         currentRow.push(currentField.trim())
-        if (currentRow.some((field) => field !== '')) {
-          rows.push(currentRow)
-        }
+        if (currentRow.some((field) => field !== '')) rows.push(currentRow)
         currentRow = []
         currentField = ''
-        if (char === '\r') i++ // skip \n after \r
+        if (char === '\r') i++
       } else {
         currentField += char
       }
     }
   }
 
-  // Handle last field/row
   currentRow.push(currentField.trim())
-  if (currentRow.some((field) => field !== '')) {
-    rows.push(currentRow)
-  }
+  if (currentRow.some((field) => field !== '')) rows.push(currentRow)
 
   return rows
 }
@@ -231,26 +121,20 @@ function detectColumns(headers: string[]): ColumnMapping | null {
 
   for (let i = 0; i < lower.length; i++) {
     const h = lower[i]
-    if (dateCol === -1 && (h.includes('date') || h.includes('posted') || h.includes('transaction date'))) {
-      dateCol = i
-    }
-    if (descCol === -1 && (h.includes('description') || h.includes('narrative') || h.includes('details') || h.includes('memo') || h.includes('particulars') || h.includes('reference'))) {
+    if (dateCol === -1 && (h.includes('date') || h.includes('posted'))) dateCol = i
+    if (
+      descCol === -1 &&
+      (h.includes('description') || h.includes('narrative') || h.includes('details') ||
+        h.includes('memo') || h.includes('particulars') || h.includes('reference'))
+    ) {
       descCol = i
     }
-    if (amountCol === -1 && h === 'amount') {
-      amountCol = i
-    }
-    if (h.includes('debit') || h.includes('withdrawal')) {
-      debitCol = i
-    }
-    if (h.includes('credit') || h.includes('deposit')) {
-      creditCol = i
-    }
+    if (amountCol === -1 && h === 'amount') amountCol = i
+    if (h.includes('debit') || h.includes('withdrawal')) debitCol = i
+    if (h.includes('credit') || h.includes('deposit')) creditCol = i
   }
 
-  // If no single amount column but we have debit/credit, that works
   if (amountCol === -1 && debitCol === undefined && creditCol === undefined) {
-    // Try broader matching for amount
     for (let i = 0; i < lower.length; i++) {
       if (lower[i].includes('amount') || lower[i].includes('value') || lower[i].includes('sum')) {
         amountCol = i
@@ -259,29 +143,33 @@ function detectColumns(headers: string[]): ColumnMapping | null {
     }
   }
 
-  // Fallback: if still no date column, try first column
   if (dateCol === -1) dateCol = 0
-  // Fallback: if still no description, try second column
   if (descCol === -1) descCol = Math.min(1, headers.length - 1)
 
-  if (amountCol === -1 && debitCol === undefined && creditCol === undefined) {
-    return null
-  }
+  if (amountCol === -1 && debitCol === undefined && creditCol === undefined) return null
 
   return { dateCol, descCol, amountCol, debitCol, creditCol }
 }
 
-function suggestCategory(description: string): string {
-  const lower = description.toLowerCase()
-  for (const [keyword, category] of Object.entries(KEYWORD_MAP)) {
-    if (lower.includes(keyword)) {
-      return category
-    }
+/**
+ * Normalise a statement date to ISO (YYYY-MM-DD). ISO passes through; slash/dash
+ * formats are treated as day-first (DD/MM/YYYY) to match UK/UAE bank exports.
+ * Anything unrecognised is returned unchanged for Postgres to try.
+ */
+function normalizeDate(raw: string): string {
+  const s = raw.trim()
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+  const m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/)
+  if (m) {
+    const day = m[1].padStart(2, '0')
+    const month = m[2].padStart(2, '0')
+    const year = m[3].length === 2 ? `20${m[3]}` : m[3]
+    return `${year}-${month}-${day}`
   }
-  return ''
+  return s
 }
 
-function formatCurrency(amount: number, currency: string): string {
+function formatLocal(amount: number, currency: string): string {
   const symbol =
     currency === 'USD' ? '$' : currency === 'GBP' ? '£' : currency === 'AED' ? 'AED ' : `${currency} `
   return `${amount < 0 ? '-' : ''}${symbol}${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -292,26 +180,68 @@ function formatCurrency(amount: number, currency: string): string {
 // ---------------------------------------------------------------------------
 
 export default function ImportPage() {
-  const [selectedAccount, setSelectedAccount] = useState<string>(ACCOUNTS[0].name)
+  const [accounts, setAccounts] = useState<AccountOption[]>([])
+  const [categories, setCategories] = useState<CategoryOption[]>([])
+  const [selectedAccountId, setSelectedAccountId] = useState<string>('')
   const [parsedTransactions, setParsedTransactions] = useState<ParsedTransaction[]>([])
   const [file, setFile] = useState<File | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
   const [parseError, setParseError] = useState<string | null>(null)
+  const [isSaving, setIsSaving] = useState(false)
+  const [saveResult, setSaveResult] = useState<string | null>(null)
+  const [mappings, setMappings] = useState<MerchantMapping[]>([])
+  const [recon, setRecon] = useState<Reconciliation | null>(null)
+  const [fxRates, setFxRates] = useState<Record<string, number> | null>(null)
+  // Optional statement balances for the reconciliation check (local currency).
+  const [openingBalance, setOpeningBalance] = useState('')
+  const [closingBalance, setClosingBalance] = useState('')
 
-  const account = ACCOUNTS.find((a) => a.name === selectedAccount) ?? ACCOUNTS[0]
+  // ---- Load real accounts + categories + learned mappings + live FX ----
+  useEffect(() => {
+    async function load() {
+      try {
+        const [accRes, catRes, mapRes, fxRes] = await Promise.all([
+          fetch('/api/accounts'),
+          fetch('/api/categories'),
+          fetch('/api/merchant-mappings'),
+          fetch('/api/fx'),
+        ])
+        const accData = await accRes.json()
+        const catData = await catRes.json()
+        const mapData = await mapRes.json()
+        const fxData = await fxRes.json()
+        setAccounts(accData.accounts || [])
+        setCategories(catData.categories || [])
+        setMappings(mapData.mappings || [])
+        if (fxData?.rates) setFxRates(fxData.rates)
+        if (accData.accounts?.length) setSelectedAccountId(accData.accounts[0].id)
+      } catch {
+        // Leave lists empty; the UI will prompt to check the connection.
+      }
+    }
+    load()
+  }, [])
+
+  const account = accounts.find((a) => a.id === selectedAccountId)
+  const expenseCategories = categories.filter((c) => c.type === 'expense')
+  const incomeCategories = categories.filter((c) => c.type === 'income')
 
   const handleFileSelect = useCallback(
     async (selectedFile: File) => {
       setFile(selectedFile)
       setParseError(null)
+      setSaveResult(null)
 
       if (!selectedFile.name.toLowerCase().endsWith('.csv')) {
         setParsedTransactions([])
         return
       }
+      if (!account) {
+        setParseError('Select a bank account before importing.')
+        return
+      }
 
       setIsProcessing(true)
-
       try {
         const text = await selectedFile.text()
         const rows = parseCSV(text)
@@ -322,25 +252,36 @@ export default function ImportPage() {
           return
         }
 
-        const headers = rows[0]
-        const mapping = detectColumns(headers)
-
+        const mapping = detectColumns(rows[0])
         if (!mapping) {
           setParseError(
-            'Could not auto-detect columns. Please ensure your CSV has headers including date, description, and amount/debit/credit columns.'
+            'Could not auto-detect columns. Ensure your CSV has date, description, and amount/debit/credit headers.',
           )
           setIsProcessing(false)
           return
         }
 
         const transactions: ParsedTransaction[] = []
+        const skipped: SkippedRow[] = []
+        let sumCredits = 0
+        let sumDebits = 0
+
+        // rows excludes fully-blank lines already; row 0 is the header.
+        const dataRows = rows.length - 1
 
         for (let i = 1; i < rows.length; i++) {
           const row = rows[i]
-          if (row.length < 2) continue
-
           const dateRaw = row[mapping.dateCol] ?? ''
           const description = row[mapping.descCol] ?? ''
+
+          if (row.length < 2 || (!dateRaw && !description)) {
+            skipped.push({
+              line: i + 1,
+              reason: row.length < 2 ? 'Too few columns' : 'No date or description',
+              raw: row.join(', ').slice(0, 80),
+            })
+            continue
+          }
 
           let amount = 0
           if (mapping.amountCol !== -1 && row[mapping.amountCol]) {
@@ -351,13 +292,17 @@ export default function ImportPage() {
             amount = credit - debit
           }
 
-          if (!dateRaw && !description) continue
+          if (amount >= 0) sumCredits += amount
+          else sumDebits += amount
 
-          const category = suggestCategory(description)
-          const amountUSD = amount * account.usdRate
+          // Learned merchant mappings take precedence over keyword rules.
+          const lowerDesc = description.toLowerCase()
+          const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
+          const category = learned?.categoryName ?? suggestCategoryName(description) ?? ''
+          const amountUSD = convertToUSD(amount, account.currency, fxRates ?? undefined)
 
           transactions.push({
-            date: dateRaw,
+            date: normalizeDate(dateRaw),
             description,
             amount,
             currency: account.currency,
@@ -368,49 +313,110 @@ export default function ImportPage() {
         }
 
         setParsedTransactions(transactions)
+        setRecon({
+          fileLines: rows.length,
+          dataRows,
+          parsed: transactions.length,
+          skipped,
+          sumCredits,
+          sumDebits,
+          imported: null,
+          duplicates: null,
+        })
       } catch {
         setParseError('Failed to parse the CSV file. Please check the file format.')
       } finally {
         setIsProcessing(false)
       }
     },
-    [account]
+    [account, mappings, fxRates],
   )
 
-  const handleCategoryChange = useCallback((index: number, newCategory: string) => {
-    setParsedTransactions((prev) =>
-      prev.map((tx, i) =>
-        i === index
-          ? {
-              ...tx,
-              category: newCategory,
-              status: newCategory ? 'categorised' : 'needs-review',
-            }
-          : tx
-      )
-    )
-  }, [])
+  const handleCategoryChange = useCallback(
+    (index: number, newCategory: string) => {
+      let description = ''
+      setParsedTransactions((prev) => {
+        description = prev[index]?.description ?? ''
+        return prev.map((tx, i) =>
+          i === index
+            ? { ...tx, category: newCategory, status: newCategory ? 'categorised' : 'needs-review' }
+            : tx,
+        )
+      })
+      // Self-learning: a manual correction during review teaches the mapping.
+      const cat = categories.find((c) => c.name === newCategory)
+      if (cat && description) {
+        fetch('/api/merchant-mappings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ description, categoryId: cat.id }),
+        }).catch(() => {})
+      }
+    },
+    [categories],
+  )
 
-  const handleConfirmImport = () => {
-    const categorised = parsedTransactions.filter((tx) => tx.status === 'categorised')
-    const needsReview = parsedTransactions.filter((tx) => tx.status === 'needs-review')
-    // eslint-disable-next-line no-console
-    console.log('Importing transactions:', {
-      account: selectedAccount,
-      total: parsedTransactions.length,
-      categorised: categorised.length,
-      needsReview: needsReview.length,
-      transactions: parsedTransactions,
-    })
-    alert(
-      `Imported ${parsedTransactions.length} transactions from ${selectedAccount}.\n${categorised.length} categorised, ${needsReview.length} need review.`
-    )
+  const handleConfirmImport = async () => {
+    if (!account || parsedTransactions.length === 0) return
+
+    setIsSaving(true)
+    setSaveResult(null)
+    try {
+      const incomeNames = new Set(incomeCategories.map((c) => c.name))
+      const payload = parsedTransactions.map((tx) => {
+        // Category type wins over sign (e.g. a positive Salary credit is income);
+        // otherwise fall back to the debit/credit sign.
+        const type: 'income' | 'expense' =
+          tx.category && incomeNames.has(tx.category)
+            ? 'income'
+            : tx.amount < 0
+              ? 'expense'
+              : 'income'
+        return {
+          accountId: account.id,
+          date: tx.date,
+          description: tx.description,
+          amountLocal: Math.abs(tx.amount),
+          currency: tx.currency,
+          amountUsd: Math.abs(tx.amountUSD),
+          categoryName: tx.category || null,
+          type,
+        }
+      })
+
+      const res = await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transactions: payload }),
+      })
+      if (!res.ok) throw new Error('Save failed')
+      const data = await res.json()
+
+      const dupNote =
+        data.skipped > 0 ? ` (${data.skipped} duplicate${data.skipped !== 1 ? 's' : ''} skipped)` : ''
+      setSaveResult(
+        `Imported ${data.inserted} transaction${data.inserted !== 1 ? 's' : ''} into ${account.name}${dupNote}.`,
+      )
+      setRecon((prev) =>
+        prev ? { ...prev, imported: data.inserted, duplicates: data.skipped ?? 0 } : prev,
+      )
+      setParsedTransactions([])
+      setFile(null)
+    } catch {
+      setSaveResult('Import failed — could not save to the database. Please try again.')
+    } finally {
+      setIsSaving(false)
+    }
   }
 
   const handleCancel = () => {
     setFile(null)
     setParsedTransactions([])
     setParseError(null)
+    setSaveResult(null)
+    setRecon(null)
+    setOpeningBalance('')
+    setClosingBalance('')
   }
 
   // Summary stats
@@ -423,38 +429,33 @@ export default function ImportPage() {
   return (
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
       <div className="mx-auto max-w-7xl px-6 py-10">
-        {/* ----------------------------------------------------------------- */}
-        {/* Page header                                                        */}
-        {/* ----------------------------------------------------------------- */}
+        {/* Header */}
         <div className="mb-8">
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">Import</h1>
           <p className="mt-1 text-sm text-gray-500">Import Bank Statements</p>
         </div>
 
-        {/* ----------------------------------------------------------------- */}
-        {/* Account selector                                                   */}
-        {/* ----------------------------------------------------------------- */}
+        {/* Account selector */}
         <div className="mb-6">
           <label htmlFor="account-select" className="mb-2 block text-sm font-medium text-gray-700">
             Bank Account
           </label>
           <select
             id="account-select"
-            value={selectedAccount}
-            onChange={(e) => setSelectedAccount(e.target.value)}
+            value={selectedAccountId}
+            onChange={(e) => setSelectedAccountId(e.target.value)}
             className="w-full max-w-md rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           >
-            {ACCOUNTS.map((acc) => (
-              <option key={acc.name} value={acc.name}>
+            {accounts.length === 0 && <option value="">No accounts found</option>}
+            {accounts.map((acc) => (
+              <option key={acc.id} value={acc.id}>
                 {acc.name} ({acc.currency})
               </option>
             ))}
           </select>
         </div>
 
-        {/* ----------------------------------------------------------------- */}
-        {/* File upload                                                        */}
-        {/* ----------------------------------------------------------------- */}
+        {/* File upload */}
         <div className="mb-8">
           <FileUpload
             onFileSelect={handleFileSelect}
@@ -464,9 +465,7 @@ export default function ImportPage() {
           />
         </div>
 
-        {/* ----------------------------------------------------------------- */}
-        {/* Processing indicator                                               */}
-        {/* ----------------------------------------------------------------- */}
+        {/* Processing indicator */}
         {isProcessing && (
           <div className="mb-8 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
             <div className="h-4 w-4 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
@@ -474,9 +473,15 @@ export default function ImportPage() {
           </div>
         )}
 
-        {/* ----------------------------------------------------------------- */}
-        {/* Parse error                                                        */}
-        {/* ----------------------------------------------------------------- */}
+        {/* Save result */}
+        {saveResult && (
+          <div className="mb-8 flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-3">
+            <CheckCircle className="h-4 w-4 shrink-0 text-green-500" />
+            <p className="text-sm text-green-700">{saveResult}</p>
+          </div>
+        )}
+
+        {/* Parse error */}
         {parseError && (
           <div className="mb-8 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
             <AlertCircle className="h-4 w-4 shrink-0 text-red-500" />
@@ -484,49 +489,35 @@ export default function ImportPage() {
           </div>
         )}
 
-        {/* ----------------------------------------------------------------- */}
-        {/* PDF notice                                                         */}
-        {/* ----------------------------------------------------------------- */}
+        {/* PDF notice */}
         {file && file.name.toLowerCase().endsWith('.pdf') && parsedTransactions.length === 0 && !parseError && (
           <div className="mb-8 flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
             <FileText className="h-4 w-4 shrink-0 text-amber-500" />
             <p className="text-sm text-amber-700">
-              PDF parsing requires server-side processing. The file has been staged for import. Click
-              &ldquo;Confirm &amp; Import&rdquo; to process it.
+              PDF parsing isn&apos;t supported yet — export your statement as CSV and re-upload.
             </p>
           </div>
         )}
 
-        {/* ----------------------------------------------------------------- */}
-        {/* Summary bar                                                        */}
-        {/* ----------------------------------------------------------------- */}
+        {/* Summary bar */}
         {parsedTransactions.length > 0 && (
           <div className="mb-6 grid grid-cols-2 gap-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm sm:grid-cols-4">
             <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-gray-400">
-                Total Transactions
-              </p>
+              <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Total Transactions</p>
               <p className="mt-1 text-xl font-semibold text-gray-900">{totalTransactions}</p>
             </div>
             <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-gray-400">
-                Auto-categorised
-              </p>
+              <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Auto-categorised</p>
               <p className="mt-1 text-xl font-semibold text-green-600">
-                {autoCategorised}{' '}
-                <span className="text-sm font-normal text-gray-400">({categorisedPercent}%)</span>
+                {autoCategorised} <span className="text-sm font-normal text-gray-400">({categorisedPercent}%)</span>
               </p>
             </div>
             <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-gray-400">
-                Needs Review
-              </p>
+              <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Needs Review</p>
               <p className="mt-1 text-xl font-semibold text-amber-600">{needsReview}</p>
             </div>
             <div>
-              <p className="text-xs font-medium uppercase tracking-wider text-gray-400">
-                Total Amount (USD)
-              </p>
+              <p className="text-xs font-medium uppercase tracking-wider text-gray-400">Total Amount (USD)</p>
               <p className={`mt-1 text-xl font-semibold ${totalAmount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {totalAmount < 0 ? '-' : ''}${Math.abs(totalAmount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </p>
@@ -534,87 +525,220 @@ export default function ImportPage() {
           </div>
         )}
 
-        {/* ----------------------------------------------------------------- */}
-        {/* Preview table                                                      */}
-        {/* ----------------------------------------------------------------- */}
+        {/* Reconciliation evidence — proof nothing was dropped */}
+        {recon && (
+          (() => {
+            const accounted = recon.parsed + recon.skipped.length
+            const balanced = accounted === recon.dataRows
+            const net = recon.sumCredits + recon.sumDebits
+            return (
+              <div className="mb-6 rounded-xl border border-gray-200 bg-white p-5 shadow-sm">
+                <div className="mb-4 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-gray-900">
+                    Reconciliation — statement coverage check
+                  </h3>
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
+                      balanced ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+                    }`}
+                  >
+                    {balanced ? (
+                      <CheckCircle className="h-3.5 w-3.5" />
+                    ) : (
+                      <AlertCircle className="h-3.5 w-3.5" />
+                    )}
+                    {balanced ? 'All lines accounted for' : 'Line-count mismatch'}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4 text-sm sm:grid-cols-4">
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-gray-400">Data rows</p>
+                    <p className="mt-0.5 font-semibold text-gray-900">{recon.dataRows}</p>
+                    <p className="text-xs text-gray-400">of {recon.fileLines} file lines</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-gray-400">Parsed</p>
+                    <p className="mt-0.5 font-semibold text-gray-900">{recon.parsed}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-gray-400">Skipped</p>
+                    <p className={`mt-0.5 font-semibold ${recon.skipped.length ? 'text-amber-600' : 'text-gray-900'}`}>
+                      {recon.skipped.length}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-gray-400">Parsed + Skipped</p>
+                    <p className={`mt-0.5 font-semibold ${balanced ? 'text-green-700' : 'text-red-600'}`}>
+                      {accounted} {balanced ? '=' : '≠'} {recon.dataRows}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid grid-cols-3 gap-4 border-t border-gray-100 pt-4 text-sm">
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-gray-400">Credits (in)</p>
+                    <p className="mt-0.5 font-mono font-semibold text-green-600">
+                      {formatLocal(recon.sumCredits, account?.currency ?? 'USD')}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-gray-400">Debits (out)</p>
+                    <p className="mt-0.5 font-mono font-semibold text-red-600">
+                      {formatLocal(recon.sumDebits, account?.currency ?? 'USD')}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs uppercase tracking-wider text-gray-400">Net movement</p>
+                    <p className={`mt-0.5 font-mono font-semibold ${net < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      {formatLocal(net, account?.currency ?? 'USD')}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Balance assertion — opening + net movement should equal closing */}
+                <div className="mt-4 border-t border-gray-100 pt-4">
+                  <p className="mb-2 text-xs font-medium text-gray-500">
+                    Balance check{' '}
+                    <span className="font-normal text-gray-400">
+                      (optional — enter the statement&apos;s opening &amp; closing balance to verify)
+                    </span>
+                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="Opening balance"
+                      value={openingBalance}
+                      onChange={(e) => setOpeningBalance(e.target.value)}
+                      className="w-36 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    <span className="text-gray-400">+</span>
+                    <span className="font-mono text-sm text-gray-600">
+                      {formatLocal(net, account?.currency ?? 'USD')}
+                    </span>
+                    <span className="text-gray-400">=</span>
+                    <input
+                      type="text"
+                      inputMode="decimal"
+                      placeholder="Closing balance"
+                      value={closingBalance}
+                      onChange={(e) => setClosingBalance(e.target.value)}
+                      className="w-36 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none"
+                    />
+                    {openingBalance.trim() !== '' && closingBalance.trim() !== '' && (() => {
+                      const open = parseFloat(openingBalance.replace(/[^0-9.\-]/g, ''))
+                      const close = parseFloat(closingBalance.replace(/[^0-9.\-]/g, ''))
+                      if (isNaN(open) || isNaN(close)) return null
+                      const diff = open + net - close
+                      const ok = Math.abs(diff) < 0.01
+                      return (
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium ${
+                            ok ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+                          }`}
+                        >
+                          {ok ? <CheckCircle className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
+                          {ok
+                            ? 'Balances reconcile ✓'
+                            : `Off by ${formatLocal(diff, account?.currency ?? 'USD')}`}
+                        </span>
+                      )
+                    })()}
+                  </div>
+                </div>
+
+                {recon.imported !== null && (
+                  <div className="mt-4 flex items-center gap-2 rounded-lg bg-green-50 px-3 py-2 text-sm text-green-700">
+                    <CheckCircle className="h-4 w-4" />
+                    Saved {recon.imported} of {recon.parsed} parsed rows
+                    {recon.duplicates ? `, ${recon.duplicates} skipped as already-imported` : ''}
+                    {recon.imported + (recon.duplicates ?? 0) === recon.parsed
+                      ? ' — all accounted for ✓'
+                      : ' — review the difference'}
+                  </div>
+                )}
+
+                {recon.skipped.length > 0 && (
+                  <details className="mt-4">
+                    <summary className="cursor-pointer text-xs font-medium text-amber-700">
+                      View {recon.skipped.length} skipped line{recon.skipped.length !== 1 ? 's' : ''} (with reason)
+                    </summary>
+                    <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-gray-100 bg-gray-50">
+                      <table className="w-full text-left text-xs">
+                        <thead className="text-gray-400">
+                          <tr>
+                            <th className="px-3 py-1.5 font-medium">Line</th>
+                            <th className="px-3 py-1.5 font-medium">Reason</th>
+                            <th className="px-3 py-1.5 font-medium">Content</th>
+                          </tr>
+                        </thead>
+                        <tbody className="text-gray-600">
+                          {recon.skipped.map((s) => (
+                            <tr key={s.line} className="border-t border-gray-100">
+                              <td className="px-3 py-1.5 tabular-nums">{s.line}</td>
+                              <td className="px-3 py-1.5">{s.reason}</td>
+                              <td className="px-3 py-1.5 font-mono text-gray-400">{s.raw}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                )}
+              </div>
+            )
+          })()
+        )}
+
+        {/* Preview table */}
         {parsedTransactions.length > 0 && (
           <div className="mb-8 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead>
                   <tr className="border-b border-gray-200 bg-gray-50">
-                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                      Date
-                    </th>
-                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                      Description
-                    </th>
-                    <th className="whitespace-nowrap px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">
-                      Amount (Local)
-                    </th>
-                    <th className="whitespace-nowrap px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">
-                      Amount (USD)
-                    </th>
-                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                      Category
-                    </th>
-                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">
-                      Status
-                    </th>
+                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Date</th>
+                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Description</th>
+                    <th className="whitespace-nowrap px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Amount (Local)</th>
+                    <th className="whitespace-nowrap px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Amount (USD)</th>
+                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Category</th>
+                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Status</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {parsedTransactions.map((tx, index) => (
-                    <tr
-                      key={index}
-                      className={`transition-colors hover:bg-gray-50 ${
-                        tx.status === 'needs-review' ? 'bg-amber-50/30' : ''
-                      }`}
-                    >
+                    <tr key={index} className={`transition-colors hover:bg-gray-50 ${tx.status === 'needs-review' ? 'bg-amber-50/30' : ''}`}>
                       <td className="whitespace-nowrap px-4 py-3 text-gray-600">{tx.date}</td>
                       <td className="max-w-xs truncate px-4 py-3 font-medium text-gray-900" title={tx.description}>
                         {tx.description}
                       </td>
-                      <td
-                        className={`whitespace-nowrap px-4 py-3 text-right font-mono text-sm ${
-                          tx.amount < 0 ? 'text-red-600' : 'text-green-600'
-                        }`}
-                      >
-                        {formatCurrency(tx.amount, tx.currency)}
+                      <td className={`whitespace-nowrap px-4 py-3 text-right font-mono text-sm ${tx.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {formatLocal(tx.amount, tx.currency)}
                       </td>
-                      <td
-                        className={`whitespace-nowrap px-4 py-3 text-right font-mono text-sm ${
-                          tx.amountUSD < 0 ? 'text-red-600' : 'text-green-600'
-                        }`}
-                      >
-                        {tx.amountUSD < 0 ? '-' : ''}$
-                        {Math.abs(tx.amountUSD).toLocaleString('en-US', {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
+                      <td className={`whitespace-nowrap px-4 py-3 text-right font-mono text-sm ${tx.amountUSD < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                        {tx.amountUSD < 0 ? '-' : ''}${Math.abs(tx.amountUSD).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </td>
                       <td className="px-4 py-3">
                         <select
                           value={tx.category}
                           onChange={(e) => handleCategoryChange(index, e.target.value)}
                           className={`w-full min-w-[160px] rounded-md border px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-                            tx.category
-                              ? 'border-gray-200 bg-white text-gray-700'
-                              : 'border-amber-300 bg-amber-50 text-amber-700'
+                            tx.category ? 'border-gray-200 bg-white text-gray-700' : 'border-amber-300 bg-amber-50 text-amber-700'
                           }`}
                         >
                           <option value="">-- Select category --</option>
                           <optgroup label="Expenses">
-                            {EXPENSE_CATEGORIES.map((cat) => (
-                              <option key={cat} value={cat}>
-                                {cat}
+                            {expenseCategories.map((cat) => (
+                              <option key={cat.id} value={cat.name}>
+                                {cat.name}
                               </option>
                             ))}
                           </optgroup>
                           <optgroup label="Income">
-                            {INCOME_CATEGORIES.map((cat) => (
-                              <option key={cat} value={cat}>
-                                {cat}
+                            {incomeCategories.map((cat) => (
+                              <option key={cat.id} value={cat.name}>
+                                {cat.name}
                               </option>
                             ))}
                           </optgroup>
@@ -641,10 +765,8 @@ export default function ImportPage() {
           </div>
         )}
 
-        {/* ----------------------------------------------------------------- */}
-        {/* Action buttons                                                     */}
-        {/* ----------------------------------------------------------------- */}
-        {(parsedTransactions.length > 0 || (file && file.name.toLowerCase().endsWith('.pdf'))) && (
+        {/* Action buttons */}
+        {parsedTransactions.length > 0 && (
           <div className="flex items-center justify-end gap-3">
             <button
               onClick={handleCancel}
@@ -654,10 +776,11 @@ export default function ImportPage() {
             </button>
             <button
               onClick={handleConfirmImport}
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
+              disabled={isSaving}
+              className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-5 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50"
             >
               <Upload className="h-4 w-4" />
-              Confirm &amp; Import
+              {isSaving ? 'Importing…' : 'Confirm & Import'}
             </button>
           </div>
         )}

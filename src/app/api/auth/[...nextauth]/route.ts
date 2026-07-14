@@ -1,5 +1,7 @@
 import NextAuth, { type AuthOptions, type User } from 'next-auth'
 import CredentialsProvider from 'next-auth/providers/credentials'
+import bcrypt from 'bcryptjs'
+import { query } from '@/lib/db'
 
 // ---------------------------------------------------------------------------
 // Hardcoded users
@@ -45,25 +47,48 @@ export const authOptions: AuthOptions = {
           return null
         }
 
+        // 1. Founding users authenticate against env-var passwords (unchanged).
         const user = USERS.find(
           (u) => u.email.toLowerCase() === credentials.email.toLowerCase(),
         )
 
-        if (!user) {
-          return null
+        if (user) {
+          const expectedPassword = process.env[user.envKey]
+          if (!expectedPassword || credentials.password !== expectedPassword) {
+            return null
+          }
+          return {
+            id: user.id,
+            email: user.email,
+            name: user.name,
+            role: user.role,
+          } as User
         }
 
-        const expectedPassword = process.env[user.envKey]
-        if (!expectedPassword || credentials.password !== expectedPassword) {
+        // 2. Users added via Settings authenticate against the DB (bcrypt).
+        try {
+          const result = await query(
+            `SELECT id, email, full_name, role, password_hash
+             FROM users
+             WHERE lower(email) = lower($1) AND is_active = true`,
+            [credentials.email],
+          )
+          const dbUser = result.rows[0]
+          if (!dbUser?.password_hash) return null
+
+          const ok = await bcrypt.compare(credentials.password, dbUser.password_hash)
+          if (!ok) return null
+
+          return {
+            id: String(dbUser.id),
+            email: dbUser.email,
+            name: dbUser.full_name ?? dbUser.email,
+            role: dbUser.role,
+          } as User
+        } catch {
+          // DB unavailable — only env users can log in.
           return null
         }
-
-        return {
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-        } as User
       },
     }),
   ],

@@ -159,6 +159,50 @@ export const ALL_CATEGORIES: CategoryDefinition[] = [
 // Auto-categorization engine
 // ────────────────────────────────────────────────
 
+/**
+ * Derive a stable "merchant core" pattern from a transaction description, used
+ * as the key for learned merchant->category mappings. Cuts off reference codes,
+ * locations, and long digit runs so "ADNOC - Fuel Station JBR" and
+ * "ADNOC Marina 0042" both collapse to "adnoc".
+ */
+export function deriveMerchantPattern(description: string): string {
+  const lower = description.toLowerCase()
+  const core = lower
+    .split(/\s[-–—]\s|\*|#|\d{4,}/)[0]
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const words = core.split(' ').filter(Boolean)
+  const pattern = words.slice(0, 2).join(' ')
+  if (pattern.length >= 3) return pattern
+  return words[0] ?? lower.trim()
+}
+
+/**
+ * Lightweight keyword categoriser returning a canonical DB category name
+ * (e.g. "Dining & Coffee") or null. Single source of truth for keyword
+ * matching — both the import UI and the /api/categorise route call this, so
+ * category names never drift apart. Names match the seeded `categories` table.
+ */
+export function suggestCategoryName(description: string): string | null {
+  const descLower = description.toLowerCase()
+
+  let bestMatch: { categoryId: string; keywordLength: number } | null = null
+
+  for (const [categoryId, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
+    for (const keyword of keywords) {
+      if (descLower.includes(keyword.toLowerCase())) {
+        if (!bestMatch || keyword.length > bestMatch.keywordLength) {
+          bestMatch = { categoryId, keywordLength: keyword.length }
+        }
+      }
+    }
+  }
+
+  if (!bestMatch) return null
+  return ALL_CATEGORIES.find((c) => c.id === bestMatch!.categoryId)?.name ?? null
+}
+
 export function suggestCategory(
   description: string,
   merchantMappings: MerchantMapping[],
