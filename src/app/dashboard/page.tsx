@@ -217,7 +217,7 @@ export default function CashFlowPage() {
           <Card title="Expenses" value={fmt(pick(t?.expenseTotal, currency))} subtitle="for the period" icon={<TrendingDown className="h-5 w-5 text-red-500" />} />
           <Card title="Net Operating" value={fmt(pick(t?.net, currency))} subtitle="income − expenses" icon={<Wallet className="h-5 w-5 text-blue-500" />} />
           <Card title="Invested" value={fmt(pick(t?.investingTotal, currency))} subtitle="capital deployed" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
-          <Card title="Net Cash Flow" value={fmt(pick(t?.netCash, currency))} subtitle="operating − investing" icon={<Percent className="h-5 w-5 text-purple-500" />} />
+          <Card title="Saved" value={fmt(pick(t?.netCash, currency))} subtitle="operating − investing" icon={<Percent className="h-5 w-5 text-purple-500" />} />
         </div>
 
         {/* P&L statement */}
