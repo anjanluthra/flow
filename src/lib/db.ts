@@ -116,13 +116,59 @@ export async function getNetWorthSnapshots() {
   return query('SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC')
 }
 
+// The self-learning mapping relies on a table + a UNIQUE index on the pattern
+// (the target of ON CONFLICT). Both ship as migrations; ensure them here so
+// learning works even on a DB where those migrations were never applied —
+// otherwise every upsert throws and corrections are silently lost.
+let merchantSchemaEnsured = false
+async function ensureMerchantSchema() {
+  if (merchantSchemaEnsured) return
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS merchant_mappings (
+        id               uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
+        merchant_pattern text          NOT NULL,
+        category_id      uuid          NOT NULL REFERENCES categories ON DELETE CASCADE,
+        confidence       numeric(3, 2) NOT NULL DEFAULT 0.80,
+        times_used       int           NOT NULL DEFAULT 0,
+        created_at       timestamptz   NOT NULL DEFAULT now(),
+        updated_at       timestamptz   NOT NULL DEFAULT now()
+      )
+    `)
+  } catch {
+    /* table may already exist */
+  }
+  // Collapse any duplicate patterns (keep the most-used), then add the unique
+  // index ON CONFLICT requires. CREATE UNIQUE INDEX IF NOT EXISTS is idempotent.
+  try {
+    await query(`
+      DELETE FROM merchant_mappings a USING merchant_mappings b
+      WHERE a.merchant_pattern = b.merchant_pattern
+        AND (a.times_used < b.times_used OR (a.times_used = b.times_used AND a.ctid < b.ctid))
+    `)
+  } catch {
+    /* nothing to dedupe */
+  }
+  try {
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_merchant_mappings_pattern ON merchant_mappings (merchant_pattern)`)
+  } catch {
+    /* index may already exist */
+  }
+  merchantSchemaEnsured = true
+}
+
 export async function getMerchantMappings() {
-  return query(`
-    SELECT mm.*, c.name AS category_name, c.color_hex AS category_color
-    FROM merchant_mappings mm
-    JOIN categories c ON mm.category_id = c.id
-    ORDER BY mm.times_used DESC
-  `)
+  try {
+    await ensureMerchantSchema()
+    return await query(`
+      SELECT mm.*, c.name AS category_name, c.color_hex AS category_color
+      FROM merchant_mappings mm
+      JOIN categories c ON mm.category_id = c.id
+      ORDER BY mm.times_used DESC
+    `)
+  } catch {
+    return { rows: [] as Record<string, unknown>[] } as Awaited<ReturnType<typeof query>>
+  }
 }
 
 /**
@@ -130,6 +176,7 @@ export async function getMerchantMappings() {
  * seen again we bump confidence and times_used so repeated corrections stick.
  */
 export async function upsertMerchantMapping(pattern: string, categoryId: string) {
+  await ensureMerchantSchema()
   await query(
     `INSERT INTO merchant_mappings (merchant_pattern, category_id, confidence, times_used)
      VALUES ($1, $2, 0.90, 1)

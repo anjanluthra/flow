@@ -59,22 +59,33 @@ function detectAccount(
     if (acc) return { account: acc, score: 100 }
   }
 
-  // 2. Heuristic scoring.
+  // 2. Heuristic scoring. A distinctive brand token in the *filename* is a
+  //    strong signal (e.g. "barclaycard" in "Monthly BarclayCard Statement…"),
+  //    so it's weighted much higher than a match anywhere in the body text.
   const hay = `${fileName} ${sampleText}`.toLowerCase()
   const tokenize = (s: string) =>
     s
       .toLowerCase()
       .split(/[^a-z0-9]+/)
-      .filter((t) => t.length >= 3 && !['the', 'and', 'account', 'card'].includes(t))
+      .filter((t) => t.length >= 3 && !['the', 'and', 'account', 'card', 'current', 'credit', 'debit', 'savings'].includes(t))
+
+  const scoreFor = (a: AccountOption): number => {
+    let score = 0
+    const inst = (a.institution ?? '').toLowerCase().trim()
+    if (inst && inst.length >= 2) {
+      if (fileLower.includes(inst)) score += 4
+      else if (hay.includes(inst)) score += 3
+    }
+    for (const tok of tokenize(a.name)) {
+      if (fileLower.includes(tok)) score += 3
+      else if (hay.includes(tok)) score += 1
+    }
+    return score
+  }
 
   let best: { account: AccountOption; score: number } | null = null
   for (const a of accounts) {
-    let score = 0
-    const inst = (a.institution ?? '').toLowerCase().trim()
-    if (inst && inst.length >= 2 && hay.includes(inst)) score += 3
-    for (const tok of tokenize(a.name)) {
-      if (hay.includes(tok)) score += 1
-    }
+    const score = scoreFor(a)
     if (!best || score > best.score) best = { account: a, score }
   }
 
@@ -82,15 +93,7 @@ function detectAccount(
   if (!best || best.score < 3) return null
   const runnerUp = accounts
     .filter((a) => a.id !== best!.account.id)
-    .reduce((max, a) => {
-      let s = 0
-      const inst = (a.institution ?? '').toLowerCase().trim()
-      if (inst && inst.length >= 2 && hay.includes(inst)) s += 3
-      for (const tok of a.name.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3)) {
-        if (hay.includes(tok)) s += 1
-      }
-      return Math.max(max, s)
-    }, 0)
+    .reduce((max, a) => Math.max(max, scoreFor(a)), 0)
   if (best.score - runnerUp < 1) return null // tie — let the user disambiguate
   return best
 }
@@ -123,6 +126,7 @@ interface ParsedTransaction {
   category: string // canonical DB category name, or '' if unmatched
   status: 'categorised' | 'needs-review'
   alreadyImported?: boolean // already in Flow (matched on re-import)
+  aiSuggested?: boolean // category proposed by Claude (review before saving)
 }
 
 interface ColumnMapping {
@@ -398,45 +402,94 @@ export default function ImportPage() {
   const incomeCategories = categories.filter((c) => c.type === 'income')
   const transferCategories = categories.filter((c) => c.type === 'transfer')
 
-  // When reviewing a statement, flag rows already in Flow and reuse their saved
-  // category, so re-importing the same statement doesn't make you re-categorise.
+  // Self-learning review pass. For each freshly-parsed statement:
+  //  1. reuse the saved category for rows already in Flow (re-imports),
+  //  2. ask Claude to categorise anything still unknown (analyses the merchant),
+  // so you rarely start from scratch — and every choice you keep is learned.
   const annotatedRef = useRef<ParsedTransaction[] | null>(null)
+  const [aiBusy, setAiBusy] = useState(false)
   useEffect(() => {
     if (!account || parsedTransactions.length === 0) return
     if (annotatedRef.current === parsedTransactions) return
     const current = parsedTransactions
     annotatedRef.current = current
-    const rows = current.map((tx) => ({
-      date: tx.date,
-      description: tx.description,
-      amountLocal: Math.abs(tx.amount),
-    }))
-    fetch('/api/transactions/lookup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accountId: account.id, rows }),
-    })
-      .then((r) => r.json())
-      .then(({ results }: { results?: Array<{ matched: boolean; categoryName: string | null }> }) => {
-        if (!Array.isArray(results)) return
-        setParsedTransactions((prev) => {
-          if (prev !== current) return prev
-          const next = prev.map((tx, i) => {
-            const m = results[i]
-            if (!m?.matched) return tx
-            return {
-              ...tx,
-              category: m.categoryName ?? tx.category,
-              status: (m.categoryName ? 'categorised' : tx.status) as ParsedTransaction['status'],
-              alreadyImported: true,
-            }
+    let cancelled = false
+
+    ;(async () => {
+      let next = current
+
+      // 1. Reuse categories for already-imported rows.
+      try {
+        const rows = current.map((tx) => ({ date: tx.date, description: tx.description, amountLocal: Math.abs(tx.amount) }))
+        const { results } = await (
+          await fetch('/api/transactions/lookup', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ accountId: account.id, rows }),
           })
-          annotatedRef.current = next
-          return next
-        })
+        ).json()
+        if (Array.isArray(results)) {
+          next = next.map((tx, i) =>
+            results[i]?.matched
+              ? {
+                  ...tx,
+                  category: results[i].categoryName ?? tx.category,
+                  status: (results[i].categoryName ? 'categorised' : tx.status) as ParsedTransaction['status'],
+                  alreadyImported: true,
+                }
+              : tx,
+          )
+        }
+      } catch {
+        /* fall through */
+      }
+
+      // 2. Claude categorises rows still without a category.
+      const unknown = next.map((tx, i) => ({ tx, i })).filter(({ tx }) => !tx.category && !tx.alreadyImported)
+      if (unknown.length && categories.length) {
+        setAiBusy(true)
+        try {
+          const { results: ai } = await (
+            await fetch('/api/categorise-ai', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                descriptions: unknown.map(({ tx }) => tx.description),
+                categories: categories.map((c) => ({ name: c.name, type: c.type })),
+              }),
+            })
+          ).json()
+          if (Array.isArray(ai)) {
+            const suggByIdx = new Map<number, string>()
+            unknown.forEach(({ i }, k) => {
+              const name = ai[k]?.categoryName
+              if (name) suggByIdx.set(i, name)
+            })
+            next = next.map((tx, i) =>
+              suggByIdx.has(i)
+                ? { ...tx, category: suggByIdx.get(i)!, status: 'categorised', aiSuggested: true }
+                : tx,
+            )
+          }
+        } catch {
+          /* leave as needs-review */
+        } finally {
+          if (!cancelled) setAiBusy(false)
+        }
+      }
+
+      if (cancelled) return
+      setParsedTransactions((prev) => {
+        if (prev !== current) return prev
+        annotatedRef.current = next
+        return next
       })
-      .catch(() => {})
-  }, [parsedTransactions, account])
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [parsedTransactions, account, categories])
 
   // Parse a statement's text against a chosen account. When `forced` is passed
   // (a manual override) detection is skipped; otherwise the account is detected
@@ -805,7 +858,7 @@ export default function ImportPage() {
         description = prev[index]?.description ?? ''
         return prev.map((tx, i) =>
           i === index
-            ? { ...tx, category: newCategory, status: newCategory ? 'categorised' : 'needs-review' }
+            ? { ...tx, category: newCategory, status: newCategory ? 'categorised' : 'needs-review', aiSuggested: false }
             : tx,
         )
       })
@@ -912,6 +965,30 @@ export default function ImportPage() {
           setSaveResult((prev) => `${prev ?? ''} (but filing the statement to the archive failed)`)
         }
       }
+
+      // Self-learning bookkeeper: reinforce a merchant→category mapping from
+      // every categorised row, so future statements auto-fill and get better
+      // the more you categorise. Runs on every import.
+      const catIdByName = new Map(categories.map((c) => [c.name, c.id]))
+      const learnItems = parsedTransactions
+        .filter((tx) => tx.category && catIdByName.has(tx.category))
+        .map((tx) => ({ description: tx.description, categoryId: catIdByName.get(tx.category)! }))
+      if (learnItems.length) {
+        try {
+          await fetch('/api/merchant-mappings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: learnItems }),
+          })
+        } catch {
+          /* best-effort */
+        }
+      }
+      // Refresh learned mappings so the very next statement benefits.
+      fetch('/api/merchant-mappings')
+        .then((r) => r.json())
+        .then((d) => setMappings(d.mappings || []))
+        .catch(() => {})
 
       // Clear the whole review so the page returns to a clean state — only the
       // success banner and the updated Saved-statements list remain.
@@ -1023,17 +1100,9 @@ export default function ImportPage() {
   }
   const docAccount = (d: StatementDoc): string => d.accountName ?? 'Unassigned'
 
-  // Build the year × account matrix.
+  // Distinct years and accounts for the archive filters.
   const archiveYears = Array.from(new Set(documents.map(docYear))).sort((a, b) => b.localeCompare(a))
   const archiveAccounts = Array.from(new Set(documents.map(docAccount))).sort()
-  const matrix = new Map<string, Map<string, number>>()
-  for (const d of documents) {
-    const a = docAccount(d)
-    const y = docYear(d)
-    if (!matrix.has(a)) matrix.set(a, new Map())
-    const row = matrix.get(a)!
-    row.set(y, (row.get(y) ?? 0) + 1)
-  }
   const filteredDocs = documents
     .filter((d) => {
       if (!archiveFilter) return true
@@ -1413,7 +1482,12 @@ export default function ImportPage() {
               <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
                 {parsedTransactions.length} transaction{parsedTransactions.length !== 1 ? 's' : ''}
               </span>
-              {needsReview > 0 ? (
+              {aiBusy ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-medium text-violet-600">
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" />
+                  Claude is categorising…
+                </span>
+              ) : needsReview > 0 ? (
                 <span className="text-xs font-medium text-amber-600">{needsReview} need review</span>
               ) : (
                 <span className="text-xs font-medium text-green-600">All set</span>
@@ -1465,6 +1539,13 @@ export default function ImportPage() {
                     {tx.alreadyImported ? (
                       <span title="Already in Flow — skipped on import" className="shrink-0 text-gray-400">
                         <CheckCircle className="h-4 w-4" />
+                      </span>
+                    ) : tx.aiSuggested ? (
+                      <span
+                        title="Suggested by Claude — check it's right"
+                        className="shrink-0 rounded-full bg-violet-100 px-1.5 py-0.5 text-[10px] font-semibold text-violet-700"
+                      >
+                        AI
                       </span>
                     ) : tx.status === 'categorised' ? (
                       <span title="Categorised" className="shrink-0 text-green-600">
@@ -1522,134 +1603,133 @@ export default function ImportPage() {
             </div>
           ) : (
             <>
-              {/* Year × account matrix */}
-              <div className="mb-6 overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="border-b border-gray-200 bg-gray-50/60 text-left">
-                      <th className="px-4 py-3 font-medium text-gray-500">Account</th>
-                      {archiveYears.map((y) => (
-                        <th key={y} className="px-4 py-3 text-center font-medium text-gray-500">{y}</th>
-                      ))}
-                      <th className="px-4 py-3 text-center font-medium text-gray-500">All</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {archiveAccounts.map((a) => {
-                      const row = matrix.get(a)
-                      const rowTotal = archiveYears.reduce((s, y) => s + (row?.get(y) ?? 0), 0)
-                      return (
-                        <tr key={a} className="hover:bg-gray-50/40">
-                          <td className="whitespace-nowrap px-4 py-2.5 font-medium text-gray-900">{a}</td>
-                          {archiveYears.map((y) => {
-                            const n = row?.get(y) ?? 0
-                            const active = archiveFilter?.account === a && archiveFilter?.year === y
-                            return (
-                              <td key={y} className="px-4 py-2.5 text-center">
-                                {n > 0 ? (
-                                  <button
-                                    onClick={() => setArchiveFilter(active ? null : { account: a, year: y })}
-                                    className={`inline-flex h-7 min-w-7 items-center justify-center rounded-md px-2 text-xs font-medium ${active ? 'bg-blue-600 text-white' : 'bg-blue-50 text-blue-700 hover:bg-blue-100'}`}
-                                  >
-                                    {n}
-                                  </button>
-                                ) : (
-                                  <span className="text-gray-300">·</span>
-                                )}
-                              </td>
-                            )
-                          })}
-                          <td className="px-4 py-2.5 text-center">
-                            <button
-                              onClick={() =>
-                                setArchiveFilter(
-                                  archiveFilter?.account === a && archiveFilter?.year === 'all' ? null : { account: a, year: 'all' },
-                                )
-                              }
-                              className="text-xs font-semibold text-gray-700 hover:underline"
-                            >
-                              {rowTotal}
-                            </button>
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-
-              {/* Filtered list */}
-              <div className="mb-3 flex items-center gap-2 text-sm">
-                <span className="text-gray-500">
-                  {archiveFilter
-                    ? `${archiveFilter.account}${archiveFilter.year !== 'all' ? ` · ${archiveFilter.year}` : ''}`
-                    : 'All statements'}
-                  {' '}({filteredDocs.length})
-                </span>
-                {archiveFilter && (
-                  <button onClick={() => setArchiveFilter(null)} className="text-xs font-medium text-blue-600 hover:underline">
-                    Clear filter
+              {/* Filter pills — year and account */}
+              {(() => {
+                const af = archiveFilter ?? { account: 'all', year: 'all' }
+                const setYear = (year: string) => {
+                  const next = { account: af.account, year }
+                  setArchiveFilter(next.account === 'all' && next.year === 'all' ? null : next)
+                }
+                const setAcct = (account: string) => {
+                  const next = { account, year: af.year }
+                  setArchiveFilter(next.account === 'all' && next.year === 'all' ? null : next)
+                }
+                const Pill = ({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) => (
+                  <button
+                    onClick={onClick}
+                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                      on ? 'bg-gray-900 text-white' : 'border border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {children}
                   </button>
-                )}
-              </div>
-              <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-                <table className="w-full text-sm">
-                  <tbody className="divide-y divide-gray-100">
-                    {filteredDocs.map((d) => (
-                      <tr key={d.id} className="hover:bg-gray-50/50">
-                        <td className="w-8 py-3 pl-5"><FileText className="h-4 w-4 text-gray-300" /></td>
-                        <td className="px-3 py-3">
-                          <p className="font-medium text-gray-900">{d.fileName}</p>
-                          <p className="text-xs text-gray-400">
-                            {d.source === 'import' ? 'Imported' : 'Uploaded'} · {fmtDocDate(d.uploadedAt)} · {fmtBytes(d.sizeBytes)}
-                            {d.importedCount != null ? ` · ${d.importedCount} transactions` : ''}
-                          </p>
-                        </td>
-                        <td className="px-3 py-3">
-                          <select
-                            value={accounts.find((a) => a.name === d.accountName)?.id ?? ''}
-                            onChange={(e) => patchDoc(d.id, { accountId: e.target.value || null })}
-                            className="max-w-[150px] rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-400 focus:outline-none"
+                )
+                return (
+                  <div className="mb-5 space-y-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="mr-1 text-xs font-medium uppercase tracking-wider text-gray-400">Year</span>
+                      <Pill on={af.year === 'all'} onClick={() => setYear('all')}>All</Pill>
+                      {archiveYears.map((y) => (
+                        <Pill key={y} on={af.year === y} onClick={() => setYear(y)}>{y}</Pill>
+                      ))}
+                    </div>
+                    {archiveAccounts.length > 1 && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="mr-1 text-xs font-medium uppercase tracking-wider text-gray-400">Account</span>
+                        <Pill on={af.account === 'all'} onClick={() => setAcct('all')}>All</Pill>
+                        {archiveAccounts.map((a) => (
+                          <Pill key={a} on={af.account === a} onClick={() => setAcct(a)}>{a}</Pill>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )
+              })()}
+
+              {/* Statement cards, grouped by account */}
+              {filteredDocs.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-gray-300 bg-white px-6 py-10 text-center text-sm text-gray-400">
+                  No statements match this filter.
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {Array.from(
+                    filteredDocs.reduce((m, d) => {
+                      const a = docAccount(d)
+                      const list = m.get(a) ?? []
+                      list.push(d)
+                      m.set(a, list)
+                      return m
+                    }, new Map<string, StatementDoc[]>()),
+                  ).map(([acct, docs]) => (
+                    <div key={acct}>
+                      <div className="mb-2 flex items-center gap-2">
+                        <h3 className="text-sm font-semibold text-gray-900">{acct}</h3>
+                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">
+                          {docs.length}
+                        </span>
+                      </div>
+                      <div className="grid gap-2.5 sm:grid-cols-2">
+                        {docs.map((d) => (
+                          <div
+                            key={d.id}
+                            className="group flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm transition-shadow hover:shadow-md"
                           >
-                            <option value="">Unassigned</option>
-                            {accounts.map((a) => (
-                              <option key={a.id} value={a.id}>{a.name}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="px-3 py-3">
-                          <select
-                            value={docYear(d)}
-                            onChange={(e) => patchDoc(d.id, { statementDate: `${e.target.value}-01-01` })}
-                            className="rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-400 focus:outline-none"
-                          >
-                            {['Unknown', '2023', '2024', '2025', '2026', '2027'].map((y) => (
-                              <option key={y} value={y} disabled={y === 'Unknown'}>{y}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="px-3 py-3 text-right">
-                          <div className="flex items-center justify-end gap-1 pr-4">
-                            <button
-                              onClick={() => setViewer({ url: `/api/documents/${d.id}`, downloadUrl: `/api/documents/${d.id}?download=1`, fileName: d.fileName })}
-                              title="View"
-                              className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
-                            >
-                              <Eye className="h-4 w-4" />
-                            </button>
-                            <a href={`/api/documents/${d.id}?download=1`} title="Download" className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600">
-                              <Download className="h-4 w-4" />
-                            </a>
-                            <button onClick={() => handleDeleteDoc(d.id, d.fileName)} title="Delete" className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
-                              <Trash2 className="h-4 w-4" />
-                            </button>
+                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-500">
+                              <FileText className="h-4 w-4" />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-medium text-gray-900" title={d.fileName}>
+                                {d.fileName}
+                              </p>
+                              <p className="truncate text-xs text-gray-400">
+                                {d.source === 'import' ? 'Imported' : 'Uploaded'} · {fmtDocDate(d.uploadedAt)} · {fmtBytes(d.sizeBytes)}
+                                {d.importedCount != null ? ` · ${d.importedCount} txns` : ''}
+                              </p>
+                              <div className="mt-1.5 flex items-center gap-1.5">
+                                <select
+                                  value={accounts.find((a) => a.name === d.accountName)?.id ?? ''}
+                                  onChange={(e) => patchDoc(d.id, { accountId: e.target.value || null })}
+                                  className="max-w-[130px] rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-xs text-gray-600 focus:border-blue-400 focus:outline-none"
+                                >
+                                  <option value="">Unassigned</option>
+                                  {accounts.map((a) => (
+                                    <option key={a.id} value={a.id}>{a.name}</option>
+                                  ))}
+                                </select>
+                                <select
+                                  value={docYear(d)}
+                                  onChange={(e) => patchDoc(d.id, { statementDate: `${e.target.value}-01-01` })}
+                                  className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-xs text-gray-600 focus:border-blue-400 focus:outline-none"
+                                >
+                                  {['Unknown', '2023', '2024', '2025', '2026', '2027'].map((y) => (
+                                    <option key={y} value={y} disabled={y === 'Unknown'}>{y}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-0.5">
+                              <button
+                                onClick={() => setViewer({ url: `/api/documents/${d.id}`, downloadUrl: `/api/documents/${d.id}?download=1`, fileName: d.fileName })}
+                                title="View"
+                                className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
+                              >
+                                <Eye className="h-4 w-4" />
+                              </button>
+                              <a href={`/api/documents/${d.id}?download=1`} title="Download" className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600">
+                                <Download className="h-4 w-4" />
+                              </a>
+                              <button onClick={() => handleDeleteDoc(d.id, d.fileName)} title="Delete" className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
                           </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </div>

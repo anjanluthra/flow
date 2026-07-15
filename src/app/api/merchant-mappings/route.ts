@@ -34,6 +34,26 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
+
+    // Batch learning: { items: [{ description|pattern, categoryId }] }. Used on
+    // import confirm so every categorised row reinforces the mapping.
+    if (Array.isArray(body?.items)) {
+      const items = body.items as Array<{ categoryId?: string; description?: string; pattern?: string }>
+      const learned: string[] = []
+      for (const it of items) {
+        if (!it.categoryId) continue
+        const p = (it.pattern || (it.description ? deriveMerchantPattern(it.description) : '')).trim()
+        if (p.length < 3) continue
+        try {
+          await upsertMerchantMapping(p, it.categoryId)
+          learned.push(p)
+        } catch {
+          /* skip this one, keep learning the rest */
+        }
+      }
+      return NextResponse.json({ success: true, learned })
+    }
+
     const { categoryId, description, pattern } = body as {
       categoryId?: string
       description?: string

@@ -1,14 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { getAccountHints, upsertAccountHint } from '@/lib/db'
 
-// Derive id-like tokens from a filename (e.g. Revolut's "…_28e61f"): alphanumeric
-// runs of length >= 5 that mix letters and digits and aren't pure years.
+// Common statement words that carry no account signal — never learned as hints.
+const STOP_WORDS = new Set([
+  'monthly', 'statement', 'statements', 'account', 'accounts', 'transactions',
+  'transaction', 'summary', 'document', 'export', 'report', 'combined', 'final',
+  'current', 'savings', 'credit', 'debit', 'card', 'pdf', 'csv',
+])
+
+// Derive distinctive tokens from a filename to fingerprint the account:
+//  - id-like runs that mix letters and digits (e.g. Revolut's "…_28e61f"), and
+//  - brand words (e.g. "barclaycard", "revolut") — alphabetic, length >= 4,
+//    excluding generic statement vocabulary.
 function idTokens(fileName: string): string[] {
-  return fileName
+  const parts = fileName
     .toLowerCase()
     .replace(/\.[a-z0-9]+$/, '')
     .split(/[^a-z0-9]+/)
-    .filter((t) => t.length >= 5 && /[a-z]/.test(t) && /[0-9]/.test(t) && !/^\d{4}$/.test(t))
+  const out = new Set<string>()
+  for (const t of parts) {
+    if (t.length >= 5 && /[a-z]/.test(t) && /[0-9]/.test(t) && !/^\d{4}$/.test(t)) out.add(t)
+    if (t.length >= 4 && /^[a-z]+$/.test(t) && !STOP_WORDS.has(t)) out.add(t)
+  }
+  return [...out]
 }
 
 // ---------------------------------------------------------------------------
