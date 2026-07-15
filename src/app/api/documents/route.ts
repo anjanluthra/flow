@@ -5,12 +5,36 @@ import { query } from '@/lib/db'
 // serverless request-body limit.
 const MAX_BYTES = 4 * 1024 * 1024
 
+// The statement archive relies on a few metadata columns that ship as manual
+// migrations. Ensure they exist so listing and archiving never break on a DB
+// where those migrations weren't applied (idempotent — safe to run every call).
+let schemaEnsured = false
+async function ensureSchema() {
+  if (schemaEnsured) return
+  const alters = [
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS source text`,
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS format_signature text`,
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS imported_count integer`,
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS data_rows integer`,
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS statement_date date`,
+  ]
+  for (const sql of alters) {
+    try {
+      await query(sql)
+    } catch {
+      /* column may already exist or table shape differs — keep going */
+    }
+  }
+  schemaEnsured = true
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/documents?accountId= — list documents (metadata only, no content)
 // ---------------------------------------------------------------------------
 
 export async function GET(request: NextRequest) {
   try {
+    await ensureSchema()
     const accountId = request.nextUrl.searchParams.get('accountId')
 
     const result = await query(
@@ -53,6 +77,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    await ensureSchema()
     const body = await request.json()
     const {
       accountId,

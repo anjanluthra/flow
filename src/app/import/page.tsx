@@ -832,11 +832,8 @@ export default function ImportPage() {
       )
 
       // Archive the raw statement to the library, tagged with its format.
-      if (pdfDoc) {
-        fetch('/api/documents', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+      const archiveBody = pdfDoc
+        ? {
             accountId: account.id,
             fileName: pdfDoc.fileName,
             mimeType: 'application/pdf',
@@ -845,27 +842,34 @@ export default function ImportPage() {
             formatSignature: pdfDoc.format,
             importedCount: data.inserted,
             dataRows: recon?.dataRows ?? null,
-          }),
-        })
-          .then(() => loadDocuments())
-          .catch(() => {})
-      } else if (rawText) {
-        fetch('/api/documents', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            accountId: account.id,
-            fileName: rawFileName || 'statement.csv',
-            mimeType: 'text/csv',
-            contentBase64: btoa(unescape(encodeURIComponent(rawText))),
-            source: 'import',
-            formatSignature: headerSignature(rawText),
-            importedCount: data.inserted,
-            dataRows: recon?.dataRows ?? null,
-          }),
-        })
-          .then(() => loadDocuments())
-          .catch(() => {})
+          }
+        : rawText
+          ? {
+              accountId: account.id,
+              fileName: rawFileName || 'statement.csv',
+              mimeType: 'text/csv',
+              contentBase64: btoa(unescape(encodeURIComponent(rawText))),
+              source: 'import',
+              formatSignature: headerSignature(rawText),
+              importedCount: data.inserted,
+              dataRows: recon?.dataRows ?? null,
+            }
+          : null
+
+      if (archiveBody) {
+        try {
+          const archRes = await fetch('/api/documents', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(archiveBody),
+          })
+          if (!archRes.ok) {
+            setSaveResult((prev) => `${prev ?? ''} (but filing the statement to the archive failed)`)
+          }
+          await loadDocuments()
+        } catch {
+          setSaveResult((prev) => `${prev ?? ''} (but filing the statement to the archive failed)`)
+        }
       }
 
       setParsedTransactions([])

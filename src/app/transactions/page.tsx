@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react'
-import { Search, Briefcase } from 'lucide-react'
+import { Search } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { DataTable } from '@/components/ui/DataTable'
 import { formatCurrency, formatUSD } from '@/lib/currency'
@@ -166,24 +166,6 @@ export default function TransactionsPage() {
     [categories, transactions],
   )
 
-  const handleBusinessToggle = useCallback(
-    async (id: string, next: boolean) => {
-      setTransactions((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, isBusinessExpense: next } : t)),
-      )
-      try {
-        await fetch(`/api/transactions/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ isBusinessExpense: next }),
-        })
-      } catch {
-        /* best-effort */
-      }
-    },
-    [],
-  )
-
   // ---- Filtered data ----
   const filteredData = useMemo(() => {
     return transactions.filter((tx) => {
@@ -220,21 +202,7 @@ export default function TransactionsPage() {
         header: 'Description',
         className: 'min-w-[200px]',
         render: (tx: Transaction) => (
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-900">{tx.description}</span>
-            <button
-              onClick={() => handleBusinessToggle(tx.id, !tx.isBusinessExpense)}
-              title={tx.isBusinessExpense ? 'Business expense — click to unset' : 'Mark as business expense'}
-              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide transition-colors ${
-                tx.isBusinessExpense
-                  ? 'bg-amber-100 text-amber-700'
-                  : 'bg-gray-100 text-gray-400 hover:bg-amber-50 hover:text-amber-600'
-              }`}
-            >
-              <Briefcase className="h-3 w-3" />
-              Biz
-            </button>
-          </div>
+          <span className="text-sm font-medium text-gray-900">{tx.description}</span>
         ),
       },
       {
@@ -350,7 +318,7 @@ export default function TransactionsPage() {
         },
       },
     ],
-    [expenseCategories, incomeCategories, transferCategories, handleCategoryChange, handleBusinessToggle],
+    [expenseCategories, incomeCategories, transferCategories, handleCategoryChange],
   )
 
   const getRowClassName = (tx: Transaction) =>
