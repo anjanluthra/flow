@@ -947,6 +947,22 @@ export default function ImportPage() {
   const totalAmount = parsedTransactions.reduce((sum, tx) => sum + tx.amountUSD, 0)
   const categorisedPercent = totalTransactions > 0 ? Math.round((autoCategorised / totalTransactions) * 100) : 0
 
+  // Live preview of the statement being reviewed, shown beside the extracted
+  // transactions so you can cross-check what Flow read against the source.
+  const statementPreview = pdfDoc ? (
+    <iframe
+      title="Statement"
+      src={`data:application/pdf;base64,${pdfDoc.base64}`}
+      className="h-[78vh] w-full rounded-lg border border-gray-200 bg-white"
+    />
+  ) : rawText ? (
+    <pre className="h-[78vh] overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs leading-relaxed text-gray-700">
+      {rawText}
+    </pre>
+  ) : null
+
+  const splitReview = statementPreview !== null && parsedTransactions.length > 0
+
   return (
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
       <div className="mx-auto max-w-7xl px-6 py-10">
@@ -1080,6 +1096,22 @@ export default function ImportPage() {
           </div>
         )}
 
+        {/* Split review: statement on the left, extracted transactions on the right */}
+        <div className={splitReview ? 'grid gap-6 xl:grid-cols-2' : ''}>
+          {splitReview && (
+            <div className="xl:sticky xl:top-6 xl:self-start">
+              <div className="rounded-xl border border-gray-200 bg-white p-3 shadow-sm">
+                <div className="mb-2 flex items-center gap-2 px-1">
+                  <FileText className="h-4 w-4 text-gray-400" />
+                  <p className="truncate text-xs font-medium uppercase tracking-wider text-gray-400">
+                    {pdfDoc?.fileName ?? rawFileName ?? 'Statement'}
+                  </p>
+                </div>
+                {statementPreview}
+              </div>
+            </div>
+          )}
+          <div className={splitReview ? 'min-w-0' : ''}>
         {/* Summary bar */}
         {parsedTransactions.length > 0 && (
           <div className="mb-6 grid grid-cols-2 gap-4 rounded-xl border border-gray-200 bg-white p-5 shadow-sm sm:grid-cols-4">
@@ -1374,6 +1406,8 @@ export default function ImportPage() {
             </button>
           </div>
         )}
+          </div>
+        </div>
 
         {/* ------------------------------------------------------------------ */}
         {/* Saved statements — the archive + per-bank format history           */}
