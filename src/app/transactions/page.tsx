@@ -1,9 +1,10 @@
 'use client'
 
-import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
-import { Search, ChevronDown, Check } from 'lucide-react'
+import React, { useState, useMemo, useEffect, useCallback } from 'react'
+import { Search } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { DataTable } from '@/components/ui/DataTable'
+import { Select, MultiSelect } from '@/components/ui/Select'
 import { formatCurrency, formatUSD } from '@/lib/currency'
 
 // ────────────────────────────────────────────────
@@ -51,128 +52,6 @@ const CURRENCY_ROW_CLASS: Record<string, string> = {
   AED: 'bg-amber-50/40',
   GBP: 'bg-sky-50/40',
   USD: '',
-}
-
-// ────────────────────────────────────────────────
-// Multi-select filter popup
-// ────────────────────────────────────────────────
-
-interface MSOption {
-  value: string
-  label: string
-  group?: string
-}
-
-function MultiSelect({
-  label,
-  options,
-  selected,
-  onChange,
-  searchable,
-}: {
-  label: string
-  options: MSOption[]
-  selected: Set<string>
-  onChange: (next: Set<string>) => void
-  searchable?: boolean
-}) {
-  const [open, setOpen] = useState(false)
-  const [q, setQ] = useState('')
-  const ref = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    if (!open) return
-    const onDoc = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [open])
-
-  const toggle = (v: string) => {
-    const next = new Set(selected)
-    if (next.has(v)) next.delete(v)
-    else next.add(v)
-    onChange(next)
-  }
-
-  const summary =
-    selected.size === 0
-      ? `All ${label}`
-      : selected.size === 1
-        ? options.find((o) => o.value === [...selected][0])?.label ?? `1 ${label.slice(0, -1)}`
-        : `${selected.size} ${label}`
-
-  const filtered = q ? options.filter((o) => o.label.toLowerCase().includes(q.toLowerCase())) : options
-  const groups = filtered.reduce<string[]>((acc, o) => {
-    const g = o.group ?? ''
-    if (!acc.includes(g)) acc.push(g)
-    return acc
-  }, [])
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className={`inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm shadow-sm transition-colors ${
-          selected.size ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
-        }`}
-      >
-        {summary}
-        <ChevronDown className={`h-4 w-4 opacity-60 transition-transform ${open ? 'rotate-180' : ''}`} />
-      </button>
-      {open && (
-        <div className="absolute left-0 z-40 mt-1.5 w-64 rounded-xl border border-gray-200 bg-white p-2 shadow-xl">
-          <div className="mb-1.5 flex items-center justify-between px-1">
-            <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">{label}</span>
-            {selected.size > 0 && (
-              <button onClick={() => onChange(new Set())} className="text-xs font-medium text-blue-600 hover:underline">
-                Clear
-              </button>
-            )}
-          </div>
-          {searchable && (
-            <input
-              autoFocus
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search…"
-              className="mb-1.5 w-full rounded-md border border-gray-200 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300"
-            />
-          )}
-          <div className="max-h-72 overflow-y-auto">
-            {groups.map((g) => (
-              <div key={g}>
-                {g && <p className="px-1 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">{g}</p>}
-                {filtered
-                  .filter((o) => (o.group ?? '') === g)
-                  .map((o) => {
-                    const on = selected.has(o.value)
-                    return (
-                      <button
-                        key={o.value}
-                        onClick={() => toggle(o.value)}
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-50"
-                      >
-                        <span
-                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
-                            on ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-300'
-                          }`}
-                        >
-                          {on && <Check className="h-3 w-3" />}
-                        </span>
-                        <span className="truncate">{o.label}</span>
-                      </button>
-                    )
-                  })}
-              </div>
-            ))}
-            {filtered.length === 0 && <p className="px-2 py-3 text-center text-xs text-gray-400">No matches</p>}
-          </div>
-        </div>
-      )}
-    </div>
-  )
 }
 
 // ────────────────────────────────────────────────
@@ -345,6 +224,16 @@ export default function TransactionsPage() {
   )
   const acctOptions = useMemo(() => accountNames.map((a) => ({ value: a, label: a })), [accountNames])
 
+  // Options for the inline per-row category dropdown (value = category id).
+  const categorySelectOptions = useMemo(
+    () => [
+      ...expenseCategories.map((c) => ({ value: c.id, label: c.name, group: 'Expenses', color: c.color })),
+      ...incomeCategories.map((c) => ({ value: c.id, label: c.name, group: 'Income', color: c.color })),
+      ...transferCategories.map((c) => ({ value: c.id, label: c.name, group: 'Transfers & Investments', color: c.color })),
+    ],
+    [expenseCategories, incomeCategories, transferCategories],
+  )
+
   // ---- Columns ----
   const columns = useMemo(
     () => [
@@ -402,44 +291,16 @@ export default function TransactionsPage() {
         header: 'Category',
         className: 'w-[230px] min-w-[230px]',
         render: (tx: Transaction) => (
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-              style={{ backgroundColor: tx.categoryColor }}
-            />
-            <select
-              value={tx.categoryId ?? ''}
-              onChange={(e) => handleCategoryChange(tx.id, e.target.value)}
-              className="w-full rounded-md border border-transparent bg-transparent py-0.5 text-sm text-gray-700 hover:border-gray-200 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300"
-            >
-              <option value="" disabled>
-                Uncategorised
-              </option>
-              <optgroup label="Expenses">
-                {expenseCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="Income">
-                {incomeCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </optgroup>
-              {transferCategories.length > 0 && (
-                <optgroup label="Transfers & Investments">
-                  {transferCategories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
-          </div>
+          <Select
+            ariaLabel="Category"
+            value={tx.categoryId ?? ''}
+            onChange={(v) => handleCategoryChange(tx.id, v)}
+            options={categorySelectOptions}
+            placeholder="Uncategorised"
+            searchable
+            panelWidth={240}
+            buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-transparent bg-transparent px-2 text-sm text-gray-700 hover:border-gray-200 hover:bg-gray-50"
+          />
         ),
       },
       {
@@ -502,7 +363,7 @@ export default function TransactionsPage() {
         },
       },
     ],
-    [expenseCategories, incomeCategories, transferCategories, handleCategoryChange, editingDesc, descDraft, saveDescription],
+    [categorySelectOptions, handleCategoryChange, editingDesc, descDraft, saveDescription],
   )
 
   const getRowClassName = (tx: Transaction) =>
@@ -544,31 +405,19 @@ export default function TransactionsPage() {
 
         <MultiSelect label="Accounts" options={acctOptions} selected={acctFilters} onChange={setAcctFilters} />
 
-        <select
+        <Select
+          ariaLabel="Filter by year"
           value={yearFilter}
-          onChange={(e) => setYearFilter(e.target.value)}
-          className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 shadow-sm outline-none transition-colors focus:border-gray-400 focus:ring-1 focus:ring-gray-300"
-        >
-          <option value="all">All Years</option>
-          {years.map((y) => (
-            <option key={y} value={String(y)}>
-              {y}
-            </option>
-          ))}
-        </select>
+          onChange={setYearFilter}
+          options={[{ value: 'all', label: 'All Years' }, ...years.map((y) => ({ value: String(y), label: String(y) }))]}
+        />
 
-        <select
+        <Select
+          ariaLabel="Filter by month"
           value={monthFilter}
-          onChange={(e) => setMonthFilter(e.target.value)}
-          className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 shadow-sm outline-none transition-colors focus:border-gray-400 focus:ring-1 focus:ring-gray-300"
-        >
-          <option value="all">All Months</option>
-          {MONTHS.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+          onChange={setMonthFilter}
+          options={[{ value: 'all', label: 'All Months' }, ...MONTHS.map((m) => ({ value: m, label: m }))]}
+        />
 
         <div className="h-6 w-px bg-gray-200" />
 

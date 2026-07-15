@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
 import { DollarSign, TrendingDown, Wallet, Percent } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+import { Select } from '@/components/ui/Select'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -152,27 +153,21 @@ export default function CashFlowPage() {
           </div>
 
           {mode !== 'custom' && (
-            <select
-              value={year}
-              onChange={(e) => setYear(Number(e.target.value))}
-              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none"
-            >
-              {YEARS.map((y) => (
-                <option key={y} value={y}>{y}</option>
-              ))}
-            </select>
+            <Select
+              value={String(year)}
+              onChange={(v) => setYear(Number(v))}
+              options={YEARS.map((y) => ({ value: String(y), label: String(y) }))}
+              ariaLabel="Year"
+            />
           )}
 
           {mode === 'month' && (
-            <select
-              value={month}
-              onChange={(e) => setMonth(Number(e.target.value))}
-              className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none"
-            >
-              {MONTHS.map((m, i) => (
-                <option key={m} value={i}>{m}</option>
-              ))}
-            </select>
+            <Select
+              value={String(month)}
+              onChange={(v) => setMonth(Number(v))}
+              options={MONTHS.map((m, i) => ({ value: String(i), label: m }))}
+              ariaLabel="Month"
+            />
           )}
 
           {mode === 'custom' && (
@@ -292,6 +287,7 @@ interface DrillCat {
   id: string
   name: string
   type: 'income' | 'expense' | 'transfer'
+  color?: string
 }
 
 function DrillDrawer({
@@ -412,24 +408,18 @@ function DrillDrawer({
                   </div>
                   <div className="mt-1.5 flex items-center gap-2">
                     <span className="shrink-0 text-xs text-gray-400">{fmtDate(tx.date)}</span>
-                    <select
+                    <Select
                       value={drill.category}
-                      onChange={(e) => reclassify(tx, e.target.value)}
-                      className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                      title="Reclassify"
-                    >
-                      <optgroup label="Expenses">
-                        {expenseCats.map((c) => (<option key={c.id} value={c.name}>{c.name}</option>))}
-                      </optgroup>
-                      <optgroup label="Income">
-                        {incomeCats.map((c) => (<option key={c.id} value={c.name}>{c.name}</option>))}
-                      </optgroup>
-                      {transferCats.length > 0 && (
-                        <optgroup label="Transfers">
-                          {transferCats.map((c) => (<option key={c.id} value={c.name}>{c.name}</option>))}
-                        </optgroup>
-                      )}
-                    </select>
+                      onChange={(v) => reclassify(tx, v)}
+                      searchable
+                      ariaLabel="Reclassify"
+                      buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-700 hover:bg-gray-50"
+                      options={[
+                        ...expenseCats.map((c) => ({ value: c.name, label: c.name, group: 'Expenses', color: c.color })),
+                        ...incomeCats.map((c) => ({ value: c.name, label: c.name, group: 'Income', color: c.color })),
+                        ...transferCats.map((c) => ({ value: c.name, label: c.name, group: 'Transfers', color: c.color })),
+                      ]}
+                    />
                   </div>
                 </div>
               ))}

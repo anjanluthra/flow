@@ -34,6 +34,7 @@ import {
   Trash2,
 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+import { Select } from '@/components/ui/Select'
 import { convertToUSD, DEFAULT_FX_RATES } from '@/lib/currency'
 
 // ---------------------------------------------------------------------------
@@ -844,9 +845,6 @@ export default function NetWorthPage() {
     [accounts]
   )
 
-  const detailSelectCls =
-    'rounded-md border border-gray-300 bg-white px-1.5 py-1 text-xs text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500'
-
   function renderAccountRow(a: Account, i: number, corporate: boolean) {
     return (
       <tr
@@ -862,15 +860,12 @@ export default function NetWorthPage() {
         {/* Holder */}
         <td className="px-4 py-3">
           {editingDetails ? (
-            <select
+            <Select
               value={cellVal(a, 'holder')}
-              onChange={(e) => setDetail(a.accountId, { holder: e.target.value as Account['holder'] })}
-              className={detailSelectCls}
-            >
-              {HOLDER_OPTIONS.map((h) => (
-                <option key={h} value={h}>{h}</option>
-              ))}
-            </select>
+              onChange={(v) => setDetail(a.accountId, { holder: v as Account['holder'] })}
+              options={HOLDER_OPTIONS.map((v) => ({ value: v, label: v }))}
+              buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-900 hover:bg-gray-50"
+            />
           ) : (
             <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${HOLDER_STYLES[a.holder]}`}>
               {a.holder}
@@ -881,15 +876,12 @@ export default function NetWorthPage() {
         {/* Country */}
         <td className="px-4 py-3 text-center">
           {editingDetails ? (
-            <select
+            <Select
               value={cellVal(a, 'country')}
-              onChange={(e) => setDetail(a.accountId, { country: e.target.value })}
-              className={detailSelectCls}
-            >
-              {COUNTRY_OPTIONS.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+              onChange={(v) => setDetail(a.accountId, { country: v })}
+              options={COUNTRY_OPTIONS.map((v) => ({ value: v, label: v }))}
+              buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-900 hover:bg-gray-50"
+            />
           ) : (
             <span className="text-sm" title={a.country}>
               {COUNTRY_FLAGS[a.country] || a.country}{' '}
@@ -901,15 +893,12 @@ export default function NetWorthPage() {
         {/* Asset class */}
         <td className={`px-4 py-3 font-medium ${ASSET_CLASS_STYLES[a.assetClass]}`}>
           {editingDetails ? (
-            <select
+            <Select
               value={cellVal(a, 'assetClass')}
-              onChange={(e) => setDetail(a.accountId, { assetClass: e.target.value as Account['assetClass'] })}
-              className={detailSelectCls}
-            >
-              {ASSET_CLASS_OPTIONS.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+              onChange={(v) => setDetail(a.accountId, { assetClass: v as Account['assetClass'] })}
+              options={ASSET_CLASS_OPTIONS.map((v) => ({ value: v, label: v }))}
+              buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-900 hover:bg-gray-50"
+            />
           ) : (
             a.assetClass
           )}
@@ -918,15 +907,12 @@ export default function NetWorthPage() {
         {/* Liquidity */}
         <td className="px-4 py-3 text-center">
           {editingDetails ? (
-            <select
+            <Select
               value={cellVal(a, 'liquidity')}
-              onChange={(e) => setDetail(a.accountId, { liquidity: e.target.value as Account['liquidity'] })}
-              className={detailSelectCls}
-            >
-              {LIQUIDITY_OPTIONS.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+              onChange={(v) => setDetail(a.accountId, { liquidity: v as Account['liquidity'] })}
+              options={LIQUIDITY_OPTIONS.map((v) => ({ value: v, label: v }))}
+              buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-900 hover:bg-gray-50"
+            />
           ) : (
             <span className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${LIQUIDITY_STYLES[a.liquidity]}`}>
               {a.liquidity}
@@ -937,15 +923,12 @@ export default function NetWorthPage() {
         {/* Currency */}
         <td className="px-4 py-3 text-center text-gray-500">
           {editingDetails ? (
-            <select
+            <Select
               value={cellVal(a, 'currency')}
-              onChange={(e) => setDetail(a.accountId, { currency: e.target.value })}
-              className={detailSelectCls}
-            >
-              {CURRENCY_OPTIONS.map((c) => (
-                <option key={c} value={c}>{c}</option>
-              ))}
-            </select>
+              onChange={(v) => setDetail(a.accountId, { currency: v })}
+              options={CURRENCY_OPTIONS.map((v) => ({ value: v, label: v }))}
+              buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-900 hover:bg-gray-50"
+            />
           ) : (
             a.currency
           )}
@@ -1039,18 +1022,16 @@ export default function NetWorthPage() {
 
           {snapshotDates.length > 0 ? (
             <>
-              <select
+              <Select
                 value={selectedDate || ''}
-                onChange={(e) => setSelectedDate(e.target.value)}
-                className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-1.5 text-sm font-medium text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                {snapshotDates.map((s) => (
-                  <option key={s.date} value={s.date}>
-                    {formatDateLabel(s.date)}
-                    {s.date === snapshotDates[0].date ? ' (Latest)' : ''}
-                  </option>
-                ))}
-              </select>
+                onChange={setSelectedDate}
+                options={snapshotDates.map((s) => ({
+                  value: s.date,
+                  label: formatDateLabel(s.date) + (s.date === snapshotDates[0].date ? ' (Latest)' : ''),
+                }))}
+                searchable
+                align="left"
+              />
 
               <div className="flex items-center gap-1">
                 <button
