@@ -30,6 +30,24 @@ interface PnLTotals {
   savingsRate: number
 }
 
+// The P&L API returns each total as { usd, gbp }; this page works in USD, so
+// coerce the money fields to their USD number (tolerating either shape).
+type MaybeAmt = number | { usd?: number; gbp?: number } | null | undefined
+function coerceTotals(totals: {
+  incomeTotal?: MaybeAmt
+  expenseTotal?: MaybeAmt
+  net?: MaybeAmt
+  savingsRate?: number
+}): PnLTotals {
+  const usd = (a: MaybeAmt): number => (typeof a === 'number' ? a : (a?.usd ?? 0))
+  return {
+    incomeTotal: usd(totals?.incomeTotal),
+    expenseTotal: usd(totals?.expenseTotal),
+    net: usd(totals?.net),
+    savingsRate: totals?.savingsRate ?? 0,
+  }
+}
+
 const YEARS = [2024, 2025, 2026]
 const MOVE_DATE = '2024-07-01'
 
@@ -72,7 +90,7 @@ export default function HomePage() {
       YEARS.map((y) =>
         fetch(`/api/pnl?from=${y}-01-01&to=${y}-12-31`)
           .then((r) => (r.ok ? r.json() : Promise.reject()))
-          .then((d) => [y, d.totals as PnLTotals] as const)
+          .then((d) => [y, d.totals ? coerceTotals(d.totals) : null] as const)
           .catch(() => [y, null] as const),
       ),
     ).then((entries) => {
@@ -83,7 +101,7 @@ export default function HomePage() {
 
     fetch(`/api/pnl?from=${MOVE_DATE}&to=${today}`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => setSinceMove(d.totals))
+      .then((d) => setSinceMove(d.totals ? coerceTotals(d.totals) : null))
       .catch(() => {})
 
     fetch('/api/tax')
