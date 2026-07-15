@@ -420,8 +420,13 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
      WHERE t.date >= $1 AND t.date <= $2
-       AND t.type <> 'transfer'
-       AND t.is_internal_transfer = false
+       AND (
+         (t.type <> 'transfer' AND t.is_internal_transfer = false)
+         -- Investment funding is a real cash outflow (investing activities), so
+         -- it's surfaced separately in the cash flow rather than dropped like
+         -- internal transfers and credit-card payments.
+         OR (t.type = 'transfer' AND c.name = 'Investments')
+       )
      GROUP BY t.type, c.name, c.color_hex, ym
      ORDER BY ym`,
     [from, to, rate],

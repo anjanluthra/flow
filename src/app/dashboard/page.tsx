@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
-import { DollarSign, TrendingDown, Wallet, Percent } from 'lucide-react'
+import { DollarSign, TrendingDown, TrendingUp, Wallet, Percent } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Select } from '@/components/ui/Select'
 
@@ -28,13 +28,18 @@ interface PnL {
   gbpRate: number
   income: Line[]
   expense: Line[]
+  investing: Line[]
   totals: {
     incomeByMonth: Record<string, Amt>
     expenseByMonth: Record<string, Amt>
+    investingByMonth: Record<string, Amt>
     netByMonth: Record<string, Amt>
+    netCashByMonth: Record<string, Amt>
     incomeTotal: Amt
     expenseTotal: Amt
+    investingTotal: Amt
     net: Amt
+    netCash: Amt
     savingsRate: number
   }
 }
@@ -133,7 +138,7 @@ export default function CashFlowPage() {
         {/* Header */}
         <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">Monthly Cash Flow</h1>
-          <p className="mt-1 text-sm text-gray-500">Profit &amp; loss statement</p>
+          <p className="mt-1 text-sm text-gray-500">Income, expenses &amp; investing activities</p>
         </div>
 
         {/* Period controls */}
@@ -207,11 +212,12 @@ export default function CashFlowPage() {
         </div>
 
         {/* Summary cards */}
-        <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <Card title="Income" value={fmt(pick(t?.incomeTotal, currency))} subtitle="for the period" icon={<DollarSign className="h-5 w-5 text-green-500" />} />
           <Card title="Expenses" value={fmt(pick(t?.expenseTotal, currency))} subtitle="for the period" icon={<TrendingDown className="h-5 w-5 text-red-500" />} />
-          <Card title="Net" value={fmt(pick(t?.net, currency))} subtitle="income − expenses" icon={<Wallet className="h-5 w-5 text-blue-500" />} />
-          <Card title="Savings Rate" value={`${(t?.savingsRate ?? 0).toFixed(1)}%`} subtitle="net / income" icon={<Percent className="h-5 w-5 text-purple-500" />} />
+          <Card title="Net Operating" value={fmt(pick(t?.net, currency))} subtitle="income − expenses" icon={<Wallet className="h-5 w-5 text-blue-500" />} />
+          <Card title="Invested" value={fmt(pick(t?.investingTotal, currency))} subtitle="capital deployed" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
+          <Card title="Net Cash Flow" value={fmt(pick(t?.netCash, currency))} subtitle="operating − investing" icon={<Percent className="h-5 w-5 text-purple-500" />} />
         </div>
 
         {/* P&L statement */}
@@ -231,7 +237,7 @@ export default function CashFlowPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {!pnl || (pnl.income.length === 0 && pnl.expense.length === 0) ? (
+                {!pnl || (pnl.income.length === 0 && pnl.expense.length === 0 && pnl.investing.length === 0) ? (
                   <tr>
                     <td colSpan={months.length + 2} className="px-4 py-12 text-center text-gray-400">
                       {isLoading ? 'Loading…' : 'No transactions in this period.'}
@@ -251,7 +257,19 @@ export default function CashFlowPage() {
                     ))}
                     <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} />
 
-                    <TotalRow label="Net Cash Flow" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} />
+                    <TotalRow label={pnl.investing.length > 0 ? 'Net Operating' : 'Net Cash Flow'} byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} />
+
+                    {pnl.investing.length > 0 && (
+                      <>
+                        <SectionRow label="Investing" span={months.length} showMonthCols={showMonthCols} tone="investing" />
+                        {pnl.investing.map((l) => (
+                          <LineRow key={`v-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
+                        ))}
+                        <TotalRow label="Total Invested" byMonth={t!.investingByMonth} total={t!.investingTotal} months={months} showMonthCols={showMonthCols} tone="investing" currency={currency} fmt={fmt} />
+
+                        <TotalRow label="Net Cash Flow" byMonth={t!.netCashByMonth} total={t!.netCash} months={months} showMonthCols={showMonthCols} tone="netcash" currency={currency} fmt={fmt} />
+                      </>
+                    )}
                   </>
                 )}
               </tbody>
@@ -260,7 +278,9 @@ export default function CashFlowPage() {
         </div>
         <p className="mt-3 text-xs text-gray-400">
           Figures shown in {currency}. GBP uses each transaction&rsquo;s recorded pound amount where
-          available. Internal transfers and investments are excluded from the P&amp;L.
+          available. Income and expenses form the operating section; cash put into the
+          &ldquo;Investments&rdquo; category is shown separately as investing activity and subtracted to give
+          Net Cash Flow. Internal transfers and credit-card payments are excluded (they net to zero).
         </p>
       </div>
       <DrillDrawer drill={drill} currency={currency} onClose={() => setDrill(null)} onChanged={load} />
@@ -435,12 +455,12 @@ function DrillDrawer({
 // Row components
 // ---------------------------------------------------------------------------
 
-function SectionRow({ label, span, showMonthCols, tone }: { label: string; span: number; showMonthCols: boolean; tone: 'income' | 'expense' }) {
+function SectionRow({ label, span, showMonthCols, tone }: { label: string; span: number; showMonthCols: boolean; tone: 'income' | 'expense' | 'investing' }) {
   return (
     <tr className="bg-gray-50">
       <td
         className={`sticky left-0 z-10 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider ${
-          tone === 'income' ? 'text-emerald-600' : 'text-rose-600'
+          tone === 'income' ? 'text-emerald-600' : tone === 'investing' ? 'text-indigo-600' : 'text-rose-600'
         }`}
       >
         {label}
@@ -524,18 +544,18 @@ function TotalRow({
   total: Amt
   months: string[]
   showMonthCols: boolean
-  tone: 'income' | 'expense' | 'net'
+  tone: 'income' | 'expense' | 'net' | 'investing' | 'netcash'
   currency: Currency
   fmt: (n: number) => string
 }) {
   const totalVal = pick(total, currency)
   const color =
-    tone === 'net'
+    tone === 'net' || tone === 'netcash'
       ? totalVal >= 0 ? 'text-emerald-700' : 'text-rose-700'
-      : tone === 'income' ? 'text-emerald-700' : 'text-rose-700'
-  const bg = tone === 'net' ? 'bg-blue-50/70 border-t-2 border-gray-300' : 'bg-gray-50/70'
+      : tone === 'income' ? 'text-emerald-700' : tone === 'investing' ? 'text-indigo-700' : 'text-rose-700'
+  const bg = tone === 'net' || tone === 'netcash' ? 'bg-blue-50/70 border-t-2 border-gray-300' : 'bg-gray-50/70'
   // Solid background for the frozen first cell so scrolled numbers can't show through.
-  const stickyBg = tone === 'net' ? 'bg-blue-50 border-t-2 border-gray-300' : 'bg-gray-50'
+  const stickyBg = tone === 'net' || tone === 'netcash' ? 'bg-blue-50 border-t-2 border-gray-300' : 'bg-gray-50'
   return (
     <tr className={`font-semibold ${bg}`}>
       <td className={`sticky left-0 z-10 px-4 py-2.5 ${stickyBg} ${color}`}>{label}</td>

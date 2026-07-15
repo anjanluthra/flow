@@ -60,9 +60,17 @@ export async function GET(request: NextRequest) {
 
     const income = new Map<string, Line>()
     const expense = new Map<string, Line>()
+    const investing = new Map<string, Line>()
 
     for (const row of result.rows) {
-      const bucket = row.type === 'income' ? income : row.type === 'expense' ? expense : null
+      const bucket =
+        row.type === 'income'
+          ? income
+          : row.type === 'expense'
+            ? expense
+            : row.category_name === 'Investments'
+              ? investing
+              : null
       if (!bucket) continue
       const name = row.category_name ?? 'Uncategorised'
       const usd = Math.abs(parseFloat(row.total_usd))
@@ -82,6 +90,7 @@ export async function GET(request: NextRequest) {
       Array.from(m.values()).sort((a, b) => b.total.usd - a.total.usd)
     const incomeLines = sortLines(income)
     const expenseLines = sortLines(expense)
+    const investingLines = sortLines(investing)
 
     const sumByMonth = (lines: Line[]) => {
       const out: Record<string, Amt> = {}
@@ -98,9 +107,12 @@ export async function GET(request: NextRequest) {
 
     const incomeByMonth = sumByMonth(incomeLines)
     const expenseByMonth = sumByMonth(expenseLines)
+    const investingByMonth = sumByMonth(investingLines)
     const incomeTotal = sumTotal(incomeLines)
     const expenseTotal = sumTotal(expenseLines)
+    const investingTotal = sumTotal(investingLines)
 
+    // Operating net = income − expenses (the P&L bottom line).
     const netByMonth: Record<string, Amt> = {}
     for (const ym of months) {
       netByMonth[ym] = {
@@ -112,6 +124,20 @@ export async function GET(request: NextRequest) {
       usd: incomeTotal.usd - expenseTotal.usd,
       gbp: incomeTotal.gbp - expenseTotal.gbp,
     }
+
+    // Net cash flow = operating net − cash deployed into investments. This is
+    // the true movement in cash once investing outflows are taken out.
+    const netCashByMonth: Record<string, Amt> = {}
+    for (const ym of months) {
+      netCashByMonth[ym] = {
+        usd: netByMonth[ym].usd - investingByMonth[ym].usd,
+        gbp: netByMonth[ym].gbp - investingByMonth[ym].gbp,
+      }
+    }
+    const netCash: Amt = {
+      usd: net.usd - investingTotal.usd,
+      gbp: net.gbp - investingTotal.gbp,
+    }
     const savingsRate = incomeTotal.usd > 0 ? (net.usd / incomeTotal.usd) * 100 : 0
 
     return NextResponse.json({
@@ -121,7 +147,20 @@ export async function GET(request: NextRequest) {
       gbpRate,
       income: incomeLines,
       expense: expenseLines,
-      totals: { incomeByMonth, expenseByMonth, netByMonth, incomeTotal, expenseTotal, net, savingsRate },
+      investing: investingLines,
+      totals: {
+        incomeByMonth,
+        expenseByMonth,
+        investingByMonth,
+        netByMonth,
+        netCashByMonth,
+        incomeTotal,
+        expenseTotal,
+        investingTotal,
+        net,
+        netCash,
+        savingsRate,
+      },
     })
   } catch (error) {
     console.error('Failed to build P&L:', error)
