@@ -31,6 +31,7 @@ import {
   Clock,
   Target,
   Settings2,
+  Trash2,
 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { convertToUSD, DEFAULT_FX_RATES } from '@/lib/currency'
@@ -330,6 +331,7 @@ export default function NetWorthPage() {
   const [editValues, setEditValues] = useState<Record<string, string>>({})
   const [saveDate, setSaveDate] = useState(todayStr())
   const [isSaving, setIsSaving] = useState(false)
+  const [isDeleting, setIsDeleting] = useState(false)
 
   // ---- Account-detail editing (country/holder/currency/class/liquidity) ----
   const [editingDetails, setEditingDetails] = useState(false)
@@ -596,6 +598,32 @@ export default function NetWorthPage() {
     } else {
       setSelectedDate(null)
       setAccounts(FALLBACK_ACCOUNTS)
+    }
+  }
+
+  // ---- Delete a saved snapshot / history data point ----
+  async function deleteSnapshot() {
+    if (!selectedDate || !isDbConnected) return
+    const label = formatDateLabel(selectedDate)
+    if (
+      !window.confirm(
+        `Delete the ${label} snapshot?\n\nThis removes that single data point from your net worth history. It can't be undone.`,
+      )
+    )
+      return
+    setIsDeleting(true)
+    try {
+      const res = await fetch(`/api/snapshots?date=${selectedDate}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Delete failed')
+      const remaining = snapshotDates.filter((s) => s.date !== selectedDate)
+      setSelectedDate(remaining[0]?.date ?? null)
+      if (remaining.length === 0) setAccounts(FALLBACK_ACCOUNTS)
+      await fetchSnapshotDates()
+    } catch (err) {
+      console.error('Failed to delete snapshot:', err)
+      window.alert('Could not delete that snapshot. Please try again.')
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -1036,6 +1064,18 @@ export default function NetWorthPage() {
                   className="rounded-lg bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
                 >
                   Jump to Latest
+                </button>
+              )}
+
+              {!isEditing && !editingDetails && selectedDate && (
+                <button
+                  onClick={deleteSnapshot}
+                  disabled={isDeleting}
+                  className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 disabled:opacity-40"
+                  title="Delete this snapshot / data point"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {isDeleting ? 'Deleting…' : 'Delete'}
                 </button>
               )}
 
