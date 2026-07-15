@@ -69,7 +69,12 @@ export default function TransactionsPage() {
   const [categoryFilter, setCategoryFilter] = useState('all')
   const [accountFilter, setAccountFilter] = useState('all')
   const [monthFilter, setMonthFilter] = useState('all')
+  const [yearFilter, setYearFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState<'all' | 'income' | 'expense'>('all')
+
+  // Inline description editing
+  const [editingDesc, setEditingDesc] = useState<string | null>(null)
+  const [descDraft, setDescDraft] = useState('')
 
   // ---- Fetch data on mount ----
   useEffect(() => {
@@ -166,6 +171,21 @@ export default function TransactionsPage() {
     [categories, transactions],
   )
 
+  const saveDescription = useCallback(async (id: string, value: string) => {
+    const v = value.trim()
+    setEditingDesc(null)
+    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, description: v } : t)))
+    try {
+      await fetch(`/api/transactions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: v }),
+      })
+    } catch {
+      /* best-effort */
+    }
+  }, [])
+
   // ---- Filtered data ----
   const filteredData = useMemo(() => {
     return transactions.filter((tx) => {
@@ -178,10 +198,19 @@ export default function TransactionsPage() {
         const txMonth = parseISO(tx.date).getMonth()
         if (txMonth !== MONTHS.indexOf(monthFilter)) return false
       }
+      if (yearFilter !== 'all') {
+        if (String(parseISO(tx.date).getFullYear()) !== yearFilter) return false
+      }
       if (typeFilter !== 'all' && tx.type !== typeFilter) return false
       return true
     })
-  }, [transactions, search, categoryFilter, accountFilter, monthFilter, typeFilter])
+  }, [transactions, search, categoryFilter, accountFilter, monthFilter, yearFilter, typeFilter])
+
+  // Distinct years present in the data, for the year filter.
+  const years = useMemo(
+    () => Array.from(new Set(transactions.map((t) => parseISO(t.date).getFullYear()))).sort((a, b) => b - a),
+    [transactions],
+  )
 
   // ---- Columns ----
   const columns = useMemo(
@@ -201,9 +230,31 @@ export default function TransactionsPage() {
         key: 'description',
         header: 'Description',
         className: 'min-w-[200px]',
-        render: (tx: Transaction) => (
-          <span className="text-sm font-medium text-gray-900">{tx.description}</span>
-        ),
+        render: (tx: Transaction) =>
+          editingDesc === tx.id ? (
+            <input
+              autoFocus
+              value={descDraft}
+              onChange={(e) => setDescDraft(e.target.value)}
+              onBlur={() => saveDescription(tx.id, descDraft)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') saveDescription(tx.id, descDraft)
+                if (e.key === 'Escape') setEditingDesc(null)
+              }}
+              className="w-full rounded-md border border-blue-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
+          ) : (
+            <button
+              onClick={() => {
+                setEditingDesc(tx.id)
+                setDescDraft(tx.description)
+              }}
+              title="Click to edit"
+              className="w-full truncate text-left text-sm font-medium text-gray-900 hover:text-blue-600"
+            >
+              {tx.description || <span className="italic text-gray-400">Add description…</span>}
+            </button>
+          ),
       },
       {
         key: 'accountName',
@@ -318,7 +369,7 @@ export default function TransactionsPage() {
         },
       },
     ],
-    [expenseCategories, incomeCategories, transferCategories, handleCategoryChange],
+    [expenseCategories, incomeCategories, transferCategories, handleCategoryChange, editingDesc, descDraft, saveDescription],
   )
 
   const getRowClassName = (tx: Transaction) =>
@@ -396,6 +447,19 @@ export default function TransactionsPage() {
           {accountNames.map((a) => (
             <option key={a} value={a}>
               {a}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={yearFilter}
+          onChange={(e) => setYearFilter(e.target.value)}
+          className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 shadow-sm outline-none transition-colors focus:border-gray-400 focus:ring-1 focus:ring-gray-300"
+        >
+          <option value="all">All Years</option>
+          {years.map((y) => (
+            <option key={y} value={String(y)}>
+              {y}
             </option>
           ))}
         </select>

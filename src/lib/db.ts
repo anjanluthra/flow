@@ -277,6 +277,7 @@ export async function createTransactions(rows: NewTransaction[]) {
 
 export interface TransactionPatch {
   categoryId?: string | null
+  description?: string
   type?: 'income' | 'expense' | 'transfer'
   isInternalTransfer?: boolean
   isBusinessExpense?: boolean
@@ -292,6 +293,7 @@ export async function updateTransaction(id: string, patch: TransactionPatch) {
 
   const map: Array<[keyof TransactionPatch, string]> = [
     ['categoryId', 'category_id'],
+    ['description', 'description'],
     ['type', 'type'],
     ['isInternalTransfer', 'is_internal_transfer'],
     ['isBusinessExpense', 'is_business_expense'],
