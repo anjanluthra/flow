@@ -268,7 +268,7 @@ export default function CashFlowPage() {
           available. Internal transfers and investments are excluded from the P&amp;L.
         </p>
       </div>
-      <DrillDrawer drill={drill} currency={currency} onClose={() => setDrill(null)} />
+      <DrillDrawer drill={drill} currency={currency} onClose={() => setDrill(null)} onChanged={load} />
     </div>
   )
 }
@@ -285,19 +285,37 @@ interface DrillTxn {
   amountLocal: number
   currency: string
   accountName: string | null
+  categoryName: string
+}
+
+interface DrillCat {
+  id: string
+  name: string
+  type: 'income' | 'expense' | 'transfer'
 }
 
 function DrillDrawer({
   drill,
   currency,
   onClose,
+  onChanged,
 }: {
   drill: { category: string; from: string; to: string; label: string } | null
   currency: Currency
   onClose: () => void
+  onChanged: () => void
 }) {
   const [txns, setTxns] = useState<DrillTxn[]>([])
   const [loading, setLoading] = useState(false)
+  const [cats, setCats] = useState<DrillCat[]>([])
+  const [savingId, setSavingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch('/api/categories')
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => setCats(d.categories || []))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     if (!drill) return
@@ -318,6 +336,38 @@ function DrillDrawer({
       cancelled = true
     }
   }, [drill])
+
+  const expenseCats = cats.filter((c) => c.type === 'expense')
+  const incomeCats = cats.filter((c) => c.type === 'income')
+  const transferCats = cats.filter((c) => c.type === 'transfer')
+
+  async function reclassify(tx: DrillTxn, newName: string) {
+    if (!drill || newName === drill.category) return
+    const cat = cats.find((c) => c.name === newName)
+    if (!cat) return
+    setSavingId(tx.id)
+    // Optimistically drop the row from this category's list (it's moving out).
+    setTxns((prev) => prev.filter((t) => t.id !== tx.id))
+    try {
+      await fetch(`/api/transactions/${tx.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoryId: cat.id, type: cat.type }),
+      })
+      // Teach the bookkeeper from this correction.
+      fetch('/api/merchant-mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: tx.description, categoryId: cat.id }),
+      }).catch(() => {})
+      onChanged() // refresh the P&L behind the drawer
+    } catch {
+      // Put it back if the save failed.
+      setTxns((prev) => [tx, ...prev])
+    } finally {
+      setSavingId(null)
+    }
+  }
 
   if (!drill) return null
 
@@ -349,18 +399,38 @@ function DrillDrawer({
               Loading…
             </div>
           ) : txns.length === 0 ? (
-            <div className="py-16 text-center text-sm text-gray-400">No transactions in this period.</div>
+            <div className="py-16 text-center text-sm text-gray-400">No transactions here.</div>
           ) : (
             <div className="divide-y divide-gray-100">
               {txns.map((tx) => (
-                <div key={tx.id} className="flex items-baseline justify-between gap-3 px-5 py-3">
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-gray-900" title={tx.description}>{tx.description}</p>
-                    <p className="text-xs text-gray-400">{fmtDate(tx.date)}{tx.accountName ? ` · ${tx.accountName}` : ''}</p>
+                <div key={tx.id} className={`px-5 py-3 ${savingId === tx.id ? 'opacity-50' : ''}`}>
+                  <div className="flex items-baseline justify-between gap-3">
+                    <p className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900" title={tx.description}>{tx.description}</p>
+                    <span className={`shrink-0 font-mono text-sm ${amt(tx) < 0 ? 'text-rose-600' : 'text-gray-900'}`}>
+                      {fmtMoney(amt(tx), currency)}
+                    </span>
                   </div>
-                  <span className={`shrink-0 font-mono text-sm ${amt(tx) < 0 ? 'text-rose-600' : 'text-gray-900'}`}>
-                    {fmtMoney(amt(tx), currency)}
-                  </span>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <span className="shrink-0 text-xs text-gray-400">{fmtDate(tx.date)}</span>
+                    <select
+                      value={drill.category}
+                      onChange={(e) => reclassify(tx, e.target.value)}
+                      className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1 text-xs text-gray-700 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      title="Reclassify"
+                    >
+                      <optgroup label="Expenses">
+                        {expenseCats.map((c) => (<option key={c.id} value={c.name}>{c.name}</option>))}
+                      </optgroup>
+                      <optgroup label="Income">
+                        {incomeCats.map((c) => (<option key={c.id} value={c.name}>{c.name}</option>))}
+                      </optgroup>
+                      {transferCats.length > 0 && (
+                        <optgroup label="Transfers">
+                          {transferCats.map((c) => (<option key={c.id} value={c.name}>{c.name}</option>))}
+                        </optgroup>
+                      )}
+                    </select>
+                  </div>
                 </div>
               ))}
             </div>

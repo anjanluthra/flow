@@ -537,7 +537,26 @@ export default function ImportPage() {
       for (let i = 1; i < rows.length; i++) {
         const row = rows[i]
         const dateRaw = row[mapping.dateCol] ?? ''
-        const description = row[mapping.descCol] ?? ''
+        let description = row[mapping.descCol] ?? ''
+
+        // Some exports (e.g. Monzo pot round-ups, transfers) leave the primary
+        // description blank but carry the detail in another column. Fall back to
+        // the longest non-numeric text cell so a row is never left unlabelled.
+        if (!description.trim()) {
+          const skipCols = new Set(
+            [mapping.dateCol, mapping.amountCol, mapping.debitCol, mapping.creditCol, mapping.stateCol].filter(
+              (c): c is number => c !== undefined,
+            ),
+          )
+          let best = ''
+          for (let c = 0; c < row.length; c++) {
+            if (skipCols.has(c)) continue
+            const cell = (row[c] ?? '').trim()
+            if (!cell || /^[-+]?[\d.,\s£$€]+$/.test(cell)) continue // skip pure numbers/currency
+            if (cell.length > best.length) best = cell
+          }
+          description = best || '(no description)'
+        }
 
         if (row.length < 2 || (!dateRaw && !description)) {
           skipped.push({
