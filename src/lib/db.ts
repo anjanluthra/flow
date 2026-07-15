@@ -114,7 +114,9 @@ export async function getTransactions(filters: TransactionFilters = {}) {
 }
 
 export async function getCategories() {
-  return query('SELECT * FROM categories ORDER BY type, sort_order')
+  // Alphabetical by name so every category dropdown/filter is easy to scan.
+  // Pages still group by type client-side; ordering within each group is A→Z.
+  return query('SELECT * FROM categories ORDER BY name ASC')
 }
 
 export async function getAccounts() {

@@ -31,7 +31,7 @@ export async function GET(request: NextRequest) {
               asset_class, liquidity_tier, is_corporate
        FROM accounts
        WHERE is_active = true
-       ORDER BY is_corporate ASC, name ASC`,
+       ORDER BY name ASC`,
     )
 
     let txCount: Record<string, number> = {}
