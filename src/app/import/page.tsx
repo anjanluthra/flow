@@ -5,7 +5,7 @@ import { Upload, CheckCircle, AlertCircle, FileText, Eye, Download, Trash2 } fro
 import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 import { FileUpload } from '@/components/ui/FileUpload'
 import { convertToUSD } from '@/lib/currency'
-import { suggestCategoryName, deriveMerchantPattern } from '@/lib/categories'
+import { deriveMerchantPattern } from '@/lib/categories'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -593,7 +593,8 @@ export default function ImportPage() {
 
         const lowerDesc = description.toLowerCase()
         const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
-        const category = learned?.categoryName ?? suggestCategoryName(description) ?? ''
+        // Learned mappings win; everything else is left for Claude to assess.
+        const category = learned?.categoryName ?? ''
         const amountUSD = convertToUSD(amount, activeAccount.currency, fxRates ?? undefined)
 
         transactions.push({
@@ -635,7 +636,7 @@ export default function ImportPage() {
         else sumDebits += amount
         const lowerDesc = r.description.toLowerCase()
         const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
-        const category = learned?.categoryName ?? suggestCategoryName(r.description) ?? ''
+        const category = learned?.categoryName ?? ''
         transactions.push({
           date: normalizeDate(r.date),
           description: r.description,

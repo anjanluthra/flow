@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { getMerchantMappings } from '@/lib/db'
 
 export const maxDuration = 30
 export const dynamic = 'force-dynamic'
@@ -35,9 +36,35 @@ export async function POST(request: NextRequest) {
       .map((c) => `- ${c.name} (${c.type})`)
       .join('\n')
 
-    const system = `You are a meticulous bookkeeping assistant categorising bank and credit-card transactions for a household. You will be given a list of transaction descriptions and the ONLY categories you may use. For each description, pick the single best-fitting category by name, or null if genuinely unclear. Use merchant knowledge (e.g. "Expedia"/"Booking.com" = travel/hotels, "Apple.Com/Bill"/"Google One" = subscriptions, "Tesco"/"Waitrose" = groceries, a credit-card "Payment by Direct Debit" = a credit card payment/transfer). Only ever return category names exactly from the provided list. Respond with ONLY a JSON array, one object per input in the same order: [{"i":0,"category":"Name or null"}].`
+    // Few-shot examples from the household's OWN past categorisations, so
+    // Claude stays consistent with how they've classified similar merchants.
+    let examples = ''
+    try {
+      const mm = await getMerchantMappings()
+      const valid = new Set(categories.map((c) => c.name))
+      const rows = (mm.rows as { merchant_pattern: string; category_name: string }[])
+        .filter((r) => r.category_name && valid.has(r.category_name))
+        .slice(0, 40)
+      if (rows.length) {
+        examples = `\n\nHow this household has categorised merchants before (follow these patterns):\n${rows
+          .map((r) => `- "${r.merchant_pattern}" → ${r.category_name}`)
+          .join('\n')}`
+      }
+    } catch {
+      /* no examples */
+    }
 
-    const user = `Allowed categories:\n${catList}\n\nTransactions:\n${descriptions
+    const system = `You are a meticulous bookkeeping assistant categorising bank and credit-card transactions for a UK→UAE household. You are given transaction descriptions and the ONLY categories you may use. For each, pick the single best-fitting category by exact name, or null only if truly impossible.
+
+Rules:
+- Prefer the household's own past choices (given below) for the same/similar merchant — consistency matters most.
+- Use real-world merchant knowledge: airlines/hotels/Expedia/Booking/Airbnb → travel; supermarkets (Tesco, Waitrose, M&S Food, Spinneys, Carrefour, Lulu) → groceries; restaurants/cafes/Deliveroo/Talabat/Uber Eats → eating out; Uber/Careem/bolt/trains → transport/taxis; Apple.com/Google/Netflix/Spotify/subscriptions → subscriptions or software; fuel/petrol/ADNOC/ENOC/Salik/parking → car; pharmacy/clinic/gym → health; a credit-card "Payment"/"Payment by Direct Debit"/"Payment received" → a credit-card payment / transfer.
+- Be decisive; avoid null unless there's genuinely no reasonable fit.
+- Return ONLY category names that appear verbatim in the allowed list.
+
+Respond with ONLY a JSON array, one object per input in the same order: [{"i":0,"category":"Name or null"}].`
+
+    const user = `Allowed categories:\n${catList}${examples}\n\nTransactions to categorise:\n${descriptions
       .map((d, i) => `${i}. ${d}`)
       .join('\n')}\n\nReturn the JSON array now.`
 
@@ -46,7 +73,7 @@ export async function POST(request: NextRequest) {
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 1500,
+        max_tokens: 4000,
         system,
         messages: [{ role: 'user', content: user }],
       }),
