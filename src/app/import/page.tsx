@@ -350,10 +350,34 @@ export default function ImportPage() {
           fetch('/api/account-hints'),
         ])
         const accData = await accRes.json()
-        const catData = await catRes.json()
+        let catData = await catRes.json()
         const mapData = await mapRes.json()
         const fxData = await fxRes.json()
         const hintData = await hintRes.json()
+
+        // Ensure the "Credit Card Payment" transfer category exists so
+        // balance-payment lines can be excluded from the P&L.
+        const hasCcPayment = (catData.categories || []).some(
+          (c: { name: string }) => c.name === 'Credit Card Payment',
+        )
+        if (!hasCcPayment) {
+          try {
+            await fetch('/api/categories', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: 'Credit Card Payment',
+                type: 'transfer',
+                colorHex: '#475569',
+                iconName: 'credit-card',
+              }),
+            })
+            catData = await (await fetch('/api/categories')).json()
+          } catch {
+            /* keep going with the categories we have */
+          }
+        }
+
         setAccounts(accData.accounts || [])
         setCategories(catData.categories || [])
         setMappings(mapData.mappings || [])

@@ -65,6 +65,95 @@ export default function SettingsPage() {
   // Historical data import
   const [historyBusy, setHistoryBusy] = useState(false)
 
+  // Category management (merge / consolidate)
+  interface Cat { id: string; name: string; type: 'income' | 'expense' | 'transfer'; count: number }
+  const [cats, setCats] = useState<Cat[]>([])
+  const [mergeSources, setMergeSources] = useState<Set<string>>(new Set())
+  const [mergeTarget, setMergeTarget] = useState('')
+  const [mergeBusy, setMergeBusy] = useState(false)
+
+  const loadCats = useCallback(async () => {
+    try {
+      const res = await fetch('/api/categories?counts=1')
+      const data = await res.json()
+      setCats(data.categories || [])
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  useEffect(() => {
+    if (isAdmin) loadCats()
+  }, [isAdmin, loadCats])
+
+  function toggleSource(id: string) {
+    setMergeSources((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function mergeCategories() {
+    if (mergeSources.size === 0) {
+      setMessage({ kind: 'err', text: 'Tick the categories you want to combine.' })
+      return
+    }
+
+    setMergeBusy(true)
+    setMessage(null)
+    try {
+      // Resolve the target — an existing category, or a brand-new one.
+      let targetId = mergeTarget
+      let targetName = cats.find((c) => c.id === mergeTarget)?.name ?? ''
+      if (mergeTarget === '__new__') {
+        const name = window.prompt('Name for the combined category (e.g. Travel):')?.trim()
+        if (!name) {
+          setMergeBusy(false)
+          return
+        }
+        const created = await fetch('/api/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, type: 'expense' }),
+        }).then((r) => r.json())
+        targetId = created.category?.id
+        targetName = name
+      }
+      const sources = [...mergeSources].filter((id) => id !== targetId)
+      if (!targetId || sources.length === 0) {
+        setMessage({ kind: 'err', text: 'Pick the categories to combine and the one to keep.' })
+        setMergeBusy(false)
+        return
+      }
+      if (
+        !confirm(
+          `Merge ${sources.length} categor${sources.length === 1 ? 'y' : 'ies'} into "${targetName}"? All their transactions (all years) move to "${targetName}" and the old categories are deleted.`,
+        )
+      ) {
+        setMergeBusy(false)
+        return
+      }
+
+      const res = await fetch('/api/categories/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceIds: sources, targetId }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Merge failed')
+      setMessage({ kind: 'ok', text: `Merged into "${targetName}" — ${data.transactionsMoved} transactions moved.` })
+      setMergeSources(new Set())
+      setMergeTarget('')
+      await loadCats()
+    } catch (e) {
+      setMessage({ kind: 'err', text: e instanceof Error ? e.message : 'Merge failed.' })
+    } finally {
+      setMergeBusy(false)
+    }
+  }
+
   // Household photos
   const [photoBusy, setPhotoBusy] = useState<string | null>(null)
   const [photoVersion, setPhotoVersion] = useState(0)
@@ -530,6 +619,93 @@ export default function SettingsPage() {
                 <Calendar className="h-4 w-4" />
                 {redateBusy ? 'Saving…' : 'Save 1 Jun 2026 snapshot'}
               </button>
+            </div>
+          </div>
+        )}
+
+        {/* Categories management card */}
+        {isAdmin && (
+          <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="flex items-center gap-2 border-b border-gray-200 px-6 py-4">
+              <Database className="h-4 w-4 text-gray-400" />
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Categories</h2>
+                <p className="text-xs text-gray-400">
+                  Consolidate categories — tick the ones to combine, choose the one to keep, and merge.
+                  Transactions from every year move over; the old categories are removed.
+                </p>
+              </div>
+            </div>
+
+            <div className="px-6 py-5">
+              {(['expense', 'income', 'transfer'] as const).map((t) => {
+                const group = cats.filter((c) => c.type === t)
+                if (!group.length) return null
+                return (
+                  <div key={t} className="mb-4">
+                    <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+                      {t === 'expense' ? 'Spending' : t === 'income' ? 'Income' : 'Transfers'}
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      {group.map((c) => {
+                        const on = mergeSources.has(c.id)
+                        return (
+                          <button
+                            key={c.id}
+                            onClick={() => toggleSource(c.id)}
+                            className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm transition-colors ${
+                              on
+                                ? 'border-blue-400 bg-blue-50 text-blue-700'
+                                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                            }`}
+                          >
+                            <span
+                              className={`flex h-4 w-4 items-center justify-center rounded border ${
+                                on ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-300'
+                              }`}
+                            >
+                              {on && <CheckCircle className="h-3 w-3" />}
+                            </span>
+                            {c.name}
+                            <span className="text-xs text-gray-400">{c.count}</span>
+                          </button>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })}
+
+              <div className="mt-4 flex flex-col gap-3 border-t border-gray-100 pt-4 sm:flex-row sm:items-center">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-500">
+                    {mergeSources.size} selected · merge into
+                  </span>
+                  <select
+                    value={mergeTarget}
+                    onChange={(e) => setMergeTarget(e.target.value)}
+                    className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="">— keep which category? —</option>
+                    <option value="__new__">➕ New category…</option>
+                    {cats
+                      .filter((c) => mergeSources.has(c.id))
+                      .map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+                <button
+                  onClick={mergeCategories}
+                  disabled={mergeBusy || mergeSources.size === 0 || !mergeTarget}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50 sm:ml-auto"
+                >
+                  <Database className="h-4 w-4" />
+                  {mergeBusy ? 'Merging…' : 'Merge categories'}
+                </button>
+              </div>
             </div>
           </div>
         )}
