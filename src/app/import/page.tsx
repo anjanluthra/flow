@@ -330,7 +330,6 @@ export default function ImportPage() {
   >(null)
   const [pdfDoc, setPdfDoc] = useState<{ base64: string; fileName: string; format: string } | null>(null)
   const [viewer, setViewer] = useState<DocViewerTarget | null>(null)
-  const [bulk, setBulk] = useState<{ done: number; total: number; results: string[] } | null>(null)
   const [archiveFilter, setArchiveFilter] = useState<{ account: string; year: string } | null>(null)
 
   const loadDocuments = useCallback(async () => {
@@ -915,6 +914,89 @@ export default function ImportPage() {
     [categories, addCategoryForRow],
   )
 
+  // ---- Bulk review queue: drop many statements, review/categorise each ----
+  const queueRef = useRef<File[]>([])
+  const [queueInfo, setQueueInfo] = useState<{ total: number; remaining: number }>({ total: 0, remaining: 0 })
+
+  const advanceQueue = useCallback(() => {
+    const next = queueRef.current.shift()
+    setQueueInfo((s) => ({ total: s.total, remaining: queueRef.current.length }))
+    if (next) handleFileSelect(next)
+    else setQueueInfo({ total: 0, remaining: 0 })
+  }, [handleFileSelect])
+
+  const startReviewQueue = useCallback(
+    (files: File[]) => {
+      if (!files.length) return
+      setSaveResult(null)
+      setParseError(null)
+      queueRef.current = files.slice(1)
+      setQueueInfo({ total: files.length, remaining: files.length - 1 })
+      handleFileSelect(files[0])
+    },
+    [handleFileSelect],
+  )
+
+  const archiveFile = useCallback(async (f: File, acctId: string | null) => {
+    try {
+      const bytes = new Uint8Array(await f.arrayBuffer())
+      let bin = ''
+      const step = 0x8000
+      for (let i = 0; i < bytes.length; i += step) bin += String.fromCharCode(...bytes.subarray(i, i + step))
+      const year = yearFromFileName(f.name)
+      await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accountId: acctId,
+          fileName: f.name,
+          mimeType: f.type || 'application/octet-stream',
+          contentBase64: btoa(bin),
+          source: 'upload',
+          statementDate: year ? `${year}-01-01` : null,
+        }),
+      })
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  const resetReview = useCallback(() => {
+    setParsedTransactions([])
+    setRecon(null)
+    setRawText(null)
+    setPdfDoc(null)
+    setPendingPdfRows(null)
+    setParseError(null)
+    setFile(null)
+    setSelectedAccountId('')
+    setChangingAccount(false)
+    setAutoDetected(false)
+  }, [])
+
+  // Skip the current statement (still filed to the archive) and move on.
+  const skipCurrent = useCallback(async () => {
+    if (file) await archiveFile(file, account?.id ?? null)
+    resetReview()
+    await loadDocuments()
+    advanceQueue()
+  }, [file, account, archiveFile, resetReview, loadDocuments, advanceQueue])
+
+  // Give up on reviewing the rest — just file them all without importing.
+  const skipAllRemaining = useCallback(async () => {
+    const rest = queueRef.current
+    queueRef.current = []
+    setQueueInfo({ total: 0, remaining: 0 })
+    if (file) await archiveFile(file, account?.id ?? null)
+    for (const f of rest) {
+      const d = detectAccount(f.name, '', accounts, hints)
+      await archiveFile(f, d?.account?.id ?? null)
+    }
+    resetReview()
+    setSaveResult(`Filed ${rest.length + (file ? 1 : 0)} statement${rest.length ? 's' : ''} without importing.`)
+    await loadDocuments()
+  }, [file, account, archiveFile, accounts, hints, resetReview, loadDocuments])
+
   const handleConfirmImport = async () => {
     if (!account || parsedTransactions.length === 0) return
 
@@ -1043,6 +1125,9 @@ export default function ImportPage() {
       setAutoDetected(false)
       setOpeningBalance('')
       setClosingBalance('')
+
+      // If we're working through a bulk drop, load the next statement to review.
+      advanceQueue()
     } catch {
       setSaveResult('Import failed — could not save to the database. Please try again.')
     } finally {
@@ -1073,49 +1158,9 @@ export default function ImportPage() {
 
   // Bulk archive: file many statements at once, auto-filing each by account
   // (detected) and year (from the filename). No per-file review — just saved.
-  const handleBulkFiles = useCallback(
-    async (files: File[]) => {
-      setSaveResult(null)
-      setParseError(null)
-      setBulk({ done: 0, total: files.length, results: [] })
-      for (const f of files) {
-        try {
-          const bytes = new Uint8Array(await f.arrayBuffer())
-          let bin = ''
-          const step = 0x8000
-          for (let i = 0; i < bytes.length; i += step) bin += String.fromCharCode(...bytes.subarray(i, i + step))
-          let sample = ''
-          if (f.name.toLowerCase().endsWith('.csv')) {
-            try {
-              sample = (await f.text()).slice(0, 4000)
-            } catch {
-              /* ignore */
-            }
-          }
-          const detected = detectAccount(f.name, sample, accounts, hints)
-          const year = yearFromFileName(f.name)
-          const res = await fetch('/api/documents', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              accountId: detected?.account?.id ?? null,
-              fileName: f.name,
-              mimeType: f.type || 'application/octet-stream',
-              contentBase64: btoa(bin),
-              source: 'upload',
-              statementDate: year ? `${year}-01-01` : null,
-            }),
-          })
-          const label = `${f.name} → ${detected?.account?.name ?? 'Unassigned'}${year ? ` · ${year}` : ''}${res.ok ? '' : ' (failed)'}`
-          setBulk((p) => (p ? { ...p, done: p.done + 1, results: [...p.results, label] } : p))
-        } catch {
-          setBulk((p) => (p ? { ...p, done: p.done + 1, results: [...p.results, `${f.name} → failed`] } : p))
-        }
-      }
-      await loadDocuments()
-    },
-    [accounts, hints, loadDocuments],
-  )
+  // Dropping several files now feeds the review queue — each statement is
+  // parsed and reviewed/categorised in turn (see startReviewQueue).
+  const handleBulkFiles = useCallback((files: File[]) => startReviewQueue(files), [startReviewQueue])
 
   // Reassign an archived statement's account or year.
   const patchDoc = async (id: string, patch: { accountId?: string | null; statementDate?: string | null }) => {
@@ -1195,34 +1240,35 @@ export default function ImportPage() {
             multiple
             accept=".csv,.pdf,.png,.jpg,.jpeg"
             label="Drop a statement — or drag in many at once"
-            sublabel="One file opens for review & import · many files are filed by account and year"
+            sublabel="Each statement opens for review & categorising, one after another"
           />
         </div>
 
-        {/* Bulk archive progress */}
-        {bulk && (
-          <div className="mb-8 rounded-xl border border-blue-200 bg-blue-50/60 p-4">
-            <div className="mb-2 flex items-center justify-between">
-              <p className="text-sm font-medium text-blue-800">
-                {bulk.done < bulk.total ? `Filing statements… ${bulk.done}/${bulk.total}` : `Filed ${bulk.total} statement${bulk.total !== 1 ? 's' : ''}`}
-              </p>
-              {bulk.done >= bulk.total && (
-                <button onClick={() => setBulk(null)} className="text-xs font-medium text-blue-600 hover:underline">
-                  Dismiss
-                </button>
-              )}
+        {/* Bulk review queue progress */}
+        {queueInfo.total > 1 && (
+          <div className="mb-8 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50/60 px-4 py-3">
+            <div className="flex items-center gap-3">
+              <span className="text-sm font-semibold text-indigo-800">
+                Statement {queueInfo.total - queueInfo.remaining} of {queueInfo.total}
+              </span>
+              <span className="text-xs text-indigo-500">{queueInfo.remaining} left to review</span>
             </div>
-            <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-blue-100">
-              <div className="h-full bg-blue-500 transition-all" style={{ width: `${bulk.total ? (bulk.done / bulk.total) * 100 : 0}%` }} />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={skipCurrent}
+                className="rounded-lg border border-indigo-200 bg-white px-3 py-1.5 text-xs font-medium text-indigo-700 shadow-sm hover:bg-indigo-50"
+                title="File this one without importing and move on"
+              >
+                Skip this
+              </button>
+              <button
+                onClick={skipAllRemaining}
+                className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 shadow-sm hover:bg-gray-50"
+                title="File all remaining statements without importing"
+              >
+                Skip all — just file
+              </button>
             </div>
-            <ul className="max-h-40 space-y-0.5 overflow-y-auto text-xs text-blue-900/80">
-              {bulk.results.map((r, i) => (
-                <li key={i}>{r}</li>
-              ))}
-            </ul>
-            {bulk.done >= bulk.total && bulk.results.some((r) => r.includes('Unassigned')) && (
-              <p className="mt-2 text-xs text-blue-700">Some couldn’t be matched to an account — set them in the grid below.</p>
-            )}
           </div>
         )}
 

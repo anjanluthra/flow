@@ -13,7 +13,6 @@ import {
   TrendingUp,
   FolderOpen,
   Settings,
-  Repeat,
   X,
   PanelLeftClose,
   PanelLeftOpen,
@@ -62,7 +61,6 @@ export const navSections: NavSection[] = [
     items: [
       { href: "/dashboard", label: "Monthly Cash Flow", icon: LayoutDashboard },
       { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
-      { href: "/recurring", label: "Recurring", icon: Repeat },
       { href: "/annual", label: "Forecasting", icon: CalendarRange },
     ],
   },
