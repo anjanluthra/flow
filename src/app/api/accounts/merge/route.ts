@@ -33,6 +33,19 @@ export async function POST(request: NextRequest) {
 
     // Balance snapshots → target, dropping any that would collide on date.
     try {
+      // On a date where both accounts have a snapshot, keep the one with a real
+      // (non-zero) balance so a placeholder can't wipe the actual figure.
+      // 1) drop the target's zero snapshot so the source's real one can move in.
+      await query(
+        `DELETE FROM balance_snapshots t
+         WHERE t.account_id = $1 AND COALESCE(t.balance_usd, 0) = 0
+           AND EXISTS (
+             SELECT 1 FROM balance_snapshots s
+             WHERE s.account_id = ANY($2::uuid[]) AND s.snapshot_date = t.snapshot_date
+           )`,
+        [targetId, sources],
+      )
+      // 2) drop any source snapshot that still collides (target already has data).
       await query(
         `DELETE FROM balance_snapshots s
          WHERE s.account_id = ANY($2::uuid[])
@@ -42,6 +55,7 @@ export async function POST(request: NextRequest) {
            )`,
         [targetId, sources],
       )
+      // 3) move the remaining source snapshots over.
       await query(
         `UPDATE balance_snapshots SET account_id = $1 WHERE account_id = ANY($2::uuid[])`,
         [targetId, sources],
