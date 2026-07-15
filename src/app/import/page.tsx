@@ -5,7 +5,7 @@ import { Upload, CheckCircle, AlertCircle, FileText, Eye, Download, Trash2 } fro
 import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 import { FileUpload } from '@/components/ui/FileUpload'
 import { convertToUSD } from '@/lib/currency'
-import { suggestCategoryName } from '@/lib/categories'
+import { suggestCategoryName, deriveMerchantPattern } from '@/lib/categories'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -828,8 +828,15 @@ export default function ImportPage() {
           body: JSON.stringify({ name, type }),
         })
         const list = await refreshCategories()
+        const pattern = deriveMerchantPattern(tx?.description ?? '')
         setParsedTransactions((prev) =>
-          prev.map((t, i) => (i === index ? { ...t, category: name, status: 'categorised' } : t)),
+          prev.map((t, i) => {
+            if (i === index) return { ...t, category: name, status: 'categorised', aiSuggested: false }
+            if (pattern && !t.alreadyImported && (!t.category || t.aiSuggested) && deriveMerchantPattern(t.description) === pattern) {
+              return { ...t, category: name, status: 'categorised', aiSuggested: false }
+            }
+            return t
+          }),
         )
         // Learn the mapping for next time.
         const cat = list.find((c) => c.name === name)
@@ -856,11 +863,25 @@ export default function ImportPage() {
       let description = ''
       setParsedTransactions((prev) => {
         description = prev[index]?.description ?? ''
-        return prev.map((tx, i) =>
-          i === index
-            ? { ...tx, category: newCategory, status: newCategory ? 'categorised' : 'needs-review', aiSuggested: false }
-            : tx,
-        )
+        // Cascade the choice to every other row from the same merchant in this
+        // statement that you haven't already set yourself (empty or an AI/auto
+        // guess) — categorise once, the rest fill in.
+        const pattern = newCategory ? deriveMerchantPattern(description) : ''
+        return prev.map((tx, i) => {
+          if (i === index) {
+            return { ...tx, category: newCategory, status: newCategory ? 'categorised' : 'needs-review', aiSuggested: false }
+          }
+          if (
+            newCategory &&
+            pattern &&
+            !tx.alreadyImported &&
+            (!tx.category || tx.aiSuggested) &&
+            deriveMerchantPattern(tx.description) === pattern
+          ) {
+            return { ...tx, category: newCategory, status: 'categorised', aiSuggested: false }
+          }
+          return tx
+        })
       })
       // Self-learning: a manual correction during review teaches the mapping.
       const cat = categories.find((c) => c.name === newCategory)
