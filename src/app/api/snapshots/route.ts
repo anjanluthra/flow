@@ -60,6 +60,9 @@ export async function GET() {
       totalNetWorth: number
       personalNetWorth: number
       corporateCash: number
+      // True when this date has a full per-account balance sheet (from
+      // balance_snapshots); false for total-only historical markers.
+      detailed: boolean
       lines?: { group: string; label: string; amountUsd: number }[]
     }
     const byDate = new Map<string, Snap>()
@@ -70,6 +73,7 @@ export async function GET() {
         totalNetWorth: parseFloat(row.total_net_worth),
         personalNetWorth: parseFloat(row.personal_net_worth),
         corporateCash: parseFloat(row.corporate_cash),
+        detailed: true,
       })
     }
 
@@ -86,6 +90,7 @@ export async function GET() {
           totalNetWorth: parseFloat(row.total_net_worth_usd),
           personalNetWorth: Number(data.personalNetWorth ?? 0),
           corporateCash: Number(data.corporateCash ?? 0),
+          detailed: false,
           lines: Array.isArray(data.lines) ? data.lines : undefined,
         })
       }

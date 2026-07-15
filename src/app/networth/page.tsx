@@ -60,6 +60,9 @@ interface SnapshotSummary {
   totalNetWorth: number
   personalNetWorth: number
   corporateCash: number
+  // True when this date has a full per-account balance sheet; false for
+  // total-only historical markers (older checkpoints).
+  detailed?: boolean
   lines?: { group: string; label: string; amountUsd: number }[]
 }
 
@@ -560,6 +563,16 @@ export default function NetWorthPage() {
     }
     return FALLBACK_HISTORY
   }, [snapshotDates, isDbConnected])
+
+  // ---- Selected snapshot summary + whether it's a full balance sheet ----
+  const selectedSummary = useMemo(
+    () => snapshotDates.find((s) => s.date === selectedDate) ?? null,
+    [snapshotDates, selectedDate],
+  )
+  // A "marker" is an older historical checkpoint that stores only a total net
+  // worth (no per-account breakdown). For those we show a condensed view rather
+  // than the full — and misleading — account table / allocation / liquidity.
+  const isMarker = !!selectedDate && !!selectedSummary && selectedSummary.detailed === false
 
   // ---- Date navigation ----
   const currentDateIndex = useMemo(() => {
@@ -1102,6 +1115,65 @@ export default function NetWorthPage() {
 
 
         {/* ---------------------------------------------------------------- */}
+        {/* Condensed view — historical markers (total only)                 */}
+        {/* ---------------------------------------------------------------- */}
+        {isMarker && selectedSummary && (
+          <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="text-xs font-medium uppercase tracking-wider text-gray-400">
+                  Total Net Worth
+                </p>
+                <p className="mt-1 text-3xl font-bold text-gray-900">
+                  {fmtView(selectedSummary.totalNetWorth)}
+                </p>
+                <p className="mt-1 text-sm text-gray-500">
+                  as of {formatDateLabel(selectedSummary.date)}
+                  {netWorthChange !== undefined && (
+                    <span
+                      className={`ml-2 font-medium ${
+                        netWorthChange >= 0 ? 'text-emerald-600' : 'text-red-600'
+                      }`}
+                    >
+                      {netWorthChange >= 0 ? '▲' : '▼'} {Math.abs(netWorthChange).toFixed(1)}% vs previous
+                    </span>
+                  )}
+                </p>
+              </div>
+              {(selectedSummary.personalNetWorth > 0 || selectedSummary.corporateCash > 0) && (
+                <div className="flex flex-wrap gap-3">
+                  <div className="rounded-lg border border-gray-100 bg-gray-50 px-4 py-2">
+                    <p className="text-xs font-medium text-gray-500">Personal</p>
+                    <p className="text-sm font-semibold text-gray-900">
+                      {fmtView(selectedSummary.personalNetWorth)}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border border-gray-100 bg-gray-50 px-4 py-2">
+                    <p className="text-xs font-medium text-gray-500">Corporate</p>
+                    <p className="text-sm font-semibold text-gray-900">
+                      {fmtView(selectedSummary.corporateCash)}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+            <div className="mt-4 flex items-start gap-2 rounded-lg border border-amber-100 bg-amber-50/60 px-3 py-2">
+              <Clock className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <p className="text-xs text-amber-700">
+                Historical checkpoint — only the total net worth was recorded for this date, so the
+                per-account breakdown, allocation and liquidity aren&apos;t available. Jump to the latest
+                snapshot for the full balance sheet.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Detailed view — full balance sheet (per-account snapshots)       */}
+        {/* ---------------------------------------------------------------- */}
+        {!isMarker && (
+          <>
+        {/* ---------------------------------------------------------------- */}
         {/* Summary Cards                                                    */}
         {/* ---------------------------------------------------------------- */}
         <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -1276,8 +1348,11 @@ export default function NetWorthPage() {
           </div>
         </div>
 
+          </>
+        )}
+
         {/* ---------------------------------------------------------------- */}
-        {/* Net Worth History Line Chart                                      */}
+        {/* Net Worth History Line Chart (shown for every snapshot)          */}
         {/* ---------------------------------------------------------------- */}
         <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
           <h2 className="mb-4 text-base font-semibold text-gray-900">
@@ -1321,8 +1396,9 @@ export default function NetWorthPage() {
         </div>
 
         {/* ---------------------------------------------------------------- */}
-        {/* Account Table                                                    */}
+        {/* Account Table (detailed snapshots only)                          */}
         {/* ---------------------------------------------------------------- */}
+        {!isMarker && (
         <div className="mb-8 rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-200 px-6 py-4">
             <h2 className="text-base font-semibold text-gray-900">
@@ -1502,6 +1578,7 @@ export default function NetWorthPage() {
             </table>
           </div>
         </div>
+        )}
 
       </div>
     </div>

@@ -362,7 +362,7 @@ export default function TransactionsPage() {
       {
         key: 'description',
         header: 'Description',
-        className: 'min-w-[200px]',
+        className: 'w-[240px] max-w-[240px]',
         render: (tx: Transaction) =>
           editingDesc === tx.id ? (
             <input
@@ -400,7 +400,7 @@ export default function TransactionsPage() {
       {
         key: 'categoryName',
         header: 'Category',
-        className: 'w-[200px]',
+        className: 'w-[230px] min-w-[230px]',
         render: (tx: Transaction) => (
           <div className="flex items-center gap-2">
             <span
