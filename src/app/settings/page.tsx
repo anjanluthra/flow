@@ -71,6 +71,9 @@ export default function SettingsPage() {
   const [mergeSources, setMergeSources] = useState<Set<string>>(new Set())
   const [mergeTarget, setMergeTarget] = useState('')
   const [mergeBusy, setMergeBusy] = useState(false)
+  const [newCatName, setNewCatName] = useState('')
+  const [newCatType, setNewCatType] = useState<'expense' | 'income' | 'transfer'>('expense')
+  const [newCatBusy, setNewCatBusy] = useState(false)
 
   const loadCats = useCallback(async () => {
     try {
@@ -85,6 +88,29 @@ export default function SettingsPage() {
   useEffect(() => {
     if (isAdmin) loadCats()
   }, [isAdmin, loadCats])
+
+  async function createCategory() {
+    const name = newCatName.trim()
+    if (!name) return
+    setNewCatBusy(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, type: newCatType }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to add category')
+      setMessage({ kind: 'ok', text: `Added category “${name}”.` })
+      setNewCatName('')
+      await loadCats()
+    } catch (e) {
+      setMessage({ kind: 'err', text: e instanceof Error ? e.message : 'Failed to add category.' })
+    } finally {
+      setNewCatBusy(false)
+    }
+  }
 
   function toggleSource(id: string) {
     setMergeSources((prev) => {
@@ -638,6 +664,37 @@ export default function SettingsPage() {
             </div>
 
             <div className="px-6 py-5">
+              {/* Add a new category */}
+              <div className="mb-5 flex flex-col gap-2 rounded-lg border border-gray-100 bg-gray-50 p-3 sm:flex-row sm:items-center">
+                <span className="text-sm font-medium text-gray-700">Add category</span>
+                <input
+                  value={newCatName}
+                  onChange={(e) => setNewCatName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') createCategory()
+                  }}
+                  placeholder="e.g. Travel"
+                  className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <select
+                  value={newCatType}
+                  onChange={(e) => setNewCatType(e.target.value as 'expense' | 'income' | 'transfer')}
+                  className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value="expense">Spending</option>
+                  <option value="income">Income</option>
+                  <option value="transfer">Transfer</option>
+                </select>
+                <button
+                  onClick={createCategory}
+                  disabled={newCatBusy || !newCatName.trim()}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+                >
+                  <Plus className="h-4 w-4" />
+                  {newCatBusy ? 'Adding…' : 'Add'}
+                </button>
+              </div>
+
               {(['expense', 'income', 'transfer'] as const).map((t) => {
                 const group = cats.filter((c) => c.type === t)
                 if (!group.length) return null

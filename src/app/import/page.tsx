@@ -708,8 +708,57 @@ export default function ImportPage() {
     [accounts, rawText, rawFileName, processStatement, pendingPdfRows, pdfDoc, buildPdfTransactions],
   )
 
+  const refreshCategories = useCallback(async () => {
+    try {
+      const data = await (await fetch('/api/categories')).json()
+      const list: CategoryOption[] = data.categories || []
+      setCategories(list)
+      return list
+    } catch {
+      return categories
+    }
+  }, [categories])
+
+  // Create a new category on the fly while reviewing and assign it to the row.
+  // The type is inferred from the transaction (credits → income, else expense).
+  const addCategoryForRow = useCallback(
+    async (index: number) => {
+      const name = window.prompt('New category name:')?.trim()
+      if (!name) return
+      const tx = parsedTransactions[index]
+      const type = tx && tx.amount > 0 ? 'income' : 'expense'
+      try {
+        await fetch('/api/categories', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, type }),
+        })
+        const list = await refreshCategories()
+        setParsedTransactions((prev) =>
+          prev.map((t, i) => (i === index ? { ...t, category: name, status: 'categorised' } : t)),
+        )
+        // Learn the mapping for next time.
+        const cat = list.find((c) => c.name === name)
+        if (cat && tx?.description) {
+          fetch('/api/merchant-mappings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ description: tx.description, categoryId: cat.id }),
+          }).catch(() => {})
+        }
+      } catch {
+        /* leave the row unchanged */
+      }
+    },
+    [parsedTransactions, refreshCategories],
+  )
+
   const handleCategoryChange = useCallback(
     (index: number, newCategory: string) => {
+      if (newCategory === '__new__') {
+        void addCategoryForRow(index)
+        return
+      }
       let description = ''
       setParsedTransactions((prev) => {
         description = prev[index]?.description ?? ''
@@ -729,7 +778,7 @@ export default function ImportPage() {
         }).catch(() => {})
       }
     },
-    [categories],
+    [categories, addCategoryForRow],
   )
 
   const handleConfirmImport = async () => {
@@ -1364,6 +1413,7 @@ export default function ImportPage() {
                               ))}
                             </optgroup>
                           )}
+                          <option value="__new__">＋ New category…</option>
                         </select>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3">
