@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   PieChart,
   Pie,
@@ -657,9 +657,51 @@ export default function NetWorthPage() {
     (detailEdits[a.accountId]?.[key] as Account[K]) ?? a[key]
 
   // ---- Edit handlers ----
-  function startEditing() {
+  // Accounts shown before entering edit mode, so Cancel can restore the view.
+  const preEditAccountsRef = useRef<Account[] | null>(null)
+
+  // Map DB enum values to the display labels used in this table.
+  const HOLDER_FROM_ENUM: Record<string, Account['holder']> = { anjan: 'Anjan', kate: 'Kate', joint: 'Joint' }
+  const ASSET_FROM_ENUM: Record<string, Account['assetClass']> = {
+    cash: 'Cash', equities: 'Equities', private_equity: 'Private Equity',
+    private_debt: 'Private Debt', crypto: 'Crypto', car: 'Car', debt: 'Debt',
+  }
+  const LIQ_FROM_ENUM: Record<string, Account['liquidity']> = {
+    t1_instant: 'T1', t2_days: 'T2', t2_5_locked: 'T2.5', t3_locked_years: 'T3',
+  }
+
+  async function startEditing() {
+    preEditAccountsRef.current = accounts
+    let merged = accounts
+    // Pull in every active account so newly-added ones (with no balance yet)
+    // show up here and can be given a balance.
+    try {
+      const res = await fetch('/api/accounts')
+      const data = await res.json()
+      const have = new Set(accounts.map((a) => a.accountId))
+      const extras: Account[] = (data.accounts || [])
+        .filter((a: { id: string }) => a.id && !have.has(a.id))
+        .map((a: { id: string; name: string; holder: string; country: string; assetClass: string; liquidityTier: string; currency: string; isCorporate: boolean }) => ({
+          accountId: a.id,
+          account: a.name,
+          holder: HOLDER_FROM_ENUM[a.holder] ?? 'Joint',
+          country: a.country,
+          assetClass: ASSET_FROM_ENUM[a.assetClass] ?? 'Cash',
+          liquidity: LIQ_FROM_ENUM[a.liquidityTier] ?? 'T1',
+          currency: a.currency,
+          localBalance: 0,
+          usdValue: 0,
+          yield: 0,
+          annualCashFlow: 0,
+          isCorporate: a.isCorporate,
+        }))
+      if (extras.length) merged = [...accounts, ...extras]
+    } catch {
+      /* keep the accounts we already have */
+    }
+    setAccounts(merged)
     const vals: Record<string, string> = {}
-    accounts.forEach((a, i) => {
+    merged.forEach((a, i) => {
       vals[i] = a.localBalance.toString()
     })
     setEditValues(vals)
@@ -670,6 +712,7 @@ export default function NetWorthPage() {
   function cancelEditing() {
     setIsEditing(false)
     setEditValues({})
+    if (preEditAccountsRef.current) setAccounts(preEditAccountsRef.current)
   }
 
   async function saveSnapshot() {
@@ -692,13 +735,18 @@ export default function NetWorthPage() {
         }
       })
 
-      const balances = updatedAccounts.map((a) => ({
-        accountId: a.accountId,
-        balanceLocal: a.localBalance,
-        balanceUsd: a.usdValue,
-        yieldPercent: a.yield,
-        annualCashflow: a.annualCashFlow,
-      }))
+      // Only save accounts that were already on the sheet or that you gave a
+      // balance to — so newly-pulled-in accounts left at 0 don't clutter it.
+      const preEdit = new Set((preEditAccountsRef.current ?? []).map((a) => a.accountId))
+      const balances = updatedAccounts
+        .filter((a) => preEdit.has(a.accountId) || a.localBalance !== 0)
+        .map((a) => ({
+          accountId: a.accountId,
+          balanceLocal: a.localBalance,
+          balanceUsd: a.usdValue,
+          yieldPercent: a.yield,
+          annualCashflow: a.annualCashFlow,
+        }))
 
       const res = await fetch('/api/snapshots', {
         method: 'POST',
