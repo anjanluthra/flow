@@ -9,6 +9,26 @@ export async function GET(
     const { id } = await params
     const download = request.nextUrl.searchParams.get('download') === '1'
 
+    // HTML mode: convert a Word .docx to structured HTML (headings, bold,
+    // lists, tables preserved) so the in-app preview keeps its formatting.
+    // Falls back to the stored plain text for non-docx rich formats.
+    if (request.nextUrl.searchParams.get('html') === '1') {
+      const r = await query(`SELECT file_name, mime_type, content, text_content FROM tax_documents WHERE id = $1`, [id])
+      const row = r.rows[0]
+      if (!row) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      const isDocx = /\.docx$/i.test(row.file_name) || String(row.mime_type || '').includes('word')
+      if (isDocx && row.content) {
+        try {
+          const mammoth = await import('mammoth')
+          const { value } = await mammoth.convertToHtml({ buffer: Buffer.from(row.content) })
+          return NextResponse.json({ html: value })
+        } catch (e) {
+          console.error('docx→html failed:', e)
+        }
+      }
+      return NextResponse.json({ html: null, text: row.text_content ?? '' })
+    }
+
     // Text mode: return the extracted plain-text for in-app preview.
     if (request.nextUrl.searchParams.get('text') === '1') {
       const t = await query(`SELECT text_content FROM tax_documents WHERE id = $1`, [id])

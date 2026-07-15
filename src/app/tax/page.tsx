@@ -372,6 +372,7 @@ export default function TaxPage() {
                               url: `/api/tax/${d.id}`,
                               downloadUrl: `/api/tax/${d.id}?download=1`,
                               textUrl: `/api/tax/${d.id}?text=1`,
+                              htmlUrl: `/api/tax/${d.id}?html=1`,
                               fileName: d.fileName,
                               mimeType: d.mimeType,
                             })

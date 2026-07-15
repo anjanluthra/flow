@@ -7,8 +7,19 @@ export interface DocViewerTarget {
   url: string // inline content URL
   downloadUrl: string
   textUrl?: string // optional plain-text endpoint (for docx/odt)
+  htmlUrl?: string // optional structured-HTML endpoint (docx → formatted preview)
   fileName: string
   mimeType?: string
+}
+
+// Minimal sanitiser for mammoth's docx→HTML output (which only emits a safe
+// subset of tags): drop scripts/styles and any inline event handlers.
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/<\/?(script|style)[^>]*>/gi, '')
+    .replace(/\son\w+="[^"]*"/gi, '')
+    .replace(/\son\w+='[^']*'/gi, '')
+    .replace(/javascript:/gi, '')
 }
 
 function kind(fileName: string, mimeType?: string): 'pdf' | 'image' | 'text' | 'richtext' | 'other' {
@@ -23,22 +34,38 @@ function kind(fileName: string, mimeType?: string): 'pdf' | 'image' | 'text' | '
 
 export function DocViewer({ target, onClose }: { target: DocViewerTarget | null; onClose: () => void }) {
   const [text, setText] = useState<string | null>(null)
+  const [html, setHtml] = useState<string | null>(null)
   const [loadingText, setLoadingText] = useState(false)
 
   useEffect(() => {
     setText(null)
+    setHtml(null)
     if (!target) return
     const k = kind(target.fileName, target.mimeType)
-    if (k === 'text' || k === 'richtext') {
-      setLoadingText(true)
-      const src = k === 'richtext' && target.textUrl ? target.textUrl : target.url
-      const asJson = k === 'richtext' && !!target.textUrl
-      fetch(src)
-        .then((r) => (asJson ? r.json().then((d) => d.text ?? '') : r.text()))
-        .then((t) => setText(t))
+    if (k !== 'text' && k !== 'richtext') return
+    setLoadingText(true)
+
+    // Prefer a structured-HTML endpoint (docx keeps its headings/bold/lists);
+    // fall back to plain text, then to the raw file.
+    if (k === 'richtext' && target.htmlUrl) {
+      fetch(target.htmlUrl)
+        .then((r) => r.json())
+        .then((d) => {
+          if (d.html) setHtml(sanitizeHtml(d.html))
+          else setText(d.text ?? '')
+        })
         .catch(() => setText(''))
         .finally(() => setLoadingText(false))
+      return
     }
+
+    const src = k === 'richtext' && target.textUrl ? target.textUrl : target.url
+    const asJson = k === 'richtext' && !!target.textUrl
+    fetch(src)
+      .then((r) => (asJson ? r.json().then((d) => d.text ?? '') : r.text()))
+      .then((t) => setText(t))
+      .catch(() => setText(''))
+      .finally(() => setLoadingText(false))
   }, [target])
 
   useEffect(() => {
@@ -51,7 +78,7 @@ export function DocViewer({ target, onClose }: { target: DocViewerTarget | null;
 
   if (!target) return null
   const k = kind(target.fileName, target.mimeType)
-  const canPreview = k !== 'other' && !(k === 'richtext' && !target.textUrl)
+  const canPreview = k !== 'other' && !(k === 'richtext' && !target.textUrl && !target.htmlUrl)
 
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
@@ -88,10 +115,15 @@ export function DocViewer({ target, onClose }: { target: DocViewerTarget | null;
               <img src={target.url} alt={target.fileName} className="max-h-full max-w-full object-contain" />
             </div>
           )}
-          {(k === 'text' || (k === 'richtext' && target.textUrl)) && (
+          {(k === 'text' || (k === 'richtext' && (target.textUrl || target.htmlUrl))) && (
             <div className="p-6">
               {loadingText ? (
                 <p className="text-sm text-gray-400">Loading…</p>
+              ) : html !== null ? (
+                <div
+                  className="mx-auto max-w-2xl bg-white p-8 text-sm leading-relaxed text-gray-800 shadow-sm [&_a]:text-blue-600 [&_a]:underline [&_h1]:mb-3 [&_h1]:mt-5 [&_h1]:text-xl [&_h1]:font-bold [&_h1]:text-gray-900 [&_h2]:mb-2 [&_h2]:mt-5 [&_h2]:text-lg [&_h2]:font-semibold [&_h2]:text-gray-900 [&_h3]:mb-1.5 [&_h3]:mt-4 [&_h3]:font-semibold [&_h3]:text-gray-900 [&_li]:my-1 [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2.5 [&_strong]:font-semibold [&_table]:my-3 [&_table]:w-full [&_table]:border-collapse [&_td]:border [&_td]:border-gray-200 [&_td]:px-2 [&_td]:py-1 [&_th]:border [&_th]:border-gray-200 [&_th]:bg-gray-50 [&_th]:px-2 [&_th]:py-1 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-6"
+                  dangerouslySetInnerHTML={{ __html: html }}
+                />
               ) : (
                 <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-gray-800">
                   {text || '(empty document)'}
