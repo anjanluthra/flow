@@ -27,7 +27,7 @@ const ymd = (v: unknown): string => {
   return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10)
 }
 
-const keyOf = (date: string, amount: number, description: string) =>
+const keyOf = (date: unknown, amount: number, description: string) =>
   [ymd(date), Math.round(Math.abs(amount) * 100), description.trim().toLowerCase()].join('|')
 
 export async function POST(request: NextRequest) {

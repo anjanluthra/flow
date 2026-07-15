@@ -913,10 +913,19 @@ export default function ImportPage() {
         }
       }
 
+      // Clear the whole review so the page returns to a clean state — only the
+      // success banner and the updated Saved-statements list remain.
       setParsedTransactions([])
       setFile(null)
       setPendingPdfRows(null)
       setPdfDoc(null)
+      setRawText(null)
+      setRecon(null)
+      setSelectedAccountId('')
+      setChangingAccount(false)
+      setAutoDetected(false)
+      setOpeningBalance('')
+      setClosingBalance('')
     } catch {
       setSaveResult('Import failed — could not save to the database. Please try again.')
     } finally {
@@ -1158,9 +1167,18 @@ export default function ImportPage() {
 
         {/* Processing indicator */}
         {isProcessing && (
-          <div className="mb-8 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
-            <div className="h-4 w-4 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
-            <p className="text-sm text-blue-700">Parsing and categorising transactions...</p>
+          <div className="mb-8 flex items-center gap-3 rounded-xl border border-blue-200 bg-blue-50 px-5 py-4">
+            <div className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
+            <div>
+              <p className="text-sm font-medium text-blue-800">
+                {file && file.name.toLowerCase().endsWith('.pdf')
+                  ? 'Reading your statement with Claude…'
+                  : 'Parsing and categorising transactions…'}
+              </p>
+              <p className="text-xs text-blue-600">
+                {file?.name ? `${file.name} · ` : ''}extracting transactions and matching categories
+              </p>
+            </div>
           </div>
         )}
 
@@ -1177,16 +1195,6 @@ export default function ImportPage() {
           <div className="mb-8 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
             <AlertCircle className="h-4 w-4 shrink-0 text-red-500" />
             <p className="text-sm text-red-700">{parseError}</p>
-          </div>
-        )}
-
-        {/* PDF notice */}
-        {file && file.name.toLowerCase().endsWith('.pdf') && isProcessing && (
-          <div className="mb-8 flex items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3">
-            <FileText className="h-4 w-4 shrink-0 text-blue-500" />
-            <p className="text-sm text-blue-700">
-              Reading the PDF with Claude and extracting transactions…
-            </p>
           </div>
         )}
 
@@ -1398,91 +1406,78 @@ export default function ImportPage() {
           })()
         )}
 
-        {/* Preview table */}
+        {/* Preview list — compact so it fits beside the statement with no side-scroll */}
         {parsedTransactions.length > 0 && (
           <div className="mb-8 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-gray-200 bg-gray-50">
-                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Date</th>
-                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Description</th>
-                    <th className="whitespace-nowrap px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Amount (Local)</th>
-                    <th className="whitespace-nowrap px-4 py-3 text-right text-xs font-semibold uppercase tracking-wider text-gray-500">Amount (USD)</th>
-                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Category</th>
-                    <th className="whitespace-nowrap px-4 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {parsedTransactions.map((tx, index) => (
-                    <tr key={index} className={`transition-colors hover:bg-gray-50 ${tx.status === 'needs-review' ? 'bg-amber-50/30' : ''}`}>
-                      <td className="whitespace-nowrap px-4 py-3 text-gray-600">{tx.date}</td>
-                      <td className="max-w-xs truncate px-4 py-3 font-medium text-gray-900" title={tx.description}>
-                        {tx.description}
-                      </td>
-                      <td className={`whitespace-nowrap px-4 py-3 text-right font-mono text-sm ${tx.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        {formatLocal(tx.amount, tx.currency)}
-                      </td>
-                      <td className={`whitespace-nowrap px-4 py-3 text-right font-mono text-sm ${tx.amountUSD < 0 ? 'text-red-600' : 'text-green-600'}`}>
-                        {tx.amountUSD < 0 ? '-' : ''}${Math.abs(tx.amountUSD).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                      </td>
-                      <td className="px-4 py-3">
-                        <select
-                          value={tx.category}
-                          onChange={(e) => handleCategoryChange(index, e.target.value)}
-                          className={`w-full min-w-[160px] rounded-md border px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-                            tx.category ? 'border-gray-200 bg-white text-gray-700' : 'border-amber-300 bg-amber-50 text-amber-700'
-                          }`}
-                        >
-                          <option value="">-- Select category --</option>
-                          <optgroup label="Expenses">
-                            {expenseCategories.map((cat) => (
-                              <option key={cat.id} value={cat.name}>
-                                {cat.name}
-                              </option>
-                            ))}
-                          </optgroup>
-                          <optgroup label="Income">
-                            {incomeCategories.map((cat) => (
-                              <option key={cat.id} value={cat.name}>
-                                {cat.name}
-                              </option>
-                            ))}
-                          </optgroup>
-                          {transferCategories.length > 0 && (
-                            <optgroup label="Transfers & Investments">
-                              {transferCategories.map((cat) => (
-                                <option key={cat.id} value={cat.name}>
-                                  {cat.name}
-                                </option>
-                              ))}
-                            </optgroup>
-                          )}
-                          <option value="__new__">＋ New category…</option>
-                        </select>
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3">
-                        {tx.alreadyImported ? (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-500" title="Already in Flow — will be skipped on import">
-                            <CheckCircle className="h-3 w-3" />
-                            Already in Flow
-                          </span>
-                        ) : tx.status === 'categorised' ? (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-1 text-xs font-medium text-green-700">
-                            <CheckCircle className="h-3 w-3" />
-                            Categorised
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-700">
-                            <AlertCircle className="h-3 w-3" />
-                            Needs Review
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="flex items-center justify-between border-b border-gray-200 bg-gray-50 px-4 py-2.5">
+              <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                {parsedTransactions.length} transaction{parsedTransactions.length !== 1 ? 's' : ''}
+              </span>
+              {needsReview > 0 ? (
+                <span className="text-xs font-medium text-amber-600">{needsReview} need review</span>
+              ) : (
+                <span className="text-xs font-medium text-green-600">All set</span>
+              )}
+            </div>
+            <div className="divide-y divide-gray-100">
+              {parsedTransactions.map((tx, index) => (
+                <div
+                  key={index}
+                  className={`px-4 py-3 ${tx.status === 'needs-review' && !tx.alreadyImported ? 'bg-amber-50/40' : ''}`}
+                >
+                  <div className="flex items-baseline justify-between gap-3">
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900" title={tx.description}>
+                      {tx.description}
+                    </span>
+                    <span className={`shrink-0 font-mono text-sm ${tx.amount < 0 ? 'text-red-600' : 'text-green-600'}`}>
+                      {formatLocal(tx.amount, tx.currency)}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="w-16 shrink-0 text-xs text-gray-400">{tx.date}</span>
+                    <select
+                      value={tx.category}
+                      onChange={(e) => handleCategoryChange(index, e.target.value)}
+                      className={`min-w-0 flex-1 rounded-md border px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
+                        tx.category ? 'border-gray-200 bg-white text-gray-700' : 'border-amber-300 bg-amber-50 text-amber-700'
+                      }`}
+                    >
+                      <option value="">-- Select category --</option>
+                      <optgroup label="Expenses">
+                        {expenseCategories.map((cat) => (
+                          <option key={cat.id} value={cat.name}>{cat.name}</option>
+                        ))}
+                      </optgroup>
+                      <optgroup label="Income">
+                        {incomeCategories.map((cat) => (
+                          <option key={cat.id} value={cat.name}>{cat.name}</option>
+                        ))}
+                      </optgroup>
+                      {transferCategories.length > 0 && (
+                        <optgroup label="Transfers & Investments">
+                          {transferCategories.map((cat) => (
+                            <option key={cat.id} value={cat.name}>{cat.name}</option>
+                          ))}
+                        </optgroup>
+                      )}
+                      <option value="__new__">＋ New category…</option>
+                    </select>
+                    {tx.alreadyImported ? (
+                      <span title="Already in Flow — skipped on import" className="shrink-0 text-gray-400">
+                        <CheckCircle className="h-4 w-4" />
+                      </span>
+                    ) : tx.status === 'categorised' ? (
+                      <span title="Categorised" className="shrink-0 text-green-600">
+                        <CheckCircle className="h-4 w-4" />
+                      </span>
+                    ) : (
+                      <span title="Needs review" className="shrink-0 text-amber-500">
+                        <AlertCircle className="h-4 w-4" />
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
