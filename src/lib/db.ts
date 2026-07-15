@@ -20,9 +20,12 @@ export interface TransactionFilters {
   month?: number // 0-11
   year?: number
   categoryId?: string
+  categoryName?: string
   accountId?: string
   type?: 'income' | 'expense' | 'transfer'
   holder?: 'anjan' | 'kate' | 'joint'
+  from?: string // inclusive YYYY-MM-DD
+  to?: string // inclusive YYYY-MM-DD
   search?: string
   limit?: number
   offset?: number
@@ -58,6 +61,21 @@ export async function getTransactions(filters: TransactionFilters = {}) {
   if (filters.categoryId) {
     queryText += ` AND t.category_id = $${paramIndex++}`
     params.push(filters.categoryId)
+  }
+
+  if (filters.categoryName) {
+    queryText += ` AND c.name = $${paramIndex++}`
+    params.push(filters.categoryName)
+  }
+
+  if (filters.from) {
+    queryText += ` AND t.date >= $${paramIndex++}`
+    params.push(filters.from)
+  }
+
+  if (filters.to) {
+    queryText += ` AND t.date <= $${paramIndex++}`
+    params.push(filters.to)
   }
 
   if (filters.accountId) {

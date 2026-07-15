@@ -112,6 +112,20 @@ export default function CashFlowPage() {
   const showMonthCols = months.length > 1
   const t = pnl?.totals
 
+  // Drill-down: clicking a P&L cell opens the underlying transactions.
+  const [drill, setDrill] = useState<{ category: string; from: string; to: string; label: string } | null>(null)
+  const openDrill = useCallback(
+    (category: string, ym: string | null) => {
+      if (ym) {
+        const [yy, mm] = ym.split('-').map(Number)
+        setDrill({ category, from: `${ym}-01`, to: lastDay(yy, mm), label: `${category} · ${monthHeader(ym)}` })
+      } else {
+        setDrill({ category, from, to, label: `${category} · total` })
+      }
+    },
+    [from, to],
+  )
+
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -232,13 +246,13 @@ export default function CashFlowPage() {
                   <>
                     <SectionRow label="Income" span={months.length} showMonthCols={showMonthCols} tone="income" />
                     {pnl.income.map((l) => (
-                      <LineRow key={`i-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} />
+                      <LineRow key={`i-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                     ))}
                     <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} />
 
                     <SectionRow label="Expenses" span={months.length} showMonthCols={showMonthCols} tone="expense" />
                     {pnl.expense.map((l) => (
-                      <LineRow key={`e-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} />
+                      <LineRow key={`e-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                     ))}
                     <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} />
 
@@ -253,6 +267,105 @@ export default function CashFlowPage() {
           Figures shown in {currency}. GBP uses each transaction&rsquo;s recorded pound amount where
           available. Internal transfers and investments are excluded from the P&amp;L.
         </p>
+      </div>
+      <DrillDrawer drill={drill} currency={currency} onClose={() => setDrill(null)} />
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Drill-down drawer — transactions behind a clicked P&L cell
+// ---------------------------------------------------------------------------
+
+interface DrillTxn {
+  id: string
+  date: string
+  description: string
+  amountUsd: number
+  amountLocal: number
+  currency: string
+  accountName: string | null
+}
+
+function DrillDrawer({
+  drill,
+  currency,
+  onClose,
+}: {
+  drill: { category: string; from: string; to: string; label: string } | null
+  currency: Currency
+  onClose: () => void
+}) {
+  const [txns, setTxns] = useState<DrillTxn[]>([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (!drill) return
+    let cancelled = false
+    setLoading(true)
+    setTxns([])
+    const qs = new URLSearchParams({ categoryName: drill.category, from: drill.from, to: drill.to, limit: '1000' })
+    fetch(`/api/transactions?${qs.toString()}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        if (!cancelled) setTxns(d.transactions || [])
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [drill])
+
+  if (!drill) return null
+
+  const amt = (tx: DrillTxn) => (currency === 'GBP' && tx.currency === 'GBP' ? tx.amountLocal : tx.amountUsd)
+  const total = txns.reduce((s, tx) => s + amt(tx), 0)
+  const fmtDate = (d: string) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/20" onClick={onClose} />
+      <div className="relative flex h-full w-full max-w-md flex-col bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">{drill.category}</h3>
+            <p className="text-xs text-gray-500">{drill.label.replace(`${drill.category} · `, '')} · {txns.length} transaction{txns.length !== 1 ? 's' : ''}</p>
+          </div>
+          <button onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="Close">
+            ✕
+          </button>
+        </div>
+        <div className="flex items-baseline justify-between border-b border-gray-100 bg-gray-50 px-5 py-3">
+          <span className="text-xs font-medium uppercase tracking-wider text-gray-400">Total</span>
+          <span className="text-lg font-bold text-gray-900">{fmtMoney(total, currency)}</span>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-gray-400">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-transparent" />
+              Loading…
+            </div>
+          ) : txns.length === 0 ? (
+            <div className="py-16 text-center text-sm text-gray-400">No transactions in this period.</div>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {txns.map((tx) => (
+                <div key={tx.id} className="flex items-baseline justify-between gap-3 px-5 py-3">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-gray-900" title={tx.description}>{tx.description}</p>
+                    <p className="text-xs text-gray-400">{fmtDate(tx.date)}{tx.accountName ? ` · ${tx.accountName}` : ''}</p>
+                  </div>
+                  <span className={`shrink-0 font-mono text-sm ${amt(tx) < 0 ? 'text-rose-600' : 'text-gray-900'}`}>
+                    {fmtMoney(amt(tx), currency)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -283,12 +396,14 @@ function LineRow({
   showMonthCols,
   currency,
   fmt,
+  onDrill,
 }: {
   line: Line
   months: string[]
   showMonthCols: boolean
   currency: Currency
   fmt: (n: number) => string
+  onDrill: (category: string, ym: string | null) => void
 }) {
   return (
     <tr className="hover:bg-gray-50/50">
@@ -303,11 +418,33 @@ function LineRow({
           const v = pick(line.monthly[ym], currency)
           return (
             <td key={ym} className="px-4 py-2.5 text-right tabular-nums text-gray-500">
-              {v ? fmt(v) : '·'}
+              {v ? (
+                <button
+                  onClick={() => onDrill(line.category, ym)}
+                  className="rounded px-1 tabular-nums text-gray-600 hover:bg-blue-50 hover:text-blue-700 hover:underline"
+                  title="See transactions"
+                >
+                  {fmt(v)}
+                </button>
+              ) : (
+                '·'
+              )}
             </td>
           )
         })}
-      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900">{fmt(pick(line.total, currency))}</td>
+      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900">
+        {pick(line.total, currency) ? (
+          <button
+            onClick={() => onDrill(line.category, null)}
+            className="rounded px-1 font-medium tabular-nums text-gray-900 hover:bg-blue-50 hover:text-blue-700 hover:underline"
+            title="See transactions"
+          >
+            {fmt(pick(line.total, currency))}
+          </button>
+        ) : (
+          fmt(pick(line.total, currency))
+        )}
+      </td>
     </tr>
   )
 }
