@@ -75,6 +75,91 @@ export default function SettingsPage() {
   const [newCatType, setNewCatType] = useState<'expense' | 'income' | 'transfer'>('expense')
   const [newCatBusy, setNewCatBusy] = useState(false)
 
+  // Account management (merge / delete duplicates)
+  interface Acct { id: string; name: string; currency: string; txCount: number }
+  const [accts, setAccts] = useState<Acct[]>([])
+  const [acctSources, setAcctSources] = useState<Set<string>>(new Set())
+  const [acctTarget, setAcctTarget] = useState('')
+  const [acctBusy, setAcctBusy] = useState(false)
+
+  const loadAccts = useCallback(async () => {
+    try {
+      const res = await fetch('/api/accounts?counts=1')
+      const data = await res.json()
+      setAccts(data.accounts || [])
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  useEffect(() => {
+    if (isAdmin) loadAccts()
+  }, [isAdmin, loadAccts])
+
+  function toggleAcctSource(id: string) {
+    setAcctSources((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function mergeAccounts() {
+    const sources = [...acctSources].filter((id) => id !== acctTarget)
+    if (!acctTarget || sources.length === 0) {
+      setMessage({ kind: 'err', text: 'Tick the accounts to combine and choose the one to keep.' })
+      return
+    }
+    const targetName = accts.find((a) => a.id === acctTarget)?.name ?? 'target'
+    if (!confirm(`Merge ${sources.length} account${sources.length === 1 ? '' : 's'} into "${targetName}"? All their transactions, balances and statements move to "${targetName}" and the old accounts are deleted.`))
+      return
+    setAcctBusy(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/accounts/merge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sourceIds: sources, targetId: acctTarget }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Merge failed')
+      setMessage({ kind: 'ok', text: `Merged into "${targetName}" — ${data.transactionsMoved} transactions moved.` })
+      setAcctSources(new Set())
+      setAcctTarget('')
+      await loadAccts()
+    } catch (e) {
+      setMessage({ kind: 'err', text: e instanceof Error ? e.message : 'Merge failed.' })
+    } finally {
+      setAcctBusy(false)
+    }
+  }
+
+  async function deleteAccounts() {
+    const ids = [...acctSources]
+    if (ids.length === 0) return
+    const withTx = ids.map((id) => accts.find((a) => a.id === id)).filter((a) => a && a.txCount > 0)
+    const warn = withTx.length
+      ? ` ${withTx.length} of them have transactions, which will become Unassigned.`
+      : ''
+    if (!confirm(`Delete ${ids.length} account${ids.length === 1 ? '' : 's'}?${warn} This can't be undone.`)) return
+    setAcctBusy(true)
+    setMessage(null)
+    try {
+      for (const id of ids) {
+        await fetch(`/api/accounts?id=${id}`, { method: 'DELETE' })
+      }
+      setMessage({ kind: 'ok', text: `Deleted ${ids.length} account${ids.length === 1 ? '' : 's'}.` })
+      setAcctSources(new Set())
+      setAcctTarget('')
+      await loadAccts()
+    } catch {
+      setMessage({ kind: 'err', text: 'Failed to delete.' })
+    } finally {
+      setAcctBusy(false)
+    }
+  }
+
   const loadCats = useCallback(async () => {
     try {
       const res = await fetch('/api/categories?counts=1')
@@ -762,6 +847,84 @@ export default function SettingsPage() {
                   <Database className="h-4 w-4" />
                   {mergeBusy ? 'Merging…' : 'Merge categories'}
                 </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Accounts management card */}
+        {isAdmin && (
+          <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+            <div className="flex items-center gap-2 border-b border-gray-200 px-6 py-4">
+              <Database className="h-4 w-4 text-gray-400" />
+              <div>
+                <h2 className="text-base font-semibold text-gray-900">Accounts</h2>
+                <p className="text-xs text-gray-400">
+                  Clean up duplicates — tick the accounts to combine, choose the one to keep, and merge
+                  (their transactions, balances and statements move over), or delete unused ones.
+                </p>
+              </div>
+            </div>
+
+            <div className="px-6 py-5">
+              <div className="flex flex-wrap gap-2">
+                {accts.map((a) => {
+                  const on = acctSources.has(a.id)
+                  return (
+                    <button
+                      key={a.id}
+                      onClick={() => toggleAcctSource(a.id)}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm transition-colors ${
+                        on ? 'border-blue-400 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      <span
+                        className={`flex h-4 w-4 items-center justify-center rounded border ${
+                          on ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-300'
+                        }`}
+                      >
+                        {on && <CheckCircle className="h-3 w-3" />}
+                      </span>
+                      {a.name}
+                      <span className="text-xs text-gray-400">{a.currency} · {a.txCount}</span>
+                    </button>
+                  )
+                })}
+              </div>
+
+              <div className="mt-4 flex flex-col gap-3 border-t border-gray-100 pt-4 sm:flex-row sm:items-center">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-gray-500">{acctSources.size} selected · merge into</span>
+                  <select
+                    value={acctTarget}
+                    onChange={(e) => setAcctTarget(e.target.value)}
+                    className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="">— keep which account? —</option>
+                    {accts
+                      .filter((a) => acctSources.has(a.id))
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                  </select>
+                </div>
+                <div className="flex items-center gap-2 sm:ml-auto">
+                  <button
+                    onClick={deleteAccounts}
+                    disabled={acctBusy || acctSources.size === 0}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-red-200 bg-white px-3 py-2 text-sm font-medium text-red-600 shadow-sm hover:bg-red-50 disabled:opacity-50"
+                  >
+                    Delete
+                  </button>
+                  <button
+                    onClick={mergeAccounts}
+                    disabled={acctBusy || acctSources.size === 0 || !acctTarget}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    <Database className="h-4 w-4" />
+                    {acctBusy ? 'Working…' : 'Merge'}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

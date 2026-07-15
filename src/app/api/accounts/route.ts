@@ -23,8 +23,9 @@ const EDITABLE: Record<string, string> = {
 // GET /api/accounts — active accounts (real DB rows with UUIDs)
 // ---------------------------------------------------------------------------
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    const withCounts = new URL(request.url).searchParams.get('counts') === '1'
     const result = await query(
       `SELECT id, name, institution, country, currency, holder,
               asset_class, liquidity_tier, is_corporate
@@ -32,6 +33,18 @@ export async function GET() {
        WHERE is_active = true
        ORDER BY is_corporate ASC, name ASC`,
     )
+
+    let txCount: Record<string, number> = {}
+    if (withCounts) {
+      try {
+        const c = await query(
+          `SELECT account_id, COUNT(*)::int AS n FROM transactions WHERE account_id IS NOT NULL GROUP BY account_id`,
+        )
+        txCount = Object.fromEntries(c.rows.map((r) => [r.account_id, Number(r.n)]))
+      } catch {
+        /* ignore */
+      }
+    }
 
     const accounts = result.rows.map((row) => ({
       id: row.id,
@@ -44,12 +57,31 @@ export async function GET() {
       assetClass: row.asset_class,
       liquidityTier: row.liquidity_tier,
       isCorporate: row.is_corporate,
+      ...(withCounts ? { txCount: txCount[row.id] ?? 0 } : {}),
     }))
 
     return NextResponse.json({ accounts })
   } catch (error) {
     console.error('Failed to fetch accounts:', error)
     return NextResponse.json({ error: 'Failed to fetch accounts' }, { status: 500 })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/accounts?id= — remove an account. Its transactions become
+// Unassigned (FK ON DELETE SET NULL); balance snapshots are removed.
+// ---------------------------------------------------------------------------
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const id = new URL(request.url).searchParams.get('id')
+    if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
+    await query(`DELETE FROM accounts WHERE id = $1`, [id])
+    return NextResponse.json({ success: true, id })
+  } catch (error) {
+    console.error('Failed to delete account:', error)
+    const detail = error instanceof Error ? error.message : String(error)
+    return NextResponse.json({ error: `Failed to delete account: ${detail}` }, { status: 500 })
   }
 }
 
