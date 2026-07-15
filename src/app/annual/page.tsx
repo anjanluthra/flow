@@ -13,6 +13,7 @@ import {
 } from 'recharts'
 import { DollarSign, TrendingDown, PiggyBank, Percent, Save, Calendar } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+import { Select } from '@/components/ui/Select'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -170,17 +171,12 @@ export default function AnnualPage() {
         <div className="mb-8 flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4 text-gray-400" />
-            <select
-              value={year}
-              onChange={(e) => setYear(Number(e.target.value))}
-              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              {YEARS.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
+            <Select
+              value={String(year)}
+              onChange={(v) => setYear(Number(v))}
+              options={YEARS.map((y) => ({ value: String(y), label: String(y) }))}
+              ariaLabel="Year"
+            />
           </div>
 
           <button

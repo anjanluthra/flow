@@ -4,6 +4,7 @@ import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { Upload, CheckCircle, AlertCircle, FileText, Eye, Download, Trash2 } from 'lucide-react'
 import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 import { FileUpload } from '@/components/ui/FileUpload'
+import { Select } from '@/components/ui/Select'
 import { convertToUSD } from '@/lib/currency'
 import { deriveMerchantPattern } from '@/lib/categories'
 
@@ -1302,21 +1303,15 @@ export default function ImportPage() {
                 <label htmlFor="account-select" className="mb-1.5 block text-sm font-medium text-gray-700">
                   {account ? 'Change account' : 'Which account is this statement for?'}
                 </label>
-                <select
-                  id="account-select"
+                <Select
+                  ariaLabel="Select an account"
                   value={selectedAccountId}
-                  onChange={(e) => handleAccountChange(e.target.value)}
-                  className="w-full max-w-md rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="" disabled>
-                    Select an account…
-                  </option>
-                  {accounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name} ({acc.currency})
-                    </option>
-                  ))}
-                </select>
+                  onChange={(v) => handleAccountChange(v)}
+                  options={accounts.map((acc) => ({ value: acc.id, label: `${acc.name} (${acc.currency})` }))}
+                  placeholder="Select an account…"
+                  searchable
+                  buttonClassName="inline-flex h-11 w-full max-w-md min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-4 text-sm text-gray-700 hover:bg-gray-50"
+                />
               </div>
             )}
           </div>
@@ -1597,33 +1592,21 @@ export default function ImportPage() {
                   </div>
                   <div className="mt-2 flex items-center gap-2">
                     <span className="w-16 shrink-0 text-xs text-gray-400">{tx.date}</span>
-                    <select
+                    <Select
+                      ariaLabel="Category"
                       value={tx.category}
-                      onChange={(e) => handleCategoryChange(index, e.target.value)}
-                      className={`min-w-0 flex-1 rounded-md border px-2 py-1.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 ${
-                        tx.category ? 'border-gray-200 bg-white text-gray-700' : 'border-amber-300 bg-amber-50 text-amber-700'
-                      }`}
-                    >
-                      <option value="">-- Select category --</option>
-                      <optgroup label="Expenses">
-                        {expenseCategories.map((cat) => (
-                          <option key={cat.id} value={cat.name}>{cat.name}</option>
-                        ))}
-                      </optgroup>
-                      <optgroup label="Income">
-                        {incomeCategories.map((cat) => (
-                          <option key={cat.id} value={cat.name}>{cat.name}</option>
-                        ))}
-                      </optgroup>
-                      {transferCategories.length > 0 && (
-                        <optgroup label="Transfers & Investments">
-                          {transferCategories.map((cat) => (
-                            <option key={cat.id} value={cat.name}>{cat.name}</option>
-                          ))}
-                        </optgroup>
-                      )}
-                      <option value="__new__">＋ New category…</option>
-                    </select>
+                      onChange={(v) => handleCategoryChange(index, v)}
+                      options={[
+                        ...expenseCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Expenses' })),
+                        ...incomeCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Income' })),
+                        ...transferCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Transfers & Investments' })),
+                      ]}
+                      placeholder="Uncategorise… / Choose category"
+                      searchable
+                      panelWidth={260}
+                      buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-700 hover:bg-gray-50"
+                      actions={[{ label: '+ Add new category…', onSelect: () => handleCategoryChange(index, '__new__') }]}
+                    />
                     {tx.alreadyImported ? (
                       <span title="Already in Flow — skipped on import" className="shrink-0 text-gray-400">
                         <CheckCircle className="h-4 w-4" />
@@ -1775,25 +1758,24 @@ export default function ImportPage() {
                                 {d.importedCount != null ? ` · ${d.importedCount} txns` : ''}
                               </p>
                               <div className="mt-1.5 flex items-center gap-1.5">
-                                <select
+                                <Select
+                                  ariaLabel="Assign account"
                                   value={accounts.find((a) => a.name === d.accountName)?.id ?? ''}
-                                  onChange={(e) => patchDoc(d.id, { accountId: e.target.value || null })}
-                                  className="max-w-[130px] rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-xs text-gray-600 focus:border-blue-400 focus:outline-none"
-                                >
-                                  <option value="">Unassigned</option>
-                                  {accounts.map((a) => (
-                                    <option key={a.id} value={a.id}>{a.name}</option>
-                                  ))}
-                                </select>
-                                <select
+                                  onChange={(v) => patchDoc(d.id, { accountId: v || null })}
+                                  options={[
+                                    { value: '', label: 'Unassigned' },
+                                    ...accounts.map((a) => ({ value: a.id, label: a.name })),
+                                  ]}
+                                  buttonClassName="inline-flex h-6 max-w-[130px] min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-1.5 text-xs text-gray-600 hover:bg-gray-50"
+                                />
+                                <Select
+                                  ariaLabel="Statement year"
                                   value={docYear(d)}
-                                  onChange={(e) => patchDoc(d.id, { statementDate: `${e.target.value}-01-01` })}
-                                  className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-xs text-gray-600 focus:border-blue-400 focus:outline-none"
-                                >
-                                  {['Unknown', '2023', '2024', '2025', '2026', '2027'].map((y) => (
-                                    <option key={y} value={y} disabled={y === 'Unknown'}>{y}</option>
-                                  ))}
-                                </select>
+                                  onChange={(v) => patchDoc(d.id, { statementDate: `${v}-01-01` })}
+                                  options={['2023', '2024', '2025', '2026', '2027'].map((y) => ({ value: y, label: y }))}
+                                  placeholder="Unknown"
+                                  buttonClassName="inline-flex h-6 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-1.5 text-xs text-gray-600 hover:bg-gray-50"
+                                />
                               </div>
                             </div>
                             <div className="flex shrink-0 items-center gap-0.5">

@@ -13,6 +13,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
+import { Select } from '@/components/ui/Select'
 
 interface VaultDoc {
   id: string
@@ -272,15 +273,12 @@ export default function VaultPage() {
           <div className="flex flex-wrap items-end gap-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-gray-500">Type</label>
-              <select
+              <Select
                 value={upType}
-                onChange={(e) => setUpType(e.target.value)}
-                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-              >
-                {DOC_TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
+                onChange={setUpType}
+                options={DOC_TYPES.map((t) => ({ value: t, label: t }))}
+                ariaLabel="Type"
+              />
             </div>
             <div className="flex-1 min-w-[200px]">
               <label className="mb-1 block text-xs font-medium text-gray-500">Title (optional)</label>

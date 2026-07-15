@@ -14,6 +14,7 @@ import {
   Pin,
 } from 'lucide-react'
 import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
+import { Select } from '@/components/ui/Select'
 
 interface TaxDoc {
   id: string
@@ -319,15 +320,12 @@ export default function TaxPage() {
           <div className="flex flex-wrap items-end gap-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-gray-500">Category</label>
-              <select
+              <Select
                 value={upCategory}
-                onChange={(e) => setUpCategory(e.target.value)}
-                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-              >
-                {CATEGORIES.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
+                onChange={setUpCategory}
+                options={CATEGORIES.map((c) => ({ value: c, label: c }))}
+                ariaLabel="Category"
+              />
             </div>
             <div className="min-w-[200px] flex-1">
               <label className="mb-1 block text-xs font-medium text-gray-500">Title (optional)</label>

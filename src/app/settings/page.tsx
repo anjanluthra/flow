@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSession } from 'next-auth/react'
 import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Image as ImageIcon, Pencil } from 'lucide-react'
+import { Select } from '@/components/ui/Select'
 
 // Downscale an image file to a modest JPEG data URL so uploads stay small and
 // fast (max edge ~1600px). Returns { base64, mimeType }.
@@ -539,14 +540,16 @@ export default function SettingsPage() {
                 className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
               />
               <div className="flex items-center gap-3">
-                <select
+                <Select
                   value={newRole}
-                  onChange={(e) => setNewRole(e.target.value)}
-                  className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-                >
-                  <option value="user">User</option>
-                  <option value="admin">Admin</option>
-                </select>
+                  onChange={setNewRole}
+                  ariaLabel="Role"
+                  options={[
+                    { value: 'user', label: 'User' },
+                    { value: 'admin', label: 'Admin' },
+                  ]}
+                  buttonClassName="inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 hover:bg-gray-50"
+                />
                 <button
                   onClick={addUser}
                   disabled={isSubmitting}
@@ -677,15 +680,17 @@ export default function SettingsPage() {
                   placeholder="e.g. Travel"
                   className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
-                <select
+                <Select
                   value={newCatType}
-                  onChange={(e) => setNewCatType(e.target.value as 'expense' | 'income' | 'transfer')}
-                  className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                >
-                  <option value="expense">Spending</option>
-                  <option value="income">Income</option>
-                  <option value="transfer">Transfer</option>
-                </select>
+                  onChange={(v) => setNewCatType(v as 'expense' | 'income' | 'transfer')}
+                  ariaLabel="Category type"
+                  options={[
+                    { value: 'expense', label: 'Spending' },
+                    { value: 'income', label: 'Income' },
+                    { value: 'transfer', label: 'Transfer' },
+                  ]}
+                  buttonClassName="inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 hover:bg-gray-50"
+                />
                 <button
                   onClick={createCategory}
                   disabled={newCatBusy || !newCatName.trim()}
@@ -741,21 +746,19 @@ export default function SettingsPage() {
                   <span className="text-sm text-gray-500">
                     {mergeSources.size} selected · merge into
                   </span>
-                  <select
+                  <Select
                     value={mergeTarget}
-                    onChange={(e) => setMergeTarget(e.target.value)}
-                    className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  >
-                    <option value="">— keep which category? —</option>
-                    <option value="__new__">➕ New category…</option>
-                    {cats
-                      .filter((c) => mergeSources.has(c.id))
-                      .map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name}
-                        </option>
-                      ))}
-                  </select>
+                    onChange={setMergeTarget}
+                    ariaLabel="Merge into category"
+                    placeholder="— keep which category? —"
+                    options={[
+                      { value: '__new__', label: '➕ New category…' },
+                      ...cats
+                        .filter((c) => mergeSources.has(c.id))
+                        .map((c) => ({ value: c.id, label: c.name })),
+                    ]}
+                    buttonClassName="inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 hover:bg-gray-50"
+                  />
                 </div>
                 <button
                   onClick={mergeCategories}
@@ -795,20 +798,36 @@ export default function SettingsPage() {
                   placeholder="e.g. Chase Saver"
                   className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 />
-                <select value={newAcctCcy} onChange={(e) => setNewAcctCcy(e.target.value)} className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none">
-                  {['GBP', 'USD', 'AED', 'EUR', 'INR', 'CHF'].map((c) => <option key={c} value={c}>{c}</option>)}
-                </select>
-                <select value={newAcctHolder} onChange={(e) => setNewAcctHolder(e.target.value)} className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none">
-                  <option value="joint">Joint</option>
-                  <option value="anjan">Anjan</option>
-                  <option value="kate">Kate</option>
-                </select>
-                <select value={newAcctClass} onChange={(e) => setNewAcctClass(e.target.value)} className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none">
-                  <option value="cash">Cash</option>
-                  <option value="debt">Credit / Debt</option>
-                  <option value="equities">Equities</option>
-                  <option value="crypto">Crypto</option>
-                </select>
+                <Select
+                  value={newAcctCcy}
+                  onChange={setNewAcctCcy}
+                  ariaLabel="Currency"
+                  options={['GBP', 'USD', 'AED', 'EUR', 'INR', 'CHF'].map((c) => ({ value: c, label: c }))}
+                  buttonClassName="inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 hover:bg-gray-50"
+                />
+                <Select
+                  value={newAcctHolder}
+                  onChange={setNewAcctHolder}
+                  ariaLabel="Account holder"
+                  options={[
+                    { value: 'joint', label: 'Joint' },
+                    { value: 'anjan', label: 'Anjan' },
+                    { value: 'kate', label: 'Kate' },
+                  ]}
+                  buttonClassName="inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 hover:bg-gray-50"
+                />
+                <Select
+                  value={newAcctClass}
+                  onChange={setNewAcctClass}
+                  ariaLabel="Asset class"
+                  options={[
+                    { value: 'cash', label: 'Cash' },
+                    { value: 'debt', label: 'Credit / Debt' },
+                    { value: 'equities', label: 'Equities' },
+                    { value: 'crypto', label: 'Crypto' },
+                  ]}
+                  buttonClassName="inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 hover:bg-gray-50"
+                />
                 <button
                   onClick={createAccount}
                   disabled={newAcctBusy || !newAcctName.trim()}
@@ -851,18 +870,16 @@ export default function SettingsPage() {
               <div className="mt-4 flex flex-col gap-3 border-t border-gray-100 pt-4 sm:flex-row sm:items-center">
                 <div className="flex items-center gap-2">
                   <span className="text-sm text-gray-500">{acctSources.size} selected · merge into</span>
-                  <select
+                  <Select
                     value={acctTarget}
-                    onChange={(e) => setAcctTarget(e.target.value)}
-                    className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  >
-                    <option value="">— keep which account? —</option>
-                    {accts
+                    onChange={setAcctTarget}
+                    ariaLabel="Merge into account"
+                    placeholder="— keep which account? —"
+                    options={accts
                       .filter((a) => acctSources.has(a.id))
-                      .map((a) => (
-                        <option key={a.id} value={a.id}>{a.name}</option>
-                      ))}
-                  </select>
+                      .map((a) => ({ value: a.id, label: a.name }))}
+                    buttonClassName="inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 hover:bg-gray-50"
+                  />
                 </div>
                 <div className="flex items-center gap-2 sm:ml-auto">
                   <button

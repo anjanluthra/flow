@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { FileText, Upload, Trash2, Download, Eye, CheckCircle, AlertCircle, UploadCloud } from 'lucide-react'
+import { Select } from '@/components/ui/Select'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -190,18 +191,16 @@ export default function DocumentsPage() {
         {/* Optional tagging for whatever you drop next */}
         <div className="mb-3 flex flex-wrap items-center gap-3">
           <span className="text-xs font-medium text-gray-500">Tag new uploads:</span>
-          <select
+          <Select
             value={uploadAccountId}
-            onChange={(e) => setUploadAccountId(e.target.value)}
-            className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
-          >
-            <option value="">Unassigned (assign later)</option>
-            {accounts.map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.name}
-              </option>
-            ))}
-          </select>
+            onChange={setUploadAccountId}
+            options={[
+              { value: '', label: 'Unassigned (assign later)' },
+              ...accounts.map((a) => ({ value: a.id, label: a.name })),
+            ]}
+            searchable
+            ariaLabel="Tag new uploads"
+          />
           <input
             type="date"
             value={statementDate}
@@ -211,18 +210,16 @@ export default function DocumentsPage() {
           />
           <div className="ml-auto flex items-center gap-2">
             <label className="text-xs font-medium text-gray-500">View:</label>
-            <select
+            <Select
               value={filterAccount}
-              onChange={(e) => setFilterAccount(e.target.value)}
-              className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
-            >
-              <option value="all">All Accounts</option>
-              {accounts.map((a) => (
-                <option key={a.id} value={a.id}>
-                  {a.name}
-                </option>
-              ))}
-            </select>
+              onChange={setFilterAccount}
+              options={[
+                { value: 'all', label: 'All Accounts' },
+                ...accounts.map((a) => ({ value: a.id, label: a.name })),
+              ]}
+              searchable
+              ariaLabel="View"
+            />
           </div>
         </div>
 
