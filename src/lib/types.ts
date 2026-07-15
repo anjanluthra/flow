@@ -12,9 +12,9 @@ export type AccountType =
 
 export type HolderType = 'anjan' | 'kate' | 'joint'
 
-export type CategoryType = 'income' | 'expense'
+export type CategoryType = 'income' | 'expense' | 'transfer' | 'investment'
 
-export type TransactionType = 'income' | 'expense' | 'transfer'
+export type TransactionType = 'income' | 'expense' | 'transfer' | 'investment'
 
 export type AssetClassType =
   | 'cash'

@@ -74,7 +74,7 @@ export async function GET(request: NextRequest) {
       amountLocal: parseFloat(row.amount_local),
       currency: row.currency,
       amountUsd: row.amount_usd !== null ? parseFloat(row.amount_usd) : 0,
-      type: row.type as 'income' | 'expense' | 'transfer',
+      type: row.type as 'income' | 'expense' | 'transfer' | 'investment',
       isBusinessExpense: row.is_business_expense,
       isInternalTransfer: row.is_internal_transfer,
       holder: row.holder as 'anjan' | 'kate' | 'joint',
@@ -103,7 +103,7 @@ interface IncomingTransaction {
   amountUsd?: number | null
   categoryId?: string | null
   categoryName?: string | null
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   isInternalTransfer?: boolean
   isBusinessExpense?: boolean
 }

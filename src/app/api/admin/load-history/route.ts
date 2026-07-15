@@ -21,7 +21,7 @@ interface HistoryRow {
   amountLocal: number
   currency: string
   amountUsd: number
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   isInternalTransfer: boolean
   categoryName: string
   accountName: string
@@ -85,7 +85,7 @@ export async function POST() {
     const catType = new Map<string, 'income' | 'expense'>()
     for (const r of rows) {
       if (r.categoryName === 'Internal Transfer' || r.categoryName === 'Investments') continue
-      if (r.type === 'transfer') continue
+      if (r.type === 'transfer' || r.type === 'investment') continue
       if (!catType.has(r.categoryName)) catType.set(r.categoryName, r.type)
     }
     let ci = 100

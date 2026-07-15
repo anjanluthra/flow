@@ -22,7 +22,7 @@ export interface TransactionFilters {
   categoryId?: string
   categoryName?: string
   accountId?: string
-  type?: 'income' | 'expense' | 'transfer'
+  type?: 'income' | 'expense' | 'transfer' | 'investment'
   holder?: 'anjan' | 'kate' | 'joint'
   from?: string // inclusive YYYY-MM-DD
   to?: string // inclusive YYYY-MM-DD
@@ -35,7 +35,35 @@ export interface TransactionFilters {
 // Query helpers
 // ---------------------------------------------------------------------------
 
+// One-time, idempotent migration that makes `investment` a first-class type.
+// Adds the enum value to both the transaction and category enums, then relabels
+// any investment-named category (Investments, Public investments, Private
+// Investment) and its transactions from 'transfer' to 'investment'. Guarded so
+// it runs at most once per serverless instance; safe to re-run.
+let investmentTypeReady = false
+export async function ensureInvestmentType() {
+  if (investmentTypeReady) return
+  try {
+    await query(`ALTER TYPE transaction_type ADD VALUE IF NOT EXISTS 'investment'`)
+    await query(`ALTER TYPE category_type ADD VALUE IF NOT EXISTS 'investment'`)
+    await query(
+      `UPDATE categories SET type = 'investment'
+       WHERE LOWER(name) LIKE '%investment%' AND type <> 'investment'`,
+    )
+    await query(
+      `UPDATE transactions t SET type = 'investment'
+       FROM categories c
+       WHERE t.category_id = c.id AND c.type = 'investment' AND t.type <> 'investment'`,
+    )
+    investmentTypeReady = true
+  } catch (error) {
+    // Leave the flag unset so the next call retries; the ALTERs are idempotent.
+    console.error('ensureInvestmentType failed:', error)
+  }
+}
+
 export async function getTransactions(filters: TransactionFilters = {}) {
+  await ensureInvestmentType()
   let queryText = `
     SELECT
       t.*,
@@ -223,7 +251,7 @@ export interface NewTransaction {
   amountUsd: number | null
   categoryId: string | null
   accountId: string | null
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   isInternalTransfer?: boolean
   isBusinessExpense?: boolean
   notes?: string | null
@@ -238,6 +266,7 @@ export interface NewTransaction {
  */
 export async function createTransactions(rows: NewTransaction[]) {
   if (rows.length === 0) return { inserted: 0, skipped: 0 }
+  if (rows.some((r) => r.type === 'investment')) await ensureInvestmentType()
 
   const values: string[] = []
   const params: unknown[] = []
@@ -280,7 +309,7 @@ export async function createTransactions(rows: NewTransaction[]) {
 export interface TransactionPatch {
   categoryId?: string | null
   description?: string
-  type?: 'income' | 'expense' | 'transfer'
+  type?: 'income' | 'expense' | 'transfer' | 'investment'
   isInternalTransfer?: boolean
   isBusinessExpense?: boolean
   isReimbursed?: boolean
@@ -405,6 +434,7 @@ export async function getAnnualActuals(
  * penny) and falls back to converting USD at `gbpRate` for other currencies.
  */
 export async function getPnLByRange(from: string, to: string, gbpRate: number) {
+  await ensureInvestmentType()
   const rate = gbpRate > 0 ? gbpRate : 1.3231
   return query(
     `SELECT
@@ -421,12 +451,11 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
      LEFT JOIN categories c ON t.category_id = c.id
      WHERE t.date >= $1 AND t.date <= $2
        AND (
-         (t.type <> 'transfer' AND t.is_internal_transfer = false)
-         -- Investment funding is a real cash outflow (investing activities), so
-         -- it's surfaced separately in the cash flow rather than dropped like
-         -- internal transfers and credit-card payments. Match any investment
-         -- category name (Investments, Public investments, Private Investment…).
-         OR (t.type = 'transfer' AND LOWER(c.name) LIKE '%investment%')
+         -- Operating: income & expenses (internal transfers are excluded).
+         (t.type IN ('income', 'expense') AND t.is_internal_transfer = false)
+         -- Investing: investment funding is a real cash outflow, surfaced in a
+         -- separate section rather than dropped like transfers / card payments.
+         OR t.type = 'investment'
        )
      GROUP BY t.type, c.name, c.color_hex, ym
      ORDER BY ym`,

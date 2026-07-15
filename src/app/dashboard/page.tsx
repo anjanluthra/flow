@@ -306,7 +306,7 @@ interface DrillTxn {
 interface DrillCat {
   id: string
   name: string
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   color?: string
 }
 
@@ -356,6 +356,7 @@ function DrillDrawer({
   const expenseCats = cats.filter((c) => c.type === 'expense')
   const incomeCats = cats.filter((c) => c.type === 'income')
   const transferCats = cats.filter((c) => c.type === 'transfer')
+  const investmentCats = cats.filter((c) => c.type === 'investment')
 
   async function reclassify(tx: DrillTxn, newName: string) {
     if (!drill || newName === drill.category) return
@@ -437,6 +438,7 @@ function DrillDrawer({
                       options={[
                         ...expenseCats.map((c) => ({ value: c.name, label: c.name, group: 'Expenses', color: c.color })),
                         ...incomeCats.map((c) => ({ value: c.name, label: c.name, group: 'Income', color: c.color })),
+                        ...investmentCats.map((c) => ({ value: c.name, label: c.name, group: 'Investments', color: c.color })),
                         ...transferCats.map((c) => ({ value: c.name, label: c.name, group: 'Transfers', color: c.color })),
                       ]}
                     />

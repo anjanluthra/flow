@@ -25,7 +25,7 @@ interface Transaction {
   amountLocal: number
   currency: string
   amountUsd: number
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   isBusinessExpense: boolean
   isInternalTransfer: boolean
   holder: 'anjan' | 'kate' | 'joint'
@@ -34,7 +34,7 @@ interface Transaction {
 interface Category {
   id: string
   name: string
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   color: string
 }
 
@@ -71,7 +71,7 @@ export default function TransactionsPage() {
   const [acctFilters, setAcctFilters] = useState<Set<string>>(new Set())
   const [monthFilter, setMonthFilter] = useState('all')
   const [yearFilter, setYearFilter] = useState('all')
-  const [typeFilter, setTypeFilter] = useState<'all' | 'income' | 'expense'>('all')
+  const [typeFilter, setTypeFilter] = useState<'all' | 'income' | 'expense' | 'transfer' | 'investment'>('all')
 
   // Inline description editing
   const [editingDesc, setEditingDesc] = useState<string | null>(null)
@@ -116,6 +116,10 @@ export default function TransactionsPage() {
   )
   const transferCategories = useMemo(
     () => categories.filter((c) => c.type === 'transfer'),
+    [categories],
+  )
+  const investmentCategories = useMemo(
+    () => categories.filter((c) => c.type === 'investment'),
     [categories],
   )
   const accountNames = useMemo(
@@ -218,9 +222,10 @@ export default function TransactionsPage() {
     () => [
       ...expenseCategories.map((c) => ({ value: c.name, label: c.name, group: 'Expenses' })),
       ...incomeCategories.map((c) => ({ value: c.name, label: c.name, group: 'Income' })),
+      ...investmentCategories.map((c) => ({ value: c.name, label: c.name, group: 'Investments' })),
       ...transferCategories.map((c) => ({ value: c.name, label: c.name, group: 'Transfers' })),
     ],
-    [expenseCategories, incomeCategories, transferCategories],
+    [expenseCategories, incomeCategories, investmentCategories, transferCategories],
   )
   const acctOptions = useMemo(() => accountNames.map((a) => ({ value: a, label: a })), [accountNames])
 
@@ -229,9 +234,10 @@ export default function TransactionsPage() {
     () => [
       ...expenseCategories.map((c) => ({ value: c.id, label: c.name, group: 'Expenses', color: c.color })),
       ...incomeCategories.map((c) => ({ value: c.id, label: c.name, group: 'Income', color: c.color })),
-      ...transferCategories.map((c) => ({ value: c.id, label: c.name, group: 'Transfers & Investments', color: c.color })),
+      ...investmentCategories.map((c) => ({ value: c.id, label: c.name, group: 'Investments', color: c.color })),
+      ...transferCategories.map((c) => ({ value: c.id, label: c.name, group: 'Transfers', color: c.color })),
     ],
-    [expenseCategories, incomeCategories, transferCategories],
+    [expenseCategories, incomeCategories, investmentCategories, transferCategories],
   )
 
   // ---- Columns ----
@@ -350,6 +356,7 @@ export default function TransactionsPage() {
             income: 'bg-emerald-50 text-emerald-700',
             expense: 'bg-red-50 text-red-700',
             transfer: 'bg-blue-50 text-blue-700',
+            investment: 'bg-indigo-50 text-indigo-700',
           }
           return (
             <span
@@ -368,11 +375,6 @@ export default function TransactionsPage() {
 
   const getRowClassName = (tx: Transaction) =>
     CURRENCY_ROW_CLASS[tx.accountCurrency ?? ''] ?? ''
-
-  const pillClass = (active: boolean) =>
-    active
-      ? 'bg-gray-900 text-white shadow-sm'
-      : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
 
   return (
     <div className="min-h-screen bg-gray-50/50 px-4 py-8 sm:px-6 lg:px-8">
@@ -419,19 +421,18 @@ export default function TransactionsPage() {
           options={[{ value: 'all', label: 'All Months' }, ...MONTHS.map((m) => ({ value: m, label: m }))]}
         />
 
-        <div className="h-6 w-px bg-gray-200" />
-
-        <div className="flex gap-1">
-          {(['all', 'income', 'expense'] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTypeFilter(t)}
-              className={`rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors ${pillClass(typeFilter === t)}`}
-            >
-              {t === 'all' ? 'All Types' : t}
-            </button>
-          ))}
-        </div>
+        <Select
+          ariaLabel="Filter by type"
+          value={typeFilter}
+          onChange={(v) => setTypeFilter(v as typeof typeFilter)}
+          options={[
+            { value: 'all', label: 'All Types' },
+            { value: 'income', label: 'Income' },
+            { value: 'expense', label: 'Expense' },
+            { value: 'investment', label: 'Investment' },
+            { value: 'transfer', label: 'Transfer' },
+          ]}
+        />
 
       </div>
 

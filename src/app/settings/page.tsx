@@ -64,13 +64,13 @@ export default function SettingsPage() {
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
 
   // Category management (merge / consolidate)
-  interface Cat { id: string; name: string; type: 'income' | 'expense' | 'transfer'; count: number }
+  interface Cat { id: string; name: string; type: 'income' | 'expense' | 'transfer' | 'investment'; count: number }
   const [cats, setCats] = useState<Cat[]>([])
   const [mergeSources, setMergeSources] = useState<Set<string>>(new Set())
   const [mergeTarget, setMergeTarget] = useState('')
   const [mergeBusy, setMergeBusy] = useState(false)
   const [newCatName, setNewCatName] = useState('')
-  const [newCatType, setNewCatType] = useState<'expense' | 'income' | 'transfer'>('expense')
+  const [newCatType, setNewCatType] = useState<'expense' | 'income' | 'transfer' | 'investment'>('expense')
   const [newCatBusy, setNewCatBusy] = useState(false)
 
   // Account management (merge / delete duplicates)
@@ -682,11 +682,12 @@ export default function SettingsPage() {
                 />
                 <Select
                   value={newCatType}
-                  onChange={(v) => setNewCatType(v as 'expense' | 'income' | 'transfer')}
+                  onChange={(v) => setNewCatType(v as 'expense' | 'income' | 'transfer' | 'investment')}
                   ariaLabel="Category type"
                   options={[
                     { value: 'expense', label: 'Spending' },
                     { value: 'income', label: 'Income' },
+                    { value: 'investment', label: 'Investment' },
                     { value: 'transfer', label: 'Transfer' },
                   ]}
                   buttonClassName="inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 hover:bg-gray-50"
@@ -701,13 +702,13 @@ export default function SettingsPage() {
                 </button>
               </div>
 
-              {(['expense', 'income', 'transfer'] as const).map((t) => {
+              {(['expense', 'income', 'investment', 'transfer'] as const).map((t) => {
                 const group = cats.filter((c) => c.type === t)
                 if (!group.length) return null
                 return (
                   <div key={t} className="mb-4">
                     <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
-                      {t === 'expense' ? 'Spending' : t === 'income' ? 'Income' : 'Transfers'}
+                      {t === 'expense' ? 'Spending' : t === 'income' ? 'Income' : t === 'investment' ? 'Investments' : 'Transfers'}
                     </p>
                     <div className="flex flex-wrap gap-2">
                       {group.map((c) => {

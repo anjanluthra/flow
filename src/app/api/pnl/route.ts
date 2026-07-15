@@ -68,7 +68,7 @@ export async function GET(request: NextRequest) {
           ? income
           : row.type === 'expense'
             ? expense
-            : row.category_name === 'Investments'
+            : row.type === 'investment'
               ? investing
               : null
       if (!bucket) continue

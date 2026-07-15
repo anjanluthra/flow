@@ -102,7 +102,7 @@ function detectAccount(
 interface CategoryOption {
   id: string
   name: string
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
 }
 
 interface StatementDoc {
@@ -401,6 +401,7 @@ export default function ImportPage() {
   const expenseCategories = categories.filter((c) => c.type === 'expense')
   const incomeCategories = categories.filter((c) => c.type === 'income')
   const transferCategories = categories.filter((c) => c.type === 'transfer')
+  const investmentCategories = categories.filter((c) => c.type === 'investment')
 
   // Self-learning review pass. For each freshly-parsed statement:
   //  1. reuse the saved category for rows already in Flow (re-imports),
@@ -1008,17 +1009,20 @@ export default function ImportPage() {
       const catByName = new Map(categories.map((c) => [c.name, c]))
       const payload = parsedTransactions.map((tx) => {
         const cat = tx.category ? catByName.get(tx.category) : undefined
-        // Category type wins over sign: a transfer category → 'transfer' (kept
+        // Category type wins over sign: an investment category → 'investment'
+        // (its own cash-flow section); a transfer category → 'transfer' (kept
         // out of P&L); an income category → 'income'; otherwise fall back to the
         // debit/credit sign.
-        const type: 'income' | 'expense' | 'transfer' =
-          cat?.type === 'transfer'
-            ? 'transfer'
-            : cat?.type === 'income'
-              ? 'income'
-              : tx.amount < 0
-                ? 'expense'
-                : 'income'
+        const type: 'income' | 'expense' | 'transfer' | 'investment' =
+          cat?.type === 'investment'
+            ? 'investment'
+            : cat?.type === 'transfer'
+              ? 'transfer'
+              : cat?.type === 'income'
+                ? 'income'
+                : tx.amount < 0
+                  ? 'expense'
+                  : 'income'
         return {
           accountId: account.id,
           date: tx.date,
@@ -1599,7 +1603,8 @@ export default function ImportPage() {
                       options={[
                         ...expenseCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Expenses' })),
                         ...incomeCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Income' })),
-                        ...transferCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Transfers & Investments' })),
+                        ...investmentCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Investments' })),
+                        ...transferCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Transfers' })),
                       ]}
                       placeholder="Uncategorise… / Choose category"
                       searchable

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getCategories } from '@/lib/db'
+import { getCategories, ensureInvestmentType } from '@/lib/db'
 import { query } from '@/lib/db'
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ export async function GET(request: NextRequest) {
     const categories = result.rows.map((row) => ({
       id: row.id,
       name: row.name,
-      type: row.type as 'income' | 'expense' | 'transfer',
+      type: row.type as 'income' | 'expense' | 'transfer' | 'investment',
       color: row.color_hex,
       iconName: row.icon_name,
       sortOrder: row.sort_order,
@@ -51,7 +51,7 @@ export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as {
       name?: string
-      type?: 'income' | 'expense' | 'transfer'
+      type?: 'income' | 'expense' | 'transfer' | 'investment'
       colorHex?: string
       iconName?: string
     }
@@ -60,6 +60,9 @@ export async function POST(request: NextRequest) {
     const type = body.type ?? 'expense'
     const color = body.colorHex ?? '#64748B'
     const icon = body.iconName ?? 'circle'
+
+    // Make sure the 'investment' enum value exists before we try to use it.
+    if (type === 'investment') await ensureInvestmentType()
 
     await query(
       `INSERT INTO categories (name, type, icon_name, color_hex, sort_order)
