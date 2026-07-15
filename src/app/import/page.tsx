@@ -1272,9 +1272,10 @@ export default function ImportPage() {
           </div>
         )}
 
-        {/* Account — only shown once a statement is dropped. Detected
-            automatically; the picker is tucked away unless it's needed. */}
-        {file && (
+        {/* Account — shown only after parsing finishes: as a confirmed pill if
+            auto-detected, or the picker if Flow couldn't work it out. Hidden
+            while still reading the statement. */}
+        {file && !isProcessing && (
           <div className="mb-8">
             {account && !changingAccount ? (
               <div className="flex flex-wrap items-center gap-2 text-sm">

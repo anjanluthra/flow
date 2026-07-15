@@ -59,6 +59,7 @@ export const navSections: NavSection[] = [
   {
     label: "Cash Flow",
     items: [
+      { href: "/import", label: "Import", icon: FolderOpen },
       { href: "/dashboard", label: "Monthly Cash Flow", icon: LayoutDashboard },
       { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
       { href: "/annual", label: "Forecasting", icon: CalendarRange },
@@ -67,10 +68,6 @@ export const navSections: NavSection[] = [
   {
     label: "Investing",
     items: [{ href: "/investing", label: "Portfolio", icon: TrendingUp }],
-  },
-  {
-    label: "Documents",
-    items: [{ href: "/import", label: "Document Hub", icon: FolderOpen }],
   },
   {
     label: "Tax",

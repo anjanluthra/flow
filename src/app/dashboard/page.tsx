@@ -224,8 +224,8 @@ export default function CashFlowPage() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-gray-200 bg-gray-50/60 text-left">
-                  <th className="sticky left-0 z-10 bg-gray-50/60 px-4 py-3 font-medium text-gray-500">Category</th>
+                <tr className="border-b border-gray-200 bg-gray-50 text-left">
+                  <th className="sticky left-0 z-20 bg-gray-50 px-4 py-3 font-medium text-gray-500">Category</th>
                   {showMonthCols &&
                     months.map((ym) => (
                       <th key={ym} className="px-4 py-3 text-right font-medium text-gray-500 whitespace-nowrap">
@@ -447,15 +447,15 @@ function DrillDrawer({
 
 function SectionRow({ label, span, showMonthCols, tone }: { label: string; span: number; showMonthCols: boolean; tone: 'income' | 'expense' }) {
   return (
-    <tr className="bg-gray-50/80">
+    <tr className="bg-gray-50">
       <td
-        colSpan={(showMonthCols ? span : 0) + 2}
-        className={`px-4 py-2 text-xs font-semibold uppercase tracking-wider ${
+        className={`sticky left-0 z-10 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider ${
           tone === 'income' ? 'text-emerald-600' : 'text-rose-600'
         }`}
       >
         {label}
       </td>
+      <td colSpan={(showMonthCols ? span : 0) + 1} className="bg-gray-50" />
     </tr>
   )
 }
@@ -544,9 +544,11 @@ function TotalRow({
       ? totalVal >= 0 ? 'text-emerald-700' : 'text-rose-700'
       : tone === 'income' ? 'text-emerald-700' : 'text-rose-700'
   const bg = tone === 'net' ? 'bg-blue-50/70 border-t-2 border-gray-300' : 'bg-gray-50/70'
+  // Solid background for the frozen first cell so scrolled numbers can't show through.
+  const stickyBg = tone === 'net' ? 'bg-blue-50 border-t-2 border-gray-300' : 'bg-gray-50'
   return (
     <tr className={`font-semibold ${bg}`}>
-      <td className={`sticky left-0 z-10 px-4 py-2.5 ${bg} ${color}`}>{label}</td>
+      <td className={`sticky left-0 z-10 px-4 py-2.5 ${stickyBg} ${color}`}>{label}</td>
       {showMonthCols &&
         months.map((ym) => {
           const v = pick(byMonth[ym], currency)

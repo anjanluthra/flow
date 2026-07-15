@@ -1,7 +1,7 @@
 'use client'
 
-import React, { useState, useMemo, useEffect, useCallback } from 'react'
-import { Search } from 'lucide-react'
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react'
+import { Search, ChevronDown, Check } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { DataTable } from '@/components/ui/DataTable'
 import { formatCurrency, formatUSD } from '@/lib/currency'
@@ -54,6 +54,128 @@ const CURRENCY_ROW_CLASS: Record<string, string> = {
 }
 
 // ────────────────────────────────────────────────
+// Multi-select filter popup
+// ────────────────────────────────────────────────
+
+interface MSOption {
+  value: string
+  label: string
+  group?: string
+}
+
+function MultiSelect({
+  label,
+  options,
+  selected,
+  onChange,
+  searchable,
+}: {
+  label: string
+  options: MSOption[]
+  selected: Set<string>
+  onChange: (next: Set<string>) => void
+  searchable?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const [q, setQ] = useState('')
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  const toggle = (v: string) => {
+    const next = new Set(selected)
+    if (next.has(v)) next.delete(v)
+    else next.add(v)
+    onChange(next)
+  }
+
+  const summary =
+    selected.size === 0
+      ? `All ${label}`
+      : selected.size === 1
+        ? options.find((o) => o.value === [...selected][0])?.label ?? `1 ${label.slice(0, -1)}`
+        : `${selected.size} ${label}`
+
+  const filtered = q ? options.filter((o) => o.label.toLowerCase().includes(q.toLowerCase())) : options
+  const groups = filtered.reduce<string[]>((acc, o) => {
+    const g = o.group ?? ''
+    if (!acc.includes(g)) acc.push(g)
+    return acc
+  }, [])
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className={`inline-flex h-9 items-center gap-2 rounded-lg border px-3 text-sm shadow-sm transition-colors ${
+          selected.size ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+        }`}
+      >
+        {summary}
+        <ChevronDown className={`h-4 w-4 opacity-60 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute left-0 z-40 mt-1.5 w-64 rounded-xl border border-gray-200 bg-white p-2 shadow-xl">
+          <div className="mb-1.5 flex items-center justify-between px-1">
+            <span className="text-xs font-semibold uppercase tracking-wider text-gray-400">{label}</span>
+            {selected.size > 0 && (
+              <button onClick={() => onChange(new Set())} className="text-xs font-medium text-blue-600 hover:underline">
+                Clear
+              </button>
+            )}
+          </div>
+          {searchable && (
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search…"
+              className="mb-1.5 w-full rounded-md border border-gray-200 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300"
+            />
+          )}
+          <div className="max-h-72 overflow-y-auto">
+            {groups.map((g) => (
+              <div key={g}>
+                {g && <p className="px-1 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-gray-400">{g}</p>}
+                {filtered
+                  .filter((o) => (o.group ?? '') === g)
+                  .map((o) => {
+                    const on = selected.has(o.value)
+                    return (
+                      <button
+                        key={o.value}
+                        onClick={() => toggle(o.value)}
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-gray-700 hover:bg-gray-50"
+                      >
+                        <span
+                          className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                            on ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-300'
+                          }`}
+                        >
+                          {on && <Check className="h-3 w-3" />}
+                        </span>
+                        <span className="truncate">{o.label}</span>
+                      </button>
+                    )
+                  })}
+              </div>
+            ))}
+            {filtered.length === 0 && <p className="px-2 py-3 text-center text-xs text-gray-400">No matches</p>}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ────────────────────────────────────────────────
 // Page component
 // ────────────────────────────────────────────────
 
@@ -66,8 +188,8 @@ export default function TransactionsPage() {
 
   // Filter state
   const [search, setSearch] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState('all')
-  const [accountFilter, setAccountFilter] = useState('all')
+  const [catFilters, setCatFilters] = useState<Set<string>>(new Set())
+  const [acctFilters, setAcctFilters] = useState<Set<string>>(new Set())
   const [monthFilter, setMonthFilter] = useState('all')
   const [yearFilter, setYearFilter] = useState('all')
   const [typeFilter, setTypeFilter] = useState<'all' | 'income' | 'expense'>('all')
@@ -192,8 +314,8 @@ export default function TransactionsPage() {
       if (search && !tx.description.toLowerCase().includes(search.toLowerCase())) {
         return false
       }
-      if (categoryFilter !== 'all' && tx.categoryName !== categoryFilter) return false
-      if (accountFilter !== 'all' && tx.accountName !== accountFilter) return false
+      if (catFilters.size && !catFilters.has(tx.categoryName)) return false
+      if (acctFilters.size && (!tx.accountName || !acctFilters.has(tx.accountName))) return false
       if (monthFilter !== 'all') {
         const txMonth = parseISO(tx.date).getMonth()
         if (txMonth !== MONTHS.indexOf(monthFilter)) return false
@@ -204,13 +326,24 @@ export default function TransactionsPage() {
       if (typeFilter !== 'all' && tx.type !== typeFilter) return false
       return true
     })
-  }, [transactions, search, categoryFilter, accountFilter, monthFilter, yearFilter, typeFilter])
+  }, [transactions, search, catFilters, acctFilters, monthFilter, yearFilter, typeFilter])
 
   // Distinct years present in the data, for the year filter.
   const years = useMemo(
     () => Array.from(new Set(transactions.map((t) => parseISO(t.date).getFullYear()))).sort((a, b) => b - a),
     [transactions],
   )
+
+  // Options for the multi-select filters.
+  const catOptions = useMemo(
+    () => [
+      ...expenseCategories.map((c) => ({ value: c.name, label: c.name, group: 'Expenses' })),
+      ...incomeCategories.map((c) => ({ value: c.name, label: c.name, group: 'Income' })),
+      ...transferCategories.map((c) => ({ value: c.name, label: c.name, group: 'Transfers' })),
+    ],
+    [expenseCategories, incomeCategories, transferCategories],
+  )
+  const acctOptions = useMemo(() => accountNames.map((a) => ({ value: a, label: a })), [accountNames])
 
   // ---- Columns ----
   const columns = useMemo(
@@ -407,49 +540,9 @@ export default function TransactionsPage() {
           />
         </div>
 
-        <select
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 shadow-sm outline-none transition-colors focus:border-gray-400 focus:ring-1 focus:ring-gray-300"
-        >
-          <option value="all">All Categories</option>
-          <optgroup label="Expenses">
-            {expenseCategories.map((c) => (
-              <option key={c.id} value={c.name}>
-                {c.name}
-              </option>
-            ))}
-          </optgroup>
-          <optgroup label="Income">
-            {incomeCategories.map((c) => (
-              <option key={c.id} value={c.name}>
-                {c.name}
-              </option>
-            ))}
-          </optgroup>
-          {transferCategories.length > 0 && (
-            <optgroup label="Transfers & Investments">
-              {transferCategories.map((c) => (
-                <option key={c.id} value={c.name}>
-                  {c.name}
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
+        <MultiSelect label="Categories" options={catOptions} selected={catFilters} onChange={setCatFilters} searchable />
 
-        <select
-          value={accountFilter}
-          onChange={(e) => setAccountFilter(e.target.value)}
-          className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 shadow-sm outline-none transition-colors focus:border-gray-400 focus:ring-1 focus:ring-gray-300"
-        >
-          <option value="all">All Accounts</option>
-          {accountNames.map((a) => (
-            <option key={a} value={a}>
-              {a}
-            </option>
-          ))}
-        </select>
+        <MultiSelect label="Accounts" options={acctOptions} selected={acctFilters} onChange={setAcctFilters} />
 
         <select
           value={yearFilter}
