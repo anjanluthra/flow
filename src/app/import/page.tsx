@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
 import { Upload, CheckCircle, AlertCircle, FileText, Eye, Download, Trash2 } from 'lucide-react'
 import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 import { FileUpload } from '@/components/ui/FileUpload'
@@ -122,6 +122,7 @@ interface ParsedTransaction {
   amountUSD: number
   category: string // canonical DB category name, or '' if unmatched
   status: 'categorised' | 'needs-review'
+  alreadyImported?: boolean // already in Flow (matched on re-import)
 }
 
 interface ColumnMapping {
@@ -396,6 +397,46 @@ export default function ImportPage() {
   const expenseCategories = categories.filter((c) => c.type === 'expense')
   const incomeCategories = categories.filter((c) => c.type === 'income')
   const transferCategories = categories.filter((c) => c.type === 'transfer')
+
+  // When reviewing a statement, flag rows already in Flow and reuse their saved
+  // category, so re-importing the same statement doesn't make you re-categorise.
+  const annotatedRef = useRef<ParsedTransaction[] | null>(null)
+  useEffect(() => {
+    if (!account || parsedTransactions.length === 0) return
+    if (annotatedRef.current === parsedTransactions) return
+    const current = parsedTransactions
+    annotatedRef.current = current
+    const rows = current.map((tx) => ({
+      date: tx.date,
+      description: tx.description,
+      amountLocal: Math.abs(tx.amount),
+    }))
+    fetch('/api/transactions/lookup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: account.id, rows }),
+    })
+      .then((r) => r.json())
+      .then(({ results }: { results?: Array<{ matched: boolean; categoryName: string | null }> }) => {
+        if (!Array.isArray(results)) return
+        setParsedTransactions((prev) => {
+          if (prev !== current) return prev
+          const next = prev.map((tx, i) => {
+            const m = results[i]
+            if (!m?.matched) return tx
+            return {
+              ...tx,
+              category: m.categoryName ?? tx.category,
+              status: (m.categoryName ? 'categorised' : tx.status) as ParsedTransaction['status'],
+              alreadyImported: true,
+            }
+          })
+          annotatedRef.current = next
+          return next
+        })
+      })
+      .catch(() => {})
+  }, [parsedTransactions, account])
 
   // Parse a statement's text against a chosen account. When `forced` is passed
   // (a manual override) detection is skipped; otherwise the account is detected
@@ -1421,7 +1462,12 @@ export default function ImportPage() {
                         </select>
                       </td>
                       <td className="whitespace-nowrap px-4 py-3">
-                        {tx.status === 'categorised' ? (
+                        {tx.alreadyImported ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-500" title="Already in Flow — will be skipped on import">
+                            <CheckCircle className="h-3 w-3" />
+                            Already in Flow
+                          </span>
+                        ) : tx.status === 'categorised' ? (
                           <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2.5 py-1 text-xs font-medium text-green-700">
                             <CheckCircle className="h-3 w-3" />
                             Categorised
