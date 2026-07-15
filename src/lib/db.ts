@@ -424,8 +424,9 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
          (t.type <> 'transfer' AND t.is_internal_transfer = false)
          -- Investment funding is a real cash outflow (investing activities), so
          -- it's surfaced separately in the cash flow rather than dropped like
-         -- internal transfers and credit-card payments.
-         OR (t.type = 'transfer' AND c.name = 'Investments')
+         -- internal transfers and credit-card payments. Match any investment
+         -- category name (Investments, Public investments, Private Investment…).
+         OR (t.type = 'transfer' AND LOWER(c.name) LIKE '%investment%')
        )
      GROUP BY t.type, c.name, c.color_hex, ym
      ORDER BY ym`,

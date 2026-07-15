@@ -347,6 +347,13 @@ export default function NetWorthPage() {
   const [fxSource, setFxSource] = useState<string>('fallback')
   const [viewCurrency, setViewCurrency] = useState<'USD' | 'GBP'>('USD')
 
+  // ---- Chart drill-down: click a liquidity tier / asset class to list its
+  // underlying accounts in a side drawer (like the Cash Flow drill-down). ----
+  const [drill, setDrill] = useState<{ kind: 'liquidity' | 'asset'; key: string; label: string } | null>(null)
+  const openLiquidityDrill = (tier: string) =>
+    setDrill({ kind: 'liquidity', key: tier, label: LIQUIDITY_LABELS[tier] ?? tier })
+  const openAssetDrill = (name: string) => setDrill({ kind: 'asset', key: name, label: name })
+
   // ---- Fetch live FX rates on mount ----
   useEffect(() => {
     fetch('/api/fx')
@@ -1246,9 +1253,14 @@ export default function NetWorthPage() {
                   labelLine={false}
                   stroke="#fff"
                   strokeWidth={2}
+                  onClick={(data) => {
+                    const name = (data as unknown as { name?: string })?.name
+                    if (name) openAssetDrill(String(name))
+                  }}
+                  className="cursor-pointer"
                 >
                   {allocationData.map((entry, idx) => (
-                    <Cell key={idx} fill={entry.color} />
+                    <Cell key={idx} fill={entry.color} className="cursor-pointer" />
                   ))}
                 </Pie>
                 <Tooltip content={<PieTooltip />} />
@@ -1256,16 +1268,18 @@ export default function NetWorthPage() {
             </ResponsiveContainer>
             <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2">
               {allocationData.map((d) => (
-                <div
+                <button
                   key={d.name}
-                  className="flex items-center gap-1.5 text-xs text-gray-600"
+                  onClick={() => openAssetDrill(d.name)}
+                  className="flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-50 hover:text-gray-900"
+                  title={`See ${d.name} accounts`}
                 >
                   <span
                     className="inline-block h-2.5 w-2.5 rounded-full"
                     style={{ backgroundColor: d.color }}
                   />
                   {d.name}: {d.pct}
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -1304,18 +1318,30 @@ export default function NetWorthPage() {
                   content={<BarTooltip />}
                   cursor={{ fill: 'rgba(0,0,0,0.04)' }}
                 />
-                <Bar dataKey="value" radius={[0, 6, 6, 0]} barSize={32}>
+                <Bar
+                  dataKey="value"
+                  radius={[0, 6, 6, 0]}
+                  barSize={32}
+                  className="cursor-pointer"
+                  onClick={(data) => {
+                    const d = data as unknown as { tier?: string; payload?: { tier?: string } }
+                    const tier = d?.tier ?? d?.payload?.tier
+                    if (tier) openLiquidityDrill(String(tier))
+                  }}
+                >
                   {liquidityData.map((entry, idx) => (
-                    <Cell key={idx} fill={entry.color} />
+                    <Cell key={idx} fill={entry.color} className="cursor-pointer" />
                   ))}
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
             <div className="mt-4 grid grid-cols-2 gap-3">
               {liquidityData.map((d) => (
-                <div
+                <button
                   key={d.tier}
-                  className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2"
+                  onClick={() => openLiquidityDrill(d.tier)}
+                  className="rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 text-left transition-colors hover:border-gray-200 hover:bg-gray-100"
+                  title={`See ${d.label} accounts`}
                 >
                   <p className="text-xs font-medium text-gray-500">
                     {d.label}
@@ -1323,7 +1349,7 @@ export default function NetWorthPage() {
                   <p className="text-sm font-semibold text-gray-900">
                     {fmt(d.value)}
                   </p>
-                </div>
+                </button>
               ))}
             </div>
           </div>
@@ -1560,6 +1586,69 @@ export default function NetWorthPage() {
           </div>
         </div>
         )}
+
+        {/* ---------------------------------------------------------------- */}
+        {/* Chart drill-down drawer — accounts within a tier / asset class    */}
+        {/* ---------------------------------------------------------------- */}
+        {drill && (() => {
+          const list = accounts
+            .filter((a) => (drill.kind === 'liquidity' ? a.liquidity === drill.key : a.assetClass === drill.key))
+            .sort((a, b) => b.usdValue - a.usdValue)
+          const total = list.reduce((s, a) => s + a.usdValue, 0)
+          return (
+            <div className="fixed inset-0 z-50 flex justify-end">
+              <div className="absolute inset-0 bg-black/20" onClick={() => setDrill(null)} />
+              <div className="relative flex h-full w-full max-w-md flex-col bg-white shadow-2xl">
+                <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
+                  <div>
+                    <h3 className="text-base font-semibold text-gray-900">{drill.label}</h3>
+                    <p className="text-xs text-gray-500">
+                      {drill.kind === 'liquidity' ? 'Liquidity tier' : 'Asset class'} · {list.length} account
+                      {list.length !== 1 ? 's' : ''}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setDrill(null)}
+                    className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                    title="Close"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="flex items-baseline justify-between border-b border-gray-100 bg-gray-50 px-5 py-3">
+                  <span className="text-xs font-medium uppercase tracking-wider text-gray-400">Total</span>
+                  <span className="text-lg font-bold text-gray-900">{fmtView(total)}</span>
+                </div>
+                <div className="flex-1 overflow-y-auto">
+                  {list.length === 0 ? (
+                    <div className="py-16 text-center text-sm text-gray-400">No accounts here.</div>
+                  ) : (
+                    <div className="divide-y divide-gray-100">
+                      {list.map((a) => (
+                        <div key={a.accountId || a.account} className="flex items-baseline justify-between gap-3 px-5 py-3">
+                          <div className="min-w-0">
+                            <p className="truncate text-sm font-medium text-gray-900" title={a.account}>
+                              {a.account}
+                            </p>
+                            <p className="mt-0.5 text-xs text-gray-400">
+                              {a.holder} · {a.assetClass} · {a.country}
+                            </p>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <p className={`text-sm font-semibold tabular-nums ${a.usdValue < 0 ? 'text-red-600' : 'text-gray-900'}`}>
+                              {fmtView(a.usdValue)}
+                            </p>
+                            <p className="text-xs tabular-nums text-gray-400">{fmtLocal(a.localBalance, a.currency)}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )
+        })()}
 
       </div>
     </div>
