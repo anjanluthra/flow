@@ -11,12 +11,30 @@ const MAX_BYTES = 4 * 1024 * 1024
 let schemaEnsured = false
 async function ensureSchema() {
   if (schemaEnsured) return
+  // Create the archive table if this DB never had migration 006 applied, then
+  // add the metadata columns from 012. All idempotent.
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id     uuid        REFERENCES accounts ON DELETE SET NULL,
+        file_name      text        NOT NULL,
+        mime_type      text        NOT NULL,
+        statement_date date,
+        size_bytes     int         NOT NULL,
+        content        bytea       NOT NULL,
+        uploaded_at    timestamptz NOT NULL DEFAULT now()
+      )
+    `)
+  } catch {
+    /* table may already exist with a compatible shape */
+  }
   const alters = [
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS statement_date date`,
     `ALTER TABLE documents ADD COLUMN IF NOT EXISTS source text`,
     `ALTER TABLE documents ADD COLUMN IF NOT EXISTS format_signature text`,
     `ALTER TABLE documents ADD COLUMN IF NOT EXISTS imported_count integer`,
     `ALTER TABLE documents ADD COLUMN IF NOT EXISTS data_rows integer`,
-    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS statement_date date`,
   ]
   for (const sql of alters) {
     try {
