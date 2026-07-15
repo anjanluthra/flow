@@ -75,3 +75,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Failed to create category: ${detail}` }, { status: 500 })
   }
 }
+
+// ---------------------------------------------------------------------------
+// PATCH /api/categories — rename a category. Body: { id, name }
+// ---------------------------------------------------------------------------
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const { id, name } = (await request.json()) as { id?: string; name?: string }
+    if (!id || !name?.trim()) {
+      return NextResponse.json({ error: 'id and name are required' }, { status: 400 })
+    }
+    await query(`UPDATE categories SET name = $2 WHERE id = $1`, [id, name.trim()])
+    return NextResponse.json({ success: true, id, name: name.trim() })
+  } catch (error) {
+    console.error('Failed to rename category:', error)
+    const detail = error instanceof Error ? error.message : String(error)
+    return NextResponse.json({ error: `Failed to rename category: ${detail}` }, { status: 500 })
+  }
+}

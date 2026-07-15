@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSession } from 'next-auth/react'
-import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Download, Image as ImageIcon, Calendar } from 'lucide-react'
+import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Image as ImageIcon, Pencil } from 'lucide-react'
 
 // Downscale an image file to a modest JPEG data URL so uploads stay small and
 // fast (max edge ~1600px). Returns { base64, mimeType }.
@@ -61,9 +61,6 @@ export default function SettingsPage() {
   const [users, setUsers] = useState<AppUser[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [message, setMessage] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
-
-  // Historical data import
-  const [historyBusy, setHistoryBusy] = useState(false)
 
   // Category management (merge / consolidate)
   interface Cat { id: string; name: string; type: 'income' | 'expense' | 'transfer'; count: number }
@@ -132,6 +129,66 @@ export default function SettingsPage() {
       setMessage({ kind: 'err', text: e instanceof Error ? e.message : 'Merge failed.' })
     } finally {
       setAcctBusy(false)
+    }
+  }
+
+  async function renameAccount(id: string, current: string) {
+    const name = window.prompt('Rename account:', current)?.trim()
+    if (!name || name === current) return
+    try {
+      await fetch('/api/accounts', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name }),
+      })
+      await loadAccts()
+    } catch {
+      setMessage({ kind: 'err', text: 'Failed to rename account.' })
+    }
+  }
+
+  async function renameCategory(id: string, current: string) {
+    const name = window.prompt('Rename category:', current)?.trim()
+    if (!name || name === current) return
+    try {
+      await fetch('/api/categories', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name }),
+      })
+      await loadCats()
+    } catch {
+      setMessage({ kind: 'err', text: 'Failed to rename category.' })
+    }
+  }
+
+  // Add a new account
+  const [newAcctName, setNewAcctName] = useState('')
+  const [newAcctCcy, setNewAcctCcy] = useState('GBP')
+  const [newAcctHolder, setNewAcctHolder] = useState('joint')
+  const [newAcctClass, setNewAcctClass] = useState('cash')
+  const [newAcctBusy, setNewAcctBusy] = useState(false)
+
+  async function createAccount() {
+    const name = newAcctName.trim()
+    if (!name) return
+    setNewAcctBusy(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, currency: newAcctCcy, holder: newAcctHolder, assetClass: newAcctClass }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to add account')
+      setMessage({ kind: 'ok', text: `Added account “${name}”.` })
+      setNewAcctName('')
+      await loadAccts()
+    } catch (e) {
+      setMessage({ kind: 'err', text: e instanceof Error ? e.message : 'Failed to add account.' })
+    } finally {
+      setNewAcctBusy(false)
     }
   }
 
@@ -386,84 +443,6 @@ export default function SettingsPage() {
     }
   }
 
-  const [nwBusy, setNwBusy] = useState(false)
-  async function loadNetWorth() {
-    setNwBusy(true)
-    setMessage(null)
-    try {
-      const res = await fetch('/api/admin/load-networth', { method: 'POST' })
-      const data = await res.json()
-      setMessage(
-        res.ok
-          ? { kind: 'ok', text: `Loaded ${data.upserted} historical net-worth markers.` }
-          : { kind: 'err', text: data.error || 'Failed to load net worth history.' },
-      )
-    } catch {
-      setMessage({ kind: 'err', text: 'Failed to load net worth history.' })
-    } finally {
-      setNwBusy(false)
-    }
-  }
-
-  const [redateBusy, setRedateBusy] = useState(false)
-  async function redateBalances() {
-    if (
-      !confirm(
-        'Save your current balance sheet as the 1 June 2026 snapshot? This creates real, editable account balances (the latest snapshot everywhere), sets Corporate Cash Balance to the UAE, and adds your Barclaycard so its statements can be filed. Safe to run again. Historic graph markers are left untouched.',
-      )
-    )
-      return
-    setRedateBusy(true)
-    setMessage(null)
-    try {
-      const res = await fetch('/api/admin/seed-current', { method: 'POST' })
-      const data = await res.json()
-      setMessage(
-        res.ok
-          ? { kind: 'ok', text: `Saved current balance sheet as 1 Jun 2026 (${data.accounts} accounts).` }
-          : { kind: 'err', text: data.error || 'Failed to save current balance sheet.' },
-      )
-    } catch {
-      setMessage({ kind: 'err', text: 'Failed to save current balance sheet.' })
-    } finally {
-      setRedateBusy(false)
-    }
-  }
-
-  async function loadHistory() {
-    if (
-      !confirm(
-        'Import 2024 transactions from your workbook into Flow? It’s safe to run more than once — duplicates are skipped.',
-      )
-    )
-      return
-    setHistoryBusy(true)
-    setMessage(null)
-    try {
-      const res = await fetch('/api/admin/load-history', { method: 'POST' })
-      const data = await res.json()
-      if (!res.ok) {
-        setMessage({ kind: 'err', text: data.error || 'Failed to load history.' })
-        return
-      }
-      const bits: string[] = []
-      if (data.unresolved) {
-        const names = [...(data.missingAccounts || []), ...(data.missingCategories || [])]
-        bits.push(
-          `${data.unresolved} could not be matched${names.length ? ` (missing: ${names.join(', ')})` : ''}`,
-        )
-      }
-      setMessage({
-        kind: data.unresolved ? 'err' : 'ok',
-        text: `2024 import complete — ${data.inserted} added${bits.length ? `. ${bits.join('; ')}` : '.'}`,
-      })
-    } catch {
-      setMessage({ kind: 'err', text: 'Failed to load history.' })
-    } finally {
-      setHistoryBusy(false)
-    }
-  }
-
   async function toggleActive(u: AppUser) {
     await fetch(`/api/users/${u.id}`, {
       method: 'PATCH',
@@ -671,69 +650,6 @@ export default function SettingsPage() {
           </table>
         </div>
 
-        {/* Data card */}
-        {isAdmin && (
-          <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-            <div className="flex items-center gap-2 border-b border-gray-200 px-6 py-4">
-              <Database className="h-4 w-4 text-gray-400" />
-              <h2 className="text-base font-semibold text-gray-900">Data</h2>
-            </div>
-            <div className="flex flex-col gap-4 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-900">Load 2024 history</p>
-                <p className="mt-0.5 text-sm text-gray-500">
-                  Imports 2,031 2024 transactions from your personal-finance workbook, keeping the
-                  sheet&rsquo;s own categories so the P&amp;L matches it exactly. Re-running refreshes
-                  the import.
-                </p>
-              </div>
-              <button
-                onClick={loadHistory}
-                disabled={historyBusy}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
-              >
-                <Download className="h-4 w-4" />
-                {historyBusy ? 'Importing…' : 'Load 2024 history'}
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 border-t border-gray-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-900">Load net worth history</p>
-                <p className="mt-0.5 text-sm text-gray-500">
-                  Seeds 14 approximate net-worth markers from June 2024 to Jan 2026 so the
-                  progression chart has your history. Safe to run again.
-                </p>
-              </div>
-              <button
-                onClick={loadNetWorth}
-                disabled={nwBusy}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
-              >
-                <Download className="h-4 w-4" />
-                {nwBusy ? 'Importing…' : 'Load net worth history'}
-              </button>
-            </div>
-            <div className="flex flex-col gap-4 border-t border-gray-100 px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="text-sm font-medium text-gray-900">Save current balance sheet (1 Jun 2026)</p>
-                <p className="mt-0.5 text-sm text-gray-500">
-                  Writes your current account balances as the latest snapshot (as of 1 June 2026),
-                  sets Corporate Cash Balance to the UAE, and adds your Barclaycard so its statements
-                  can be filed. Run once; update monthly afterwards with “Update Balances”.
-                </p>
-              </div>
-              <button
-                onClick={redateBalances}
-                disabled={redateBusy}
-                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
-              >
-                <Calendar className="h-4 w-4" />
-                {redateBusy ? 'Saving…' : 'Save 1 Jun 2026 snapshot'}
-              </button>
-            </div>
-          </div>
-        )}
-
         {/* Categories management card */}
         {isAdmin && (
           <div className="mt-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -792,25 +708,27 @@ export default function SettingsPage() {
                       {group.map((c) => {
                         const on = mergeSources.has(c.id)
                         return (
-                          <button
+                          <div
                             key={c.id}
-                            onClick={() => toggleSource(c.id)}
                             className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm transition-colors ${
-                              on
-                                ? 'border-blue-400 bg-blue-50 text-blue-700'
-                                : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                              on ? 'border-blue-400 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-700'
                             }`}
                           >
-                            <span
-                              className={`flex h-4 w-4 items-center justify-center rounded border ${
-                                on ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-300'
-                              }`}
-                            >
-                              {on && <CheckCircle className="h-3 w-3" />}
-                            </span>
-                            {c.name}
-                            <span className="text-xs text-gray-400">{c.count}</span>
-                          </button>
+                            <button onClick={() => toggleSource(c.id)} className="inline-flex items-center gap-1.5">
+                              <span
+                                className={`flex h-4 w-4 items-center justify-center rounded border ${
+                                  on ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-300'
+                                }`}
+                              >
+                                {on && <CheckCircle className="h-3 w-3" />}
+                              </span>
+                              {c.name}
+                              <span className="text-xs text-gray-400">{c.count}</span>
+                            </button>
+                            <button onClick={() => renameCategory(c.id, c.name)} title="Rename" className="text-gray-300 hover:text-blue-600">
+                              <Pencil className="h-3 w-3" />
+                            </button>
+                          </div>
                         )
                       })}
                     </div>
@@ -867,27 +785,65 @@ export default function SettingsPage() {
             </div>
 
             <div className="px-6 py-5">
+              {/* Add a new account */}
+              <div className="mb-5 flex flex-col gap-2 rounded-lg border border-gray-100 bg-gray-50 p-3 sm:flex-row sm:items-center">
+                <span className="text-sm font-medium text-gray-700">Add account</span>
+                <input
+                  value={newAcctName}
+                  onChange={(e) => setNewAcctName(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') createAccount() }}
+                  placeholder="e.g. Chase Saver"
+                  className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                />
+                <select value={newAcctCcy} onChange={(e) => setNewAcctCcy(e.target.value)} className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none">
+                  {['GBP', 'USD', 'AED', 'EUR', 'INR', 'CHF'].map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select value={newAcctHolder} onChange={(e) => setNewAcctHolder(e.target.value)} className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none">
+                  <option value="joint">Joint</option>
+                  <option value="anjan">Anjan</option>
+                  <option value="kate">Kate</option>
+                </select>
+                <select value={newAcctClass} onChange={(e) => setNewAcctClass(e.target.value)} className="rounded-lg border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 focus:border-blue-500 focus:outline-none">
+                  <option value="cash">Cash</option>
+                  <option value="debt">Credit / Debt</option>
+                  <option value="equities">Equities</option>
+                  <option value="crypto">Crypto</option>
+                </select>
+                <button
+                  onClick={createAccount}
+                  disabled={newAcctBusy || !newAcctName.trim()}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+                >
+                  <Plus className="h-4 w-4" />
+                  {newAcctBusy ? 'Adding…' : 'Add'}
+                </button>
+              </div>
+
               <div className="flex flex-wrap gap-2">
                 {accts.map((a) => {
                   const on = acctSources.has(a.id)
                   return (
-                    <button
+                    <div
                       key={a.id}
-                      onClick={() => toggleAcctSource(a.id)}
                       className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-sm transition-colors ${
-                        on ? 'border-blue-400 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
+                        on ? 'border-blue-400 bg-blue-50 text-blue-700' : 'border-gray-200 bg-white text-gray-700'
                       }`}
                     >
-                      <span
-                        className={`flex h-4 w-4 items-center justify-center rounded border ${
-                          on ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-300'
-                        }`}
-                      >
-                        {on && <CheckCircle className="h-3 w-3" />}
-                      </span>
-                      {a.name}
-                      <span className="text-xs text-gray-400">{a.currency} · {a.txCount}</span>
-                    </button>
+                      <button onClick={() => toggleAcctSource(a.id)} className="inline-flex items-center gap-1.5">
+                        <span
+                          className={`flex h-4 w-4 items-center justify-center rounded border ${
+                            on ? 'border-blue-500 bg-blue-500 text-white' : 'border-gray-300'
+                          }`}
+                        >
+                          {on && <CheckCircle className="h-3 w-3" />}
+                        </span>
+                        {a.name}
+                        <span className="text-xs text-gray-400">{a.currency} · {a.txCount}</span>
+                      </button>
+                      <button onClick={() => renameAccount(a.id, a.name)} title="Rename" className="text-gray-300 hover:text-blue-600">
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                    </div>
                   )
                 })}
               </div>
