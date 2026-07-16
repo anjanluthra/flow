@@ -666,7 +666,7 @@ export default function ImportPage() {
   )
 
   const handleFileSelect = useCallback(
-    async (selectedFile: File, originDocId?: string | null) => {
+    async (selectedFile: File, originDocId?: string | null, preferredAccountId?: string | null) => {
       setFile(selectedFile)
       setParseError(null)
       setSaveResult(null)
@@ -724,12 +724,17 @@ export default function ImportPage() {
           setPendingPdfRows(rows)
           setPdfDoc({ base64, fileName: selectedFile.name, format, originDocId: originDocId ?? null })
 
-          const detected = detectAccount(selectedFile.name, String(data.bankHint || ''), accounts, hints)
-          setAutoDetected(!!detected)
-          if (detected?.account) {
-            setSelectedAccountId(detected.account.id)
+          // If we're extracting a statement already filed under an account (e.g.
+          // "Extract & categorise" from the archive), use that account — don't
+          // re-detect from the meaningless filename and end up asking again.
+          const preferred = preferredAccountId ? accounts.find((a) => a.id === preferredAccountId) : null
+          const detected = preferred ? null : detectAccount(selectedFile.name, String(data.bankHint || ''), accounts, hints)
+          const chosen = preferred ?? detected?.account ?? null
+          setAutoDetected(!!chosen)
+          if (chosen) {
+            setSelectedAccountId(chosen.id)
             setChangingAccount(false)
-            buildPdfTransactions(rows, detected.account)
+            buildPdfTransactions(rows, chosen)
           } else {
             setSelectedAccountId('')
             setChangingAccount(true)
@@ -806,7 +811,8 @@ export default function ImportPage() {
           : blob.type || 'application/octet-stream'
         const file = new File([blob], doc.fileName, { type })
         if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
-        await handleFileSelect(file, doc.id)
+        // The saved doc already knows its account — use it so we don't ask again.
+        await handleFileSelect(file, doc.id, doc.accountId)
       } catch {
         setParseError('Could not open that saved statement to extract it. Please try again.')
       } finally {
