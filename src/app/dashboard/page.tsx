@@ -154,19 +154,24 @@ export default function CashFlowPage() {
   const totalNet = opNet + capNet
   const showTotal = view === 'total'
 
-  // Full-year projection (actuals + saved/averaged forecast) for the italic
-  // "projected" line — mirrors the Forecasting tab's total so the two agree.
+  // Forecast (actuals + saved/averaged forecast) for the italic "projected"
+  // line and the italic per-month overlay in the table. Mirrors the
+  // Forecasting tab so the two agree.
   const [annualProj, setAnnualProj] = useState<{ income: number; expense: number; net: number } | null>(null)
+  // Per-forecast-month figures in USD, keyed by "YYYY-MM" (only months without
+  // actuals — those are what the table leaves blank).
+  const [forecastMonthly, setForecastMonthly] = useState<Record<string, { income: number; expense: number }>>({})
   useEffect(() => {
     if (mode !== 'year') {
       setAnnualProj(null)
+      setForecastMonthly({})
       return
     }
     let cancelled = false
     fetch(`/api/forecast?year=${year}`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => {
-        const rows: Array<{ hasActuals: boolean; actualIncome: number; actualExpense: number; forecastIncome: number | null; forecastExpense: number | null }> = d.months || []
+        const rows: Array<{ month: number; hasActuals: boolean; actualIncome: number; actualExpense: number; forecastIncome: number | null; forecastExpense: number | null }> = d.months || []
         const actual = rows.filter((r) => r.hasActuals)
         const avg = (sel: (r: typeof rows[number]) => number) =>
           actual.length ? Math.round(actual.reduce((s, r) => s + sel(r), 0) / actual.length) : 0
@@ -174,19 +179,29 @@ export default function CashFlowPage() {
         const avgE = avg((r) => r.actualExpense)
         let income = 0
         let expense = 0
+        const monthly: Record<string, { income: number; expense: number }> = {}
         for (const r of rows) {
           if (r.hasActuals) {
             income += r.actualIncome
             expense += r.actualExpense
           } else {
-            income += r.forecastIncome ?? avgI
-            expense += r.forecastExpense ?? avgE
+            const fi = r.forecastIncome ?? avgI
+            const fe = r.forecastExpense ?? avgE
+            income += fi
+            expense += fe
+            monthly[`${year}-${String(r.month).padStart(2, '0')}`] = { income: fi, expense: fe }
           }
         }
-        if (!cancelled) setAnnualProj({ income, expense, net: income - expense })
+        if (!cancelled) {
+          setAnnualProj({ income, expense, net: income - expense })
+          setForecastMonthly(monthly)
+        }
       })
       .catch(() => {
-        if (!cancelled) setAnnualProj(null)
+        if (!cancelled) {
+          setAnnualProj(null)
+          setForecastMonthly({})
+        }
       })
     return () => {
       cancelled = true
@@ -198,6 +213,23 @@ export default function CashFlowPage() {
     (usd: number) => (currency === 'GBP' ? usd / (pnl?.gbpRate || 1.3231) : usd),
     [currency, pnl?.gbpRate],
   )
+
+  // Per-month forecast overlays for the Total rows, in display currency.
+  const fcIncome = useMemo(() => {
+    const o: Record<string, number> = {}
+    for (const [ym, v] of Object.entries(forecastMonthly)) o[ym] = toDisplay(v.income)
+    return o
+  }, [forecastMonthly, toDisplay])
+  const fcExpense = useMemo(() => {
+    const o: Record<string, number> = {}
+    for (const [ym, v] of Object.entries(forecastMonthly)) o[ym] = toDisplay(v.expense)
+    return o
+  }, [forecastMonthly, toDisplay])
+  const fcSaved = useMemo(() => {
+    const o: Record<string, number> = {}
+    for (const [ym, v] of Object.entries(forecastMonthly)) o[ym] = toDisplay(v.income - v.expense)
+    return o
+  }, [forecastMonthly, toDisplay])
 
   // Drill-down: clicking a P&L cell opens the underlying transactions.
   const [drill, setDrill] = useState<{ category: string; from: string; to: string; label: string; eventId?: string } | null>(null)
@@ -402,15 +434,15 @@ export default function CashFlowPage() {
                     {pnl.income.map((l) => (
                       <LineRow key={`i-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                     ))}
-                    <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} />
+                    <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} forecast={fcIncome} />
 
                     <SectionRow label="Expenses" span={months.length} showMonthCols={showMonthCols} tone="expense" />
                     {pnl.expense.map((l) => (
                       <LineRow key={`e-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                     ))}
-                    <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} />
+                    <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} forecast={fcExpense} />
 
-                    <TotalRow label="Saved" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} />
+                    <TotalRow label="Saved" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} forecast={fcSaved} />
 
                     {pnl.investing.length > 0 && (
                       <>
@@ -1010,6 +1042,7 @@ function TotalRow({
   tone,
   currency,
   fmt,
+  forecast,
 }: {
   label: string
   byMonth: Record<string, Amt>
@@ -1019,6 +1052,9 @@ function TotalRow({
   tone: 'income' | 'expense' | 'net' | 'investing' | 'netcash'
   currency: Currency
   fmt: (n: number) => string
+  // Optional per-month forecast (display currency) shown in italics where a
+  // month has no actuals yet.
+  forecast?: Record<string, number>
 }) {
   const totalVal = pick(total, currency)
   const color =
@@ -1034,6 +1070,16 @@ function TotalRow({
       {showMonthCols &&
         months.map((ym) => {
           const v = pick(byMonth[ym], currency)
+          if (!v) {
+            const f = forecast?.[ym]
+            if (f !== undefined) {
+              return (
+                <td key={ym} className="px-2.5 py-2 text-right tabular-nums italic font-normal text-gray-400" title="Forecast">
+                  {fmt(f)}
+                </td>
+              )
+            }
+          }
           return (
             <td key={ym} className={`px-2.5 py-2 text-right tabular-nums ${color}`}>
               {v ? fmt(v) : '·'}
