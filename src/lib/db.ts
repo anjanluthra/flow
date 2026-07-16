@@ -81,9 +81,16 @@ export async function getTransactions(filters: TransactionFilters = {}) {
   const params: unknown[] = []
   let paramIndex = 1
 
-  if (filters.year !== undefined && filters.month !== undefined) {
-    queryText += ` AND EXTRACT(YEAR FROM t.date) = $${paramIndex++} AND EXTRACT(MONTH FROM t.date) = $${paramIndex++}`
-    params.push(filters.year, filters.month + 1) // JS month is 0-indexed
+  // Year and month filter independently — selecting a year alone must still
+  // constrain to that year (previously the year was ignored unless a month was
+  // also chosen).
+  if (filters.year !== undefined) {
+    queryText += ` AND EXTRACT(YEAR FROM t.date) = $${paramIndex++}`
+    params.push(filters.year)
+  }
+  if (filters.month !== undefined) {
+    queryText += ` AND EXTRACT(MONTH FROM t.date) = $${paramIndex++}` // JS month is 0-indexed
+    params.push(filters.month + 1)
   }
 
   if (filters.categoryId) {

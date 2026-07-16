@@ -84,7 +84,11 @@ export default function TransactionsPage() {
       setIsLoading(true)
       try {
         const [txRes, catRes] = await Promise.all([
-          fetch('/api/transactions'),
+          // This page filters client-side (multi-select category/account, year,
+          // month, search), so it must have every transaction — not just the
+          // API's default newest-500 window, which hid all older-year rows and
+          // made year filters (e.g. 2024) come back empty.
+          fetch('/api/transactions?limit=100000'),
           fetch('/api/categories'),
         ])
         if (!txRes.ok || !catRes.ok) throw new Error('API error')
@@ -449,7 +453,11 @@ export default function TransactionsPage() {
         data={filteredData as (Transaction & Record<string, unknown>)[]}
         pageSize={20}
         emptyMessage={
-          isLoading ? 'Loading…' : 'No transactions yet — import a statement to get started.'
+          isLoading
+            ? 'Loading…'
+            : transactions.length > 0
+              ? 'No transactions match these filters — try clearing them.'
+              : 'No transactions yet — import a statement to get started.'
         }
         rowClassName={(item) => getRowClassName(item as unknown as Transaction)}
       />
