@@ -1,4 +1,5 @@
 import { getServerSession } from 'next-auth'
+import { NextResponse } from 'next/server'
 import { authOptions } from '@/app/api/auth/[...nextauth]/route'
 
 // ---------------------------------------------------------------------------
@@ -32,4 +33,19 @@ export async function hasRole(role: string): Promise<boolean> {
   const session = await getCurrentSession()
   if (!session?.user) return false
   return (session.user as { role?: string }).role === role
+}
+
+/**
+ * Admin-only guard for API route handlers. Returns a 401/403 NextResponse to
+ * return early, or null when the caller is an admin and may proceed.
+ */
+export async function requireAdmin(): Promise<NextResponse | null> {
+  const session = await getCurrentSession()
+  if (!session?.user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+  if ((session.user as { role?: string }).role !== 'admin') {
+    return NextResponse.json({ error: 'Admin access required' }, { status: 403 })
+  }
+  return null
 }

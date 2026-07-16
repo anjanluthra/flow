@@ -217,11 +217,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'contentBase64 is required' }, { status: 400 })
     }
 
+    // Cap the payload BEFORE decoding (base64 is ~4/3 the byte size), so a huge
+    // body can't blow up memory or run up Anthropic costs. ~12 MB of PDF.
+    const MAX_PDF_BYTES = 12 * 1024 * 1024
+    if (contentBase64.length > Math.ceil((MAX_PDF_BYTES * 4) / 3) + 1024) {
+      return NextResponse.json({ error: 'PDF is too large (max 12 MB).' }, { status: 413 })
+    }
+    const pdfBuf = Buffer.from(contentBase64, 'base64')
+    // Verify it's actually a PDF (magic bytes) before shipping it to Claude.
+    if (pdfBuf.subarray(0, 5).toString('latin1') !== '%PDF-') {
+      return NextResponse.json({ error: 'That file is not a valid PDF.' }, { status: 400 })
+    }
+
     // Split into page-chunks. If the PDF can't be parsed for splitting (e.g.
     // unusual encoding) fall back to reading the whole document in one call.
     let chunks: string[]
     try {
-      chunks = await splitIntoChunks(Buffer.from(contentBase64, 'base64'))
+      chunks = await splitIntoChunks(pdfBuf)
     } catch {
       chunks = [contentBase64]
     }

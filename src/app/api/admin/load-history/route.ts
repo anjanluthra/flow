@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { requireAdmin } from '@/lib/auth'
 import { query, createTransactions, type NewTransaction } from '@/lib/db'
 import history from '@/data/history.json'
 
@@ -52,6 +53,8 @@ const PALETTE = [
 ]
 
 export async function POST() {
+  const denied = await requireAdmin()
+  if (denied) return denied
   try {
     const rows = history as HistoryRow[]
 

@@ -137,6 +137,14 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Reject oversized payloads BEFORE decoding into memory (base64 ≈ 4/3 bytes).
+    if (contentBase64.length > Math.ceil((MAX_BYTES * 4) / 3) + 1024) {
+      return NextResponse.json(
+        { error: `File too large — the limit is ${MAX_BYTES / (1024 * 1024)} MB` },
+        { status: 413 },
+      )
+    }
+
     const content = Buffer.from(contentBase64, 'base64')
     if (content.length === 0) {
       return NextResponse.json({ error: 'Empty file' }, { status: 400 })

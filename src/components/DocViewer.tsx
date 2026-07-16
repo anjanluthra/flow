@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react'
 import { X, Download, FileText } from 'lucide-react'
+import DOMPurify from 'isomorphic-dompurify'
 
 export interface DocViewerTarget {
   url: string // inline content URL
@@ -12,14 +13,20 @@ export interface DocViewerTarget {
   mimeType?: string
 }
 
-// Minimal sanitiser for mammoth's docx→HTML output (which only emits a safe
-// subset of tags): drop scripts/styles and any inline event handlers.
+// Sanitise mammoth's docx→HTML output with DOMPurify before rendering it —
+// a real HTML parser (not regex) so crafted markup in an uploaded document
+// can't inject scripts/handlers. Allow only the formatting tags mammoth emits.
 function sanitizeHtml(html: string): string {
-  return html
-    .replace(/<\/?(script|style)[^>]*>/gi, '')
-    .replace(/\son\w+="[^"]*"/gi, '')
-    .replace(/\son\w+='[^']*'/gi, '')
-    .replace(/javascript:/gi, '')
+  // DOMPurify's default URI handling already blocks javascript: and other
+  // dangerous schemes while still allowing data: images (how docx embeds them).
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: [
+      'p', 'br', 'b', 'strong', 'i', 'em', 'u', 's', 'sub', 'sup', 'blockquote',
+      'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li',
+      'table', 'thead', 'tbody', 'tr', 'th', 'td', 'a', 'img', 'span', 'div', 'hr', 'pre', 'code',
+    ],
+    ALLOWED_ATTR: ['href', 'title', 'colspan', 'rowspan', 'src', 'alt'],
+  })
 }
 
 function kind(fileName: string, mimeType?: string): 'pdf' | 'image' | 'text' | 'richtext' | 'other' {
