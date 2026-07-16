@@ -49,7 +49,7 @@ export async function buildFinanceContext(): Promise<string> {
     `),
     getMonthlyPnL(year, month),
     getAnnualActuals(year),
-    getTransactions({ limit: 40 }),
+    getTransactions({ limit: 12 }),
     getForecasts(year),
   ])
 
@@ -146,8 +146,8 @@ export async function buildFinanceContext(): Promise<string> {
     lines.push('')
   }
 
-  // --- Recent transactions ---
-  lines.push('## 40 most recent transactions')
+  // --- Recent transactions (flavour only) ---
+  lines.push('## 12 most recent transactions (a small sample — use the search_transactions / spending_breakdown tools for any totals, merchants or historical periods)')
   for (const t of txns.rows) {
     const amt = t.amount_usd != null ? usd(parseFloat(t.amount_usd)) : `${t.amount_local} ${t.currency}`
     const date = new Date(t.date).toISOString().slice(0, 10)
