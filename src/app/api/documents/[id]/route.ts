@@ -49,7 +49,14 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params
-    const body = (await request.json()) as { accountId?: string | null; statementDate?: string | null }
+    const body = (await request.json()) as {
+      accountId?: string | null
+      statementDate?: string | null
+      source?: string | null
+      importedCount?: number | null
+      dataRows?: number | null
+      formatSignature?: string | null
+    }
     const sets: string[] = []
     const vals: unknown[] = []
     let i = 1
@@ -60,6 +67,25 @@ export async function PATCH(
     if ('statementDate' in body) {
       sets.push(`statement_date = $${i++}`)
       vals.push(body.statementDate || null)
+    }
+    // Import metadata — set when a previously-uploaded statement is extracted
+    // and imported from the archive, so it flips from "uploaded" to "imported"
+    // in place instead of creating a duplicate row.
+    if ('source' in body) {
+      sets.push(`source = $${i++}`)
+      vals.push(body.source || null)
+    }
+    if ('importedCount' in body) {
+      sets.push(`imported_count = $${i++}`)
+      vals.push(body.importedCount ?? null)
+    }
+    if ('dataRows' in body) {
+      sets.push(`data_rows = $${i++}`)
+      vals.push(body.dataRows ?? null)
+    }
+    if ('formatSignature' in body) {
+      sets.push(`format_signature = $${i++}`)
+      vals.push(body.formatSignature || null)
     }
     if (sets.length === 0) return NextResponse.json({ success: true })
     vals.push(id)
