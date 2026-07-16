@@ -9,9 +9,10 @@ import type { NextConfig } from "next";
 const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-  "style-src 'self' 'unsafe-inline'",
+  // Google Fonts stylesheet (fonts.googleapis.com) + font files (fonts.gstatic.com).
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
   "img-src 'self' data: blob:",
-  "font-src 'self' data:",
+  "font-src 'self' data: https://fonts.gstatic.com",
   "connect-src 'self' https:",
   "frame-src 'self' data: blob:",
   "media-src 'self' data: blob:",
