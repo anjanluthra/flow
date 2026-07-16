@@ -62,8 +62,29 @@ export async function ensureInvestmentType() {
   }
 }
 
+// One-time, idempotent alignment: a categorised transaction's `type` must match
+// its category's type (a Car expense is an expense even on a refund amount).
+// Historically the importer typed rows by amount sign, so positive expense-
+// category rows were mis-typed 'income' and showed up as phantom income lines
+// in the P&L. This corrects any drift; new writes already type by category.
+let typesAlignedReady = false
+export async function ensureTransactionTypesMatchCategory() {
+  if (typesAlignedReady) return
+  try {
+    await query(
+      `UPDATE transactions t SET type = c.type
+       FROM categories c
+       WHERE t.category_id = c.id AND t.type IS DISTINCT FROM c.type`,
+    )
+    typesAlignedReady = true
+  } catch (error) {
+    console.error('ensureTransactionTypesMatchCategory failed:', error)
+  }
+}
+
 export async function getTransactions(filters: TransactionFilters = {}) {
   await ensureInvestmentType()
+  await ensureTransactionTypesMatchCategory()
   let queryText = `
     SELECT
       t.*,
@@ -465,6 +486,7 @@ export async function getAnnualActuals(
  */
 export async function getPnLByRange(from: string, to: string, gbpRate: number) {
   await ensureInvestmentType()
+  await ensureTransactionTypesMatchCategory()
   const rate = gbpRate > 0 ? gbpRate : 1.3231
   return query(
     `SELECT
