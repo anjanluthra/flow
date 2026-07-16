@@ -175,6 +175,88 @@ export async function getTransactions(filters: TransactionFilters = {}) {
   return query(queryText, params)
 }
 
+// ---------------------------------------------------------------------------
+// Assistant query helpers — power the in-app Claude chat's tools so it can
+// answer questions against the FULL transaction history (not a snapshot).
+// ---------------------------------------------------------------------------
+
+export interface AssistantTxnFilters {
+  search?: string // description/merchant contains (case-insensitive)
+  from?: string // YYYY-MM-DD inclusive
+  to?: string // YYYY-MM-DD inclusive
+  type?: 'income' | 'expense' | 'investment' | 'transfer'
+  category?: string // category name contains
+  account?: string // account name contains
+}
+
+function buildAssistantWhere(f: AssistantTxnFilters, params: unknown[]): string {
+  const cl: string[] = []
+  if (f.search) { params.push(`%${f.search}%`); cl.push(`t.description ILIKE $${params.length}`) }
+  if (f.from) { params.push(f.from); cl.push(`t.date >= $${params.length}`) }
+  if (f.to) { params.push(f.to); cl.push(`t.date <= $${params.length}`) }
+  if (f.type) { params.push(f.type); cl.push(`t.type = $${params.length}`) }
+  if (f.category) { params.push(`%${f.category}%`); cl.push(`c.name ILIKE $${params.length}`) }
+  if (f.account) { params.push(`%${f.account}%`); cl.push(`a.name ILIKE $${params.length}`) }
+  return cl.length ? `AND ${cl.join(' AND ')}` : ''
+}
+
+// Total + count + a sample of matching transactions across ALL history.
+export async function assistantSearchTransactions(f: AssistantTxnFilters, sampleLimit = 25) {
+  const params: unknown[] = []
+  const where = buildAssistantWhere(f, params)
+  const base = `FROM transactions t
+    LEFT JOIN categories c ON t.category_id = c.id
+    LEFT JOIN accounts a ON t.account_id = a.id
+    WHERE 1=1 ${where}`
+  const agg = await query(
+    `SELECT COUNT(*)::int AS n,
+            COALESCE(SUM(ABS(COALESCE(t.amount_usd, 0))), 0) AS total_usd,
+            MIN(t.date) AS first_date, MAX(t.date) AS last_date ${base}`,
+    params,
+  )
+  const sampleParams = [...params]
+  sampleParams.push(sampleLimit)
+  const sample = await query(
+    `SELECT t.date, t.description, t.amount_usd, t.type,
+            c.name AS category_name, a.name AS account_name ${base}
+     ORDER BY t.date DESC LIMIT $${sampleParams.length}`,
+    sampleParams,
+  )
+  const a = agg.rows[0]
+  return {
+    count: a.n as number,
+    totalUsd: parseFloat(a.total_usd),
+    firstDate: a.first_date ? new Date(a.first_date).toISOString().slice(0, 10) : null,
+    lastDate: a.last_date ? new Date(a.last_date).toISOString().slice(0, 10) : null,
+    sample: sample.rows,
+  }
+}
+
+// Grouped totals (top 40) by category / month / account / merchant.
+export async function assistantBreakdown(
+  f: AssistantTxnFilters,
+  groupBy: 'category' | 'month' | 'account' | 'merchant',
+) {
+  const params: unknown[] = []
+  const where = buildAssistantWhere(f, params)
+  const grp =
+    groupBy === 'month' ? `to_char(t.date, 'YYYY-MM')`
+    : groupBy === 'account' ? `COALESCE(a.name, '—')`
+    : groupBy === 'merchant' ? `t.description`
+    : `COALESCE(c.name, 'Uncategorised')`
+  const res = await query(
+    `SELECT ${grp} AS grp, COUNT(*)::int AS n,
+            COALESCE(SUM(ABS(COALESCE(t.amount_usd, 0))), 0) AS total_usd
+     FROM transactions t
+     LEFT JOIN categories c ON t.category_id = c.id
+     LEFT JOIN accounts a ON t.account_id = a.id
+     WHERE 1=1 ${where}
+     GROUP BY grp ORDER BY total_usd DESC LIMIT 40`,
+    params,
+  )
+  return res.rows.map((r) => ({ group: r.grp as string, count: r.n as number, totalUsd: parseFloat(r.total_usd) }))
+}
+
 export async function getCategories() {
   // Alphabetical by name so every category dropdown/filter is easy to scan.
   // Pages still group by type client-side; ordering within each group is A→Z.
