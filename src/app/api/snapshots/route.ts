@@ -47,12 +47,58 @@ export async function GET() {
       ORDER BY bs.snapshot_date DESC
     `)
 
-    const snapshots = result.rows.map((row) => ({
-      date: row.snapshot_date,
-      totalNetWorth: parseFloat(row.total_net_worth),
-      personalNetWorth: parseFloat(row.personal_net_worth),
-      corporateCash: parseFloat(row.corporate_cash),
-    }))
+    // Normalise any date/timestamp to a plain YYYY-MM-DD string.
+    const ymd = (v: unknown): string => {
+      if (!v) return ''
+      if (typeof v === 'string') return v.slice(0, 10)
+      const d = new Date(v as string)
+      return isNaN(d.getTime()) ? '' : d.toISOString().slice(0, 10)
+    }
+
+    interface Snap {
+      date: string
+      totalNetWorth: number
+      personalNetWorth: number
+      corporateCash: number
+      // True when this date has a full per-account balance sheet (from
+      // balance_snapshots); false for total-only historical markers.
+      detailed: boolean
+      lines?: { group: string; label: string; amountUsd: number }[]
+    }
+    const byDate = new Map<string, Snap>()
+    for (const row of result.rows) {
+      const date = ymd(row.snapshot_date)
+      byDate.set(date, {
+        date,
+        totalNetWorth: parseFloat(row.total_net_worth),
+        personalNetWorth: parseFloat(row.personal_net_worth),
+        corporateCash: parseFloat(row.corporate_cash),
+        detailed: true,
+      })
+    }
+
+    // Merge in manually-logged net-worth totals (e.g. historical points) for
+    // any date not already covered by per-account balance snapshots.
+    try {
+      const nws = await query(`SELECT snapshot_date, total_net_worth_usd, data FROM net_worth_snapshots`)
+      for (const row of nws.rows) {
+        const date = ymd(row.snapshot_date)
+        if (!date || byDate.has(date)) continue
+        const data = typeof row.data === 'string' ? JSON.parse(row.data || '{}') : row.data || {}
+        byDate.set(date, {
+          date,
+          totalNetWorth: parseFloat(row.total_net_worth_usd),
+          personalNetWorth: Number(data.personalNetWorth ?? 0),
+          corporateCash: Number(data.corporateCash ?? 0),
+          detailed: false,
+          lines: Array.isArray(data.lines) ? data.lines : undefined,
+        })
+      }
+    } catch {
+      /* net_worth_snapshots may not exist yet */
+    }
+
+    const snapshots = Array.from(byDate.values()).sort((a, b) => String(b.date).localeCompare(String(a.date)))
 
     return NextResponse.json({ snapshots })
   } catch (error) {
@@ -137,5 +183,61 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Failed to save snapshot:', error)
     return NextResponse.json({ error: 'Failed to save snapshot' }, { status: 500 })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PATCH /api/snapshots — re-date an existing snapshot (move every row from one
+// date to another). Body: { from: 'YYYY-MM-DD', to: 'YYYY-MM-DD' }
+// Any existing rows on the target date are replaced.
+// ---------------------------------------------------------------------------
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const { from, to } = (await request.json()) as { from?: string; to?: string }
+    if (!from || !to) {
+      return NextResponse.json({ error: 'from and to dates are required' }, { status: 400 })
+    }
+    if (from === to) return NextResponse.json({ success: true, from, to })
+
+    // Clear the target date first so the move can't collide, then shift rows.
+    await query(`DELETE FROM balance_snapshots WHERE snapshot_date = $1`, [to])
+    await query(`UPDATE balance_snapshots SET snapshot_date = $1 WHERE snapshot_date = $2`, [to, from])
+
+    // net_worth_snapshots may not exist / may have no matching row — best effort.
+    try {
+      await query(`DELETE FROM net_worth_snapshots WHERE snapshot_date = $1`, [to])
+      await query(`UPDATE net_worth_snapshots SET snapshot_date = $1 WHERE snapshot_date = $2`, [to, from])
+    } catch {
+      /* table may not exist */
+    }
+
+    return NextResponse.json({ success: true, from, to })
+  } catch (error) {
+    console.error('Failed to re-date snapshot:', error)
+    return NextResponse.json({ error: 'Failed to re-date snapshot' }, { status: 500 })
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DELETE /api/snapshots?date=YYYY-MM-DD — remove a snapshot entirely.
+// ---------------------------------------------------------------------------
+
+export async function DELETE(request: NextRequest) {
+  try {
+    const date = new URL(request.url).searchParams.get('date')
+    if (!date) return NextResponse.json({ error: 'date is required' }, { status: 400 })
+
+    await query(`DELETE FROM balance_snapshots WHERE snapshot_date = $1`, [date])
+    try {
+      await query(`DELETE FROM net_worth_snapshots WHERE snapshot_date = $1`, [date])
+    } catch {
+      /* table may not exist */
+    }
+
+    return NextResponse.json({ success: true, date })
+  } catch (error) {
+    console.error('Failed to delete snapshot:', error)
+    return NextResponse.json({ error: 'Failed to delete snapshot' }, { status: 500 })
   }
 }

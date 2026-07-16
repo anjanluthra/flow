@@ -1,9 +1,10 @@
 'use client'
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react'
-import { Search, Briefcase } from 'lucide-react'
+import { Search } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { DataTable } from '@/components/ui/DataTable'
+import { Select, MultiSelect } from '@/components/ui/Select'
 import { formatCurrency, formatUSD } from '@/lib/currency'
 
 // ────────────────────────────────────────────────
@@ -24,7 +25,7 @@ interface Transaction {
   amountLocal: number
   currency: string
   amountUsd: number
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   isBusinessExpense: boolean
   isInternalTransfer: boolean
   holder: 'anjan' | 'kate' | 'joint'
@@ -33,7 +34,7 @@ interface Transaction {
 interface Category {
   id: string
   name: string
-  type: 'income' | 'expense'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   color: string
 }
 
@@ -66,11 +67,15 @@ export default function TransactionsPage() {
 
   // Filter state
   const [search, setSearch] = useState('')
-  const [categoryFilter, setCategoryFilter] = useState('all')
-  const [accountFilter, setAccountFilter] = useState('all')
+  const [catFilters, setCatFilters] = useState<Set<string>>(new Set())
+  const [acctFilters, setAcctFilters] = useState<Set<string>>(new Set())
   const [monthFilter, setMonthFilter] = useState('all')
-  const [typeFilter, setTypeFilter] = useState<'all' | 'income' | 'expense'>('all')
-  const [holderFilter, setHolderFilter] = useState<'all' | 'anjan' | 'kate' | 'joint'>('all')
+  const [yearFilter, setYearFilter] = useState('all')
+  const [typeFilter, setTypeFilter] = useState<'all' | 'income' | 'expense' | 'transfer' | 'investment'>('all')
+
+  // Inline description editing
+  const [editingDesc, setEditingDesc] = useState<string | null>(null)
+  const [descDraft, setDescDraft] = useState('')
 
   // ---- Fetch data on mount ----
   useEffect(() => {
@@ -109,6 +114,14 @@ export default function TransactionsPage() {
     () => categories.filter((c) => c.type === 'income'),
     [categories],
   )
+  const transferCategories = useMemo(
+    () => categories.filter((c) => c.type === 'transfer'),
+    [categories],
+  )
+  const investmentCategories = useMemo(
+    () => categories.filter((c) => c.type === 'investment'),
+    [categories],
+  )
   const accountNames = useMemo(
     () =>
       Array.from(
@@ -122,6 +135,10 @@ export default function TransactionsPage() {
     async (id: string, categoryId: string) => {
       const cat = categories.find((c) => c.id === categoryId)
       const tx = transactions.find((t) => t.id === id)
+      // The transaction type follows the category type; a transfer category also
+      // marks it as internal so the P&L excludes it.
+      const newType = cat?.type ?? tx?.type ?? 'expense'
+      const isInternal = cat?.type === 'transfer' && cat?.name === 'Internal Transfer'
       // Optimistic update.
       setTransactions((prev) =>
         prev.map((t) =>
@@ -131,6 +148,8 @@ export default function TransactionsPage() {
                 categoryId,
                 categoryName: cat?.name ?? t.categoryName,
                 categoryColor: cat?.color ?? t.categoryColor,
+                type: newType,
+                isInternalTransfer: isInternal,
               }
             : t,
         ),
@@ -139,7 +158,7 @@ export default function TransactionsPage() {
         await fetch(`/api/transactions/${id}`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ categoryId }),
+          body: JSON.stringify({ categoryId, type: newType, isInternalTransfer: isInternal }),
         })
         // Self-learning: teach the merchant -> category mapping so the next
         // statement auto-categorises this merchant correctly.
@@ -157,23 +176,20 @@ export default function TransactionsPage() {
     [categories, transactions],
   )
 
-  const handleBusinessToggle = useCallback(
-    async (id: string, next: boolean) => {
-      setTransactions((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, isBusinessExpense: next } : t)),
-      )
-      try {
-        await fetch(`/api/transactions/${id}`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ isBusinessExpense: next }),
-        })
-      } catch {
-        /* best-effort */
-      }
-    },
-    [],
-  )
+  const saveDescription = useCallback(async (id: string, value: string) => {
+    const v = value.trim()
+    setEditingDesc(null)
+    setTransactions((prev) => prev.map((t) => (t.id === id ? { ...t, description: v } : t)))
+    try {
+      await fetch(`/api/transactions/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: v }),
+      })
+    } catch {
+      /* best-effort */
+    }
+  }, [])
 
   // ---- Filtered data ----
   const filteredData = useMemo(() => {
@@ -181,17 +197,48 @@ export default function TransactionsPage() {
       if (search && !tx.description.toLowerCase().includes(search.toLowerCase())) {
         return false
       }
-      if (categoryFilter !== 'all' && tx.categoryName !== categoryFilter) return false
-      if (accountFilter !== 'all' && tx.accountName !== accountFilter) return false
+      if (catFilters.size && !catFilters.has(tx.categoryName)) return false
+      if (acctFilters.size && (!tx.accountName || !acctFilters.has(tx.accountName))) return false
       if (monthFilter !== 'all') {
         const txMonth = parseISO(tx.date).getMonth()
         if (txMonth !== MONTHS.indexOf(monthFilter)) return false
       }
+      if (yearFilter !== 'all') {
+        if (String(parseISO(tx.date).getFullYear()) !== yearFilter) return false
+      }
       if (typeFilter !== 'all' && tx.type !== typeFilter) return false
-      if (holderFilter !== 'all' && tx.holder !== holderFilter) return false
       return true
     })
-  }, [transactions, search, categoryFilter, accountFilter, monthFilter, typeFilter, holderFilter])
+  }, [transactions, search, catFilters, acctFilters, monthFilter, yearFilter, typeFilter])
+
+  // Distinct years present in the data, for the year filter.
+  const years = useMemo(
+    () => Array.from(new Set(transactions.map((t) => parseISO(t.date).getFullYear()))).sort((a, b) => b - a),
+    [transactions],
+  )
+
+  // Options for the multi-select filters.
+  const catOptions = useMemo(
+    () => [
+      ...expenseCategories.map((c) => ({ value: c.name, label: c.name, group: 'Expenses' })),
+      ...incomeCategories.map((c) => ({ value: c.name, label: c.name, group: 'Income' })),
+      ...investmentCategories.map((c) => ({ value: c.name, label: c.name, group: 'Investments' })),
+      ...transferCategories.map((c) => ({ value: c.name, label: c.name, group: 'Transfers' })),
+    ],
+    [expenseCategories, incomeCategories, investmentCategories, transferCategories],
+  )
+  const acctOptions = useMemo(() => accountNames.map((a) => ({ value: a, label: a })), [accountNames])
+
+  // Options for the inline per-row category dropdown (value = category id).
+  const categorySelectOptions = useMemo(
+    () => [
+      ...expenseCategories.map((c) => ({ value: c.id, label: c.name, group: 'Expenses', color: c.color })),
+      ...incomeCategories.map((c) => ({ value: c.id, label: c.name, group: 'Income', color: c.color })),
+      ...investmentCategories.map((c) => ({ value: c.id, label: c.name, group: 'Investments', color: c.color })),
+      ...transferCategories.map((c) => ({ value: c.id, label: c.name, group: 'Transfers', color: c.color })),
+    ],
+    [expenseCategories, incomeCategories, investmentCategories, transferCategories],
+  )
 
   // ---- Columns ----
   const columns = useMemo(
@@ -210,24 +257,32 @@ export default function TransactionsPage() {
       {
         key: 'description',
         header: 'Description',
-        className: 'min-w-[200px]',
-        render: (tx: Transaction) => (
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-gray-900">{tx.description}</span>
+        className: 'w-[240px] max-w-[240px]',
+        render: (tx: Transaction) =>
+          editingDesc === tx.id ? (
+            <input
+              autoFocus
+              value={descDraft}
+              onChange={(e) => setDescDraft(e.target.value)}
+              onBlur={() => saveDescription(tx.id, descDraft)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') saveDescription(tx.id, descDraft)
+                if (e.key === 'Escape') setEditingDesc(null)
+              }}
+              className="w-full rounded-md border border-blue-300 px-2 py-1 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            />
+          ) : (
             <button
-              onClick={() => handleBusinessToggle(tx.id, !tx.isBusinessExpense)}
-              title={tx.isBusinessExpense ? 'Business expense — click to unset' : 'Mark as business expense'}
-              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide transition-colors ${
-                tx.isBusinessExpense
-                  ? 'bg-amber-100 text-amber-700'
-                  : 'bg-gray-100 text-gray-400 hover:bg-amber-50 hover:text-amber-600'
-              }`}
+              onClick={() => {
+                setEditingDesc(tx.id)
+                setDescDraft(tx.description)
+              }}
+              title="Click to edit"
+              className="w-full truncate text-left text-sm font-medium text-gray-900 hover:text-blue-600"
             >
-              <Briefcase className="h-3 w-3" />
-              Biz
+              {tx.description || <span className="italic text-gray-400">Add description…</span>}
             </button>
-          </div>
-        ),
+          ),
       },
       {
         key: 'accountName',
@@ -240,37 +295,18 @@ export default function TransactionsPage() {
       {
         key: 'categoryName',
         header: 'Category',
-        className: 'w-[200px]',
+        className: 'w-[230px] min-w-[230px]',
         render: (tx: Transaction) => (
-          <div className="flex items-center gap-2">
-            <span
-              className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-              style={{ backgroundColor: tx.categoryColor }}
-            />
-            <select
-              value={tx.categoryId ?? ''}
-              onChange={(e) => handleCategoryChange(tx.id, e.target.value)}
-              className="w-full rounded-md border border-transparent bg-transparent py-0.5 text-sm text-gray-700 hover:border-gray-200 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300"
-            >
-              <option value="" disabled>
-                Uncategorised
-              </option>
-              <optgroup label="Expenses">
-                {expenseCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </optgroup>
-              <optgroup label="Income">
-                {incomeCategories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </optgroup>
-            </select>
-          </div>
+          <Select
+            ariaLabel="Category"
+            value={tx.categoryId ?? ''}
+            onChange={(v) => handleCategoryChange(tx.id, v)}
+            options={categorySelectOptions}
+            placeholder="Uncategorised"
+            searchable
+            panelWidth={240}
+            buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-transparent bg-transparent px-2 text-sm text-gray-700 hover:border-gray-200 hover:bg-gray-50"
+          />
         ),
       },
       {
@@ -320,6 +356,7 @@ export default function TransactionsPage() {
             income: 'bg-emerald-50 text-emerald-700',
             expense: 'bg-red-50 text-red-700',
             transfer: 'bg-blue-50 text-blue-700',
+            investment: 'bg-indigo-50 text-indigo-700',
           }
           return (
             <span
@@ -333,16 +370,11 @@ export default function TransactionsPage() {
         },
       },
     ],
-    [expenseCategories, incomeCategories, handleCategoryChange, handleBusinessToggle],
+    [categorySelectOptions, handleCategoryChange, editingDesc, descDraft, saveDescription],
   )
 
   const getRowClassName = (tx: Transaction) =>
     CURRENCY_ROW_CLASS[tx.accountCurrency ?? ''] ?? ''
-
-  const pillClass = (active: boolean) =>
-    active
-      ? 'bg-gray-900 text-white shadow-sm'
-      : 'bg-white text-gray-600 border border-gray-200 hover:bg-gray-50'
 
   return (
     <div className="min-h-screen bg-gray-50/50 px-4 py-8 sm:px-6 lg:px-8">
@@ -371,81 +403,37 @@ export default function TransactionsPage() {
           />
         </div>
 
-        <select
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 shadow-sm outline-none transition-colors focus:border-gray-400 focus:ring-1 focus:ring-gray-300"
-        >
-          <option value="all">All Categories</option>
-          <optgroup label="Expenses">
-            {expenseCategories.map((c) => (
-              <option key={c.id} value={c.name}>
-                {c.name}
-              </option>
-            ))}
-          </optgroup>
-          <optgroup label="Income">
-            {incomeCategories.map((c) => (
-              <option key={c.id} value={c.name}>
-                {c.name}
-              </option>
-            ))}
-          </optgroup>
-        </select>
+        <MultiSelect label="Categories" options={catOptions} selected={catFilters} onChange={setCatFilters} searchable />
 
-        <select
-          value={accountFilter}
-          onChange={(e) => setAccountFilter(e.target.value)}
-          className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 shadow-sm outline-none transition-colors focus:border-gray-400 focus:ring-1 focus:ring-gray-300"
-        >
-          <option value="all">All Accounts</option>
-          {accountNames.map((a) => (
-            <option key={a} value={a}>
-              {a}
-            </option>
-          ))}
-        </select>
+        <MultiSelect label="Accounts" options={acctOptions} selected={acctFilters} onChange={setAcctFilters} />
 
-        <select
+        <Select
+          ariaLabel="Filter by year"
+          value={yearFilter}
+          onChange={setYearFilter}
+          options={[{ value: 'all', label: 'All Years' }, ...years.map((y) => ({ value: String(y), label: String(y) }))]}
+        />
+
+        <Select
+          ariaLabel="Filter by month"
           value={monthFilter}
-          onChange={(e) => setMonthFilter(e.target.value)}
-          className="h-9 rounded-lg border border-gray-200 bg-white px-3 text-sm text-gray-700 shadow-sm outline-none transition-colors focus:border-gray-400 focus:ring-1 focus:ring-gray-300"
-        >
-          <option value="all">All Months</option>
-          {MONTHS.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+          onChange={setMonthFilter}
+          options={[{ value: 'all', label: 'All Months' }, ...MONTHS.map((m) => ({ value: m, label: m }))]}
+        />
 
-        <div className="h-6 w-px bg-gray-200" />
+        <Select
+          ariaLabel="Filter by type"
+          value={typeFilter}
+          onChange={(v) => setTypeFilter(v as typeof typeFilter)}
+          options={[
+            { value: 'all', label: 'All Types' },
+            { value: 'income', label: 'Income' },
+            { value: 'expense', label: 'Expense' },
+            { value: 'investment', label: 'Investment' },
+            { value: 'transfer', label: 'Transfer' },
+          ]}
+        />
 
-        <div className="flex gap-1">
-          {(['all', 'income', 'expense'] as const).map((t) => (
-            <button
-              key={t}
-              onClick={() => setTypeFilter(t)}
-              className={`rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors ${pillClass(typeFilter === t)}`}
-            >
-              {t === 'all' ? 'All Types' : t}
-            </button>
-          ))}
-        </div>
-
-        <div className="h-6 w-px bg-gray-200" />
-
-        <div className="flex gap-1">
-          {(['all', 'anjan', 'kate', 'joint'] as const).map((h) => (
-            <button
-              key={h}
-              onClick={() => setHolderFilter(h)}
-              className={`rounded-full px-3 py-1 text-xs font-medium capitalize transition-colors ${pillClass(holderFilter === h)}`}
-            >
-              {h === 'all' ? 'All Holders' : h.charAt(0).toUpperCase() + h.slice(1)}
-            </button>
-          ))}
-        </div>
       </div>
 
       {/* Results count */}

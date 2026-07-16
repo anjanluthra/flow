@@ -1,213 +1,209 @@
 'use client'
 
-import React, { useState, useEffect } from 'react'
-import {
-  BarChart,
-  Bar,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  Legend,
-  ResponsiveContainer,
-} from 'recharts'
-import { DollarSign, TrendingDown, PiggyBank, Percent, BarChart3 } from 'lucide-react'
+import React, { useState, useEffect, useMemo, useCallback } from 'react'
+import { DollarSign, TrendingDown, TrendingUp, Wallet, Percent } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+import { Select } from '@/components/ui/Select'
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-interface CategoryTotal {
-  name: string
+interface Amt {
+  usd: number
+  gbp: number
+}
+
+interface Line {
+  category: string
   color: string
-  amount: number
+  monthly: Record<string, Amt>
+  total: Amt
 }
 
-interface Summary {
-  year: number
-  month: number
-  current: {
-    income: number
-    spending: number
-    net: number
+interface PnL {
+  from: string
+  to: string
+  months: string[]
+  gbpRate: number
+  income: Line[]
+  expense: Line[]
+  investing: Line[]
+  totals: {
+    incomeByMonth: Record<string, Amt>
+    expenseByMonth: Record<string, Amt>
+    investingByMonth: Record<string, Amt>
+    netByMonth: Record<string, Amt>
+    netCashByMonth: Record<string, Amt>
+    incomeTotal: Amt
+    expenseTotal: Amt
+    investingTotal: Amt
+    net: Amt
+    netCash: Amt
     savingsRate: number
-    byCategory: CategoryTotal[]
-    byIncome: CategoryTotal[]
   }
-  change: { income?: number; spending?: number }
-  trend: { month: number; income: number; expense: number }[]
 }
 
-type Holder = 'all' | 'anjan' | 'kate' | 'joint'
+type Mode = 'year' | 'month' | 'custom'
+type Currency = 'USD' | 'GBP'
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ]
-const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-const YEARS = [2024, 2025, 2026]
-const HOLDERS: Holder[] = ['all', 'anjan', 'kate', 'joint']
+const YEARS = [2024, 2025, 2026, 2027]
 
-function fmtUsd(n: number): string {
-  return `$${Math.round(n).toLocaleString('en-US')}`
+function fmtMoney(n: number, currency: Currency): string {
+  const sym = currency === 'GBP' ? '£' : '$'
+  const abs = Math.abs(Math.round(n)).toLocaleString('en-US')
+  return `${n < 0 ? '-' : ''}${sym}${abs}`
 }
 
-// ---------------------------------------------------------------------------
-// Trend tooltip
-// ---------------------------------------------------------------------------
+const pick = (a: Amt | undefined, c: Currency): number => (!a ? 0 : c === 'GBP' ? a.gbp : a.usd)
 
-function TrendTooltip({
-  active,
-  payload,
-  label,
-}: {
-  active?: boolean
-  payload?: Array<{ value: number; dataKey: string; color: string }>
-  label?: string
-}) {
-  if (!active || !payload?.length) return null
-  return (
-    <div className="rounded-lg border border-gray-200 bg-white p-3 shadow-lg">
-      <p className="mb-1 text-sm font-semibold text-gray-900">{label}</p>
-      {payload.map((entry) => (
-        <div key={entry.dataKey} className="flex items-center justify-between gap-4 text-sm">
-          <span className="flex items-center gap-1.5 capitalize text-gray-600">
-            <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: entry.color }} />
-            {entry.dataKey}
-          </span>
-          <span className="font-medium text-gray-900">{fmtUsd(entry.value)}</span>
-        </div>
-      ))}
-    </div>
-  )
+function monthHeader(ym: string): string {
+  const [y, m] = ym.split('-').map(Number)
+  return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${String(y).slice(2)}`
 }
 
-// ---------------------------------------------------------------------------
-// Category table
-// ---------------------------------------------------------------------------
-
-function CategoryTable({ title, rows }: { title: string; rows: CategoryTotal[] }) {
-  const total = rows.reduce((s, r) => s + r.amount, 0)
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-      <h3 className="mb-4 text-base font-semibold text-gray-900">{title}</h3>
-      {rows.length === 0 ? (
-        <p className="text-sm text-gray-400">No data for this month.</p>
-      ) : (
-        <div className="space-y-3">
-          {rows.map((row) => (
-            <div key={row.name} className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <span className="inline-block h-3 w-3 rounded-full" style={{ backgroundColor: row.color }} />
-                <span className="text-sm text-gray-700">{row.name}</span>
-              </div>
-              <div className="flex items-center gap-4">
-                <span className="text-sm font-medium text-gray-900">{fmtUsd(row.amount)}</span>
-                <span className="w-12 text-right text-xs text-gray-400">
-                  {total > 0 ? `${((row.amount / total) * 100).toFixed(1)}%` : '0%'}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  )
+function lastDay(year: number, month1: number): string {
+  const d = new Date(Date.UTC(year, month1, 0))
+  return `${year}-${String(month1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
 }
 
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
-export default function DashboardPage() {
+export default function CashFlowPage() {
   const now = new Date()
-  const [selectedMonth, setSelectedMonth] = useState<number>(now.getMonth()) // 0-11
-  const [selectedYear, setSelectedYear] = useState<number>(now.getFullYear())
-  const [holder, setHolder] = useState<Holder>('all')
-  const [summary, setSummary] = useState<Summary | null>(null)
+  const [mode, setMode] = useState<Mode>('year')
+  const [year, setYear] = useState(now.getFullYear())
+  const [month, setMonth] = useState(now.getMonth())
+  const [customFrom, setCustomFrom] = useState(`${now.getFullYear()}-01-01`)
+  const [customTo, setCustomTo] = useState(now.toISOString().slice(0, 10))
+  const [pnl, setPnl] = useState<PnL | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [currency, setCurrency] = useState<Currency>('USD')
+
+  const { from, to } = useMemo(() => {
+    if (mode === 'year') return { from: `${year}-01-01`, to: `${year}-12-31` }
+    if (mode === 'month') {
+      return { from: `${year}-${String(month + 1).padStart(2, '0')}-01`, to: lastDay(year, month + 1) }
+    }
+    return { from: customFrom, to: customTo }
+  }, [mode, year, month, customFrom, customTo])
+
+  const load = useCallback(async () => {
+    if (!from || !to || from > to) return
+    setIsLoading(true)
+    try {
+      const res = await fetch(`/api/pnl?from=${from}&to=${to}`)
+      const data = await res.json()
+      setPnl(res.ok ? data : null)
+    } catch {
+      setPnl(null)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [from, to])
 
   useEffect(() => {
-    let cancelled = false
-    setIsLoading(true)
-    const params = new URLSearchParams({
-      year: String(selectedYear),
-      month: String(selectedMonth + 1),
-    })
-    if (holder !== 'all') params.set('holder', holder)
+    load()
+  }, [load])
 
-    fetch(`/api/summary?${params.toString()}`)
-      .then((res) => (res.ok ? res.json() : Promise.reject()))
-      .then((data) => {
-        if (!cancelled) setSummary(data)
-      })
-      .catch(() => {
-        if (!cancelled) setSummary(null)
-      })
-      .finally(() => {
-        if (!cancelled) setIsLoading(false)
-      })
+  const fmt = useCallback((n: number) => fmtMoney(n, currency), [currency])
 
-    return () => {
-      cancelled = true
-    }
-  }, [selectedMonth, selectedYear, holder])
+  const months = pnl?.months ?? []
+  const showMonthCols = months.length > 1
+  const t = pnl?.totals
 
-  const c = summary?.current
-  const trendData = (summary?.trend ?? []).map((t) => ({
-    month: MONTH_ABBR[t.month - 1],
-    income: t.income,
-    expense: t.expense,
-  }))
+  // Drill-down: clicking a P&L cell opens the underlying transactions.
+  const [drill, setDrill] = useState<{ category: string; from: string; to: string; label: string } | null>(null)
+  const openDrill = useCallback(
+    (category: string, ym: string | null) => {
+      if (ym) {
+        const [yy, mm] = ym.split('-').map(Number)
+        setDrill({ category, from: `${ym}-01`, to: lastDay(yy, mm), label: `${category} · ${monthHeader(ym)}` })
+      } else {
+        setDrill({ category, from, to, label: `${category} · total` })
+      }
+    },
+    [from, to],
+  )
 
   return (
-    <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
-      <div className="mx-auto max-w-7xl px-6 py-10">
+    <div className="min-h-screen bg-gray-50">
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Dashboard</h1>
-          <p className="mt-1 text-sm text-gray-500">Profit &amp; Loss Overview</p>
+        <div className="mb-6">
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Monthly Cash Flow</h1>
+          <p className="mt-1 text-sm text-gray-500">Income, expenses &amp; investing activities</p>
         </div>
 
-        {/* Filters */}
-        <div className="mb-8 flex flex-wrap items-center gap-4">
-          <select
-            value={selectedMonth}
-            onChange={(e) => setSelectedMonth(Number(e.target.value))}
-            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            {MONTHS.map((m, i) => (
-              <option key={m} value={i}>
-                {m}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={selectedYear}
-            onChange={(e) => setSelectedYear(Number(e.target.value))}
-            className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-          >
-            {YEARS.map((y) => (
-              <option key={y} value={y}>
-                {y}
-              </option>
-            ))}
-          </select>
-
-          <div className="flex gap-2">
-            {HOLDERS.map((h) => (
+        {/* Period controls */}
+        <div className="mb-6 flex flex-wrap items-center gap-3">
+          <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+            {(['year', 'month', 'custom'] as Mode[]).map((m) => (
               <button
-                key={h}
-                onClick={() => setHolder(h)}
-                className={`rounded-full px-4 py-1.5 text-sm font-medium capitalize transition-colors ${
-                  holder === h
-                    ? 'bg-gray-900 text-white'
-                    : 'border border-gray-300 bg-white text-gray-600 hover:bg-gray-100'
+                key={m}
+                onClick={() => setMode(m)}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize transition-colors ${
+                  mode === m ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
                 }`}
               >
-                {h === 'all' ? 'All' : h}
+                {m === 'custom' ? 'Custom range' : m}
+              </button>
+            ))}
+          </div>
+
+          {mode !== 'custom' && (
+            <Select
+              value={String(year)}
+              onChange={(v) => setYear(Number(v))}
+              options={YEARS.map((y) => ({ value: String(y), label: String(y) }))}
+              ariaLabel="Year"
+            />
+          )}
+
+          {mode === 'month' && (
+            <Select
+              value={String(month)}
+              onChange={(v) => setMonth(Number(v))}
+              options={MONTHS.map((m, i) => ({ value: String(i), label: m }))}
+              ariaLabel="Month"
+            />
+          )}
+
+          {mode === 'custom' && (
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="date"
+                value={customFrom}
+                onChange={(e) => setCustomFrom(e.target.value)}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none"
+              />
+              <span className="text-sm text-gray-400">to</span>
+              <input
+                type="date"
+                value={customTo}
+                onChange={(e) => setCustomTo(e.target.value)}
+                className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+          )}
+
+          {/* Currency toggle */}
+          <div className="ml-auto inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+            {(['USD', 'GBP'] as Currency[]).map((c) => (
+              <button
+                key={c}
+                onClick={() => setCurrency(c)}
+                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                  currency === c ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {c === 'USD' ? '$ USD' : '£ GBP'}
               </button>
             ))}
           </div>
@@ -216,68 +212,365 @@ export default function DashboardPage() {
         </div>
 
         {/* Summary cards */}
-        <div className="mb-8 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          <Card
-            title="Total Income"
-            value={fmtUsd(c?.income ?? 0)}
-            change={summary?.change.income}
-            subtitle="vs last month"
-            icon={<DollarSign className="h-5 w-5 text-green-500" />}
-          />
-          <Card
-            title="Total Spending"
-            value={fmtUsd(c?.spending ?? 0)}
-            change={summary?.change.spending}
-            subtitle="vs last month"
-            icon={<TrendingDown className="h-5 w-5 text-red-500" />}
-          />
-          <Card
-            title="Net Savings"
-            value={fmtUsd(c?.net ?? 0)}
-            subtitle="income minus spending"
-            icon={<PiggyBank className="h-5 w-5 text-blue-500" />}
-          />
-          <Card
-            title="Savings Rate"
-            value={`${(c?.savingsRate ?? 0).toFixed(1)}%`}
-            subtitle="of total income"
-            icon={<Percent className="h-5 w-5 text-purple-500" />}
-          />
+        <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          <Card title="Income" value={fmt(pick(t?.incomeTotal, currency))} subtitle="for the period" icon={<DollarSign className="h-5 w-5 text-green-500" />} />
+          <Card title="Expenses" value={fmt(pick(t?.expenseTotal, currency))} subtitle="for the period" icon={<TrendingDown className="h-5 w-5 text-red-500" />} />
+          <Card title="Net Operating" value={fmt(pick(t?.net, currency))} subtitle="income − expenses" icon={<Wallet className="h-5 w-5 text-blue-500" />} />
+          <Card title="Invested" value={fmt(pick(t?.investingTotal, currency))} subtitle="capital deployed" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
+          <Card title="Saved" value={fmt(pick(t?.netCash, currency))} subtitle="operating − investing" icon={<Percent className="h-5 w-5 text-purple-500" />} />
         </div>
 
-        {/* Income vs Expense trend */}
-        <div className="mb-8 rounded-xl border border-gray-200 bg-white p-6 shadow-sm">
-          <div className="mb-6 flex items-center gap-3">
-            <BarChart3 className="h-5 w-5 text-gray-400" />
-            <h2 className="text-base font-semibold text-gray-900">
-              Income vs Spending — {selectedYear}
-            </h2>
+        {/* P&L statement */}
+        <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-200 bg-gray-50 text-left">
+                  <th className="sticky left-0 z-20 bg-gray-50 px-4 py-3 font-medium text-gray-500">Category</th>
+                  {showMonthCols &&
+                    months.map((ym) => (
+                      <th key={ym} className="px-4 py-3 text-right font-medium text-gray-500 whitespace-nowrap">
+                        {monthHeader(ym)}
+                      </th>
+                    ))}
+                  <th className="px-4 py-3 text-right font-semibold text-gray-600">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {!pnl || (pnl.income.length === 0 && pnl.expense.length === 0 && pnl.investing.length === 0) ? (
+                  <tr>
+                    <td colSpan={months.length + 2} className="px-4 py-12 text-center text-gray-400">
+                      {isLoading ? 'Loading…' : 'No transactions in this period.'}
+                    </td>
+                  </tr>
+                ) : (
+                  <>
+                    <SectionRow label="Income" span={months.length} showMonthCols={showMonthCols} tone="income" />
+                    {pnl.income.map((l) => (
+                      <LineRow key={`i-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
+                    ))}
+                    <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} />
+
+                    <SectionRow label="Expenses" span={months.length} showMonthCols={showMonthCols} tone="expense" />
+                    {pnl.expense.map((l) => (
+                      <LineRow key={`e-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
+                    ))}
+                    <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} />
+
+                    <TotalRow label={pnl.investing.length > 0 ? 'Net Operating' : 'Net Cash Flow'} byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} />
+
+                    {pnl.investing.length > 0 && (
+                      <>
+                        <SectionRow label="Investing" span={months.length} showMonthCols={showMonthCols} tone="investing" />
+                        {pnl.investing.map((l) => (
+                          <LineRow key={`v-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
+                        ))}
+                        <TotalRow label="Total Invested" byMonth={t!.investingByMonth} total={t!.investingTotal} months={months} showMonthCols={showMonthCols} tone="investing" currency={currency} fmt={fmt} />
+
+                        <TotalRow label="Net Cash Flow" byMonth={t!.netCashByMonth} total={t!.netCash} months={months} showMonthCols={showMonthCols} tone="netcash" currency={currency} fmt={fmt} />
+                      </>
+                    )}
+                  </>
+                )}
+              </tbody>
+            </table>
           </div>
-
-          <ResponsiveContainer width="100%" height={360}>
-            <BarChart data={trendData} margin={{ top: 10, right: 10, left: 10, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E5E7EB" />
-              <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 13, fill: '#6B7280' }} />
-              <YAxis
-                axisLine={false}
-                tickLine={false}
-                tick={{ fontSize: 13, fill: '#6B7280' }}
-                tickFormatter={(v: number) => `$${(v / 1000).toFixed(0)}k`}
-              />
-              <Tooltip content={<TrendTooltip />} cursor={{ fill: 'rgba(0,0,0,0.04)' }} />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ paddingTop: 16 }} />
-              <Bar dataKey="income" fill="#10B981" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="expense" fill="#EF4444" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
         </div>
+        <p className="mt-3 text-xs text-gray-400">
+          Figures shown in {currency}. GBP uses each transaction&rsquo;s recorded pound amount where
+          available. Income and expenses form the operating section; cash put into the
+          &ldquo;Investments&rdquo; category is shown separately as investing activity and subtracted to give
+          Net Cash Flow. Internal transfers and credit-card payments are excluded (they net to zero).
+        </p>
+      </div>
+      <DrillDrawer drill={drill} currency={currency} onClose={() => setDrill(null)} onChanged={load} />
+    </div>
+  )
+}
 
-        {/* Category breakdowns */}
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          <CategoryTable title="Spending by Category" rows={c?.byCategory ?? []} />
-          <CategoryTable title="Income by Source" rows={c?.byIncome ?? []} />
+// ---------------------------------------------------------------------------
+// Drill-down drawer — transactions behind a clicked P&L cell
+// ---------------------------------------------------------------------------
+
+interface DrillTxn {
+  id: string
+  date: string
+  description: string
+  amountUsd: number
+  amountLocal: number
+  currency: string
+  accountName: string | null
+  categoryName: string
+}
+
+interface DrillCat {
+  id: string
+  name: string
+  type: 'income' | 'expense' | 'transfer' | 'investment'
+  color?: string
+}
+
+function DrillDrawer({
+  drill,
+  currency,
+  onClose,
+  onChanged,
+}: {
+  drill: { category: string; from: string; to: string; label: string } | null
+  currency: Currency
+  onClose: () => void
+  onChanged: () => void
+}) {
+  const [txns, setTxns] = useState<DrillTxn[]>([])
+  const [loading, setLoading] = useState(false)
+  const [cats, setCats] = useState<DrillCat[]>([])
+  const [savingId, setSavingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    fetch('/api/categories')
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => setCats(d.categories || []))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    if (!drill) return
+    let cancelled = false
+    setLoading(true)
+    setTxns([])
+    const qs = new URLSearchParams({ categoryName: drill.category, from: drill.from, to: drill.to, limit: '1000' })
+    fetch(`/api/transactions?${qs.toString()}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        if (!cancelled) setTxns(d.transactions || [])
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [drill])
+
+  const expenseCats = cats.filter((c) => c.type === 'expense')
+  const incomeCats = cats.filter((c) => c.type === 'income')
+  const transferCats = cats.filter((c) => c.type === 'transfer')
+  const investmentCats = cats.filter((c) => c.type === 'investment')
+
+  async function reclassify(tx: DrillTxn, newName: string) {
+    if (!drill || newName === drill.category) return
+    const cat = cats.find((c) => c.name === newName)
+    if (!cat) return
+    setSavingId(tx.id)
+    // Optimistically drop the row from this category's list (it's moving out).
+    setTxns((prev) => prev.filter((t) => t.id !== tx.id))
+    try {
+      await fetch(`/api/transactions/${tx.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ categoryId: cat.id, type: cat.type }),
+      })
+      // Teach the bookkeeper from this correction.
+      fetch('/api/merchant-mappings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: tx.description, categoryId: cat.id }),
+      }).catch(() => {})
+      onChanged() // refresh the P&L behind the drawer
+    } catch {
+      // Put it back if the save failed.
+      setTxns((prev) => [tx, ...prev])
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  if (!drill) return null
+
+  const amt = (tx: DrillTxn) => (currency === 'GBP' && tx.currency === 'GBP' ? tx.amountLocal : tx.amountUsd)
+  const total = txns.reduce((s, tx) => s + amt(tx), 0)
+  const fmtDate = (d: string) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end">
+      <div className="absolute inset-0 bg-black/20" onClick={onClose} />
+      <div className="relative flex h-full w-full max-w-md flex-col bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
+          <div>
+            <h3 className="text-base font-semibold text-gray-900">{drill.category}</h3>
+            <p className="text-xs text-gray-500">{drill.label.replace(`${drill.category} · `, '')} · {txns.length} transaction{txns.length !== 1 ? 's' : ''}</p>
+          </div>
+          <button onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="Close">
+            ✕
+          </button>
+        </div>
+        <div className="flex items-baseline justify-between border-b border-gray-100 bg-gray-50 px-5 py-3">
+          <span className="text-xs font-medium uppercase tracking-wider text-gray-400">Total</span>
+          <span className="text-lg font-bold text-gray-900">{fmtMoney(total, currency)}</span>
+        </div>
+        <div className="flex-1 overflow-y-auto">
+          {loading ? (
+            <div className="flex items-center justify-center gap-2 py-16 text-sm text-gray-400">
+              <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-transparent" />
+              Loading…
+            </div>
+          ) : txns.length === 0 ? (
+            <div className="py-16 text-center text-sm text-gray-400">No transactions here.</div>
+          ) : (
+            <div className="divide-y divide-gray-100">
+              {txns.map((tx) => (
+                <div key={tx.id} className={`px-5 py-3 ${savingId === tx.id ? 'opacity-50' : ''}`}>
+                  <div className="flex items-baseline justify-between gap-3">
+                    <p className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900" title={tx.description}>{tx.description}</p>
+                    <span className={`shrink-0 font-mono text-sm ${amt(tx) < 0 ? 'text-rose-600' : 'text-gray-900'}`}>
+                      {fmtMoney(amt(tx), currency)}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <span className="shrink-0 text-xs text-gray-400">{fmtDate(tx.date)}</span>
+                    <Select
+                      value={drill.category}
+                      onChange={(v) => reclassify(tx, v)}
+                      searchable
+                      ariaLabel="Reclassify"
+                      buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-700 hover:bg-gray-50"
+                      options={[
+                        ...expenseCats.map((c) => ({ value: c.name, label: c.name, group: 'Expenses', color: c.color })),
+                        ...incomeCats.map((c) => ({ value: c.name, label: c.name, group: 'Income', color: c.color })),
+                        ...investmentCats.map((c) => ({ value: c.name, label: c.name, group: 'Investments', color: c.color })),
+                        ...transferCats.map((c) => ({ value: c.name, label: c.name, group: 'Transfers', color: c.color })),
+                      ]}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Row components
+// ---------------------------------------------------------------------------
+
+function SectionRow({ label, span, showMonthCols, tone }: { label: string; span: number; showMonthCols: boolean; tone: 'income' | 'expense' | 'investing' }) {
+  return (
+    <tr className="bg-gray-50">
+      <td
+        className={`sticky left-0 z-10 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider ${
+          tone === 'income' ? 'text-emerald-600' : tone === 'investing' ? 'text-indigo-600' : 'text-rose-600'
+        }`}
+      >
+        {label}
+      </td>
+      <td colSpan={(showMonthCols ? span : 0) + 1} className="bg-gray-50" />
+    </tr>
+  )
+}
+
+function LineRow({
+  line,
+  months,
+  showMonthCols,
+  currency,
+  fmt,
+  onDrill,
+}: {
+  line: Line
+  months: string[]
+  showMonthCols: boolean
+  currency: Currency
+  fmt: (n: number) => string
+  onDrill: (category: string, ym: string | null) => void
+}) {
+  return (
+    <tr className="hover:bg-gray-50/50">
+      <td className="sticky left-0 z-10 bg-white px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: line.color }} />
+          <span className="text-gray-700">{line.category}</span>
+        </div>
+      </td>
+      {showMonthCols &&
+        months.map((ym) => {
+          const v = pick(line.monthly[ym], currency)
+          return (
+            <td key={ym} className="px-4 py-2.5 text-right tabular-nums text-gray-500">
+              {v ? (
+                <button
+                  onClick={() => onDrill(line.category, ym)}
+                  className="rounded px-1 tabular-nums text-gray-600 hover:bg-blue-50 hover:text-blue-700 hover:underline"
+                  title="See transactions"
+                >
+                  {fmt(v)}
+                </button>
+              ) : (
+                '·'
+              )}
+            </td>
+          )
+        })}
+      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900">
+        {pick(line.total, currency) ? (
+          <button
+            onClick={() => onDrill(line.category, null)}
+            className="rounded px-1 font-medium tabular-nums text-gray-900 hover:bg-blue-50 hover:text-blue-700 hover:underline"
+            title="See transactions"
+          >
+            {fmt(pick(line.total, currency))}
+          </button>
+        ) : (
+          fmt(pick(line.total, currency))
+        )}
+      </td>
+    </tr>
+  )
+}
+
+function TotalRow({
+  label,
+  byMonth,
+  total,
+  months,
+  showMonthCols,
+  tone,
+  currency,
+  fmt,
+}: {
+  label: string
+  byMonth: Record<string, Amt>
+  total: Amt
+  months: string[]
+  showMonthCols: boolean
+  tone: 'income' | 'expense' | 'net' | 'investing' | 'netcash'
+  currency: Currency
+  fmt: (n: number) => string
+}) {
+  const totalVal = pick(total, currency)
+  const color =
+    tone === 'net' || tone === 'netcash'
+      ? totalVal >= 0 ? 'text-emerald-700' : 'text-rose-700'
+      : tone === 'income' ? 'text-emerald-700' : tone === 'investing' ? 'text-indigo-700' : 'text-rose-700'
+  const bg = tone === 'net' || tone === 'netcash' ? 'bg-blue-50/70 border-t-2 border-gray-300' : 'bg-gray-50/70'
+  // Solid background for the frozen first cell so scrolled numbers can't show through.
+  const stickyBg = tone === 'net' || tone === 'netcash' ? 'bg-blue-50 border-t-2 border-gray-300' : 'bg-gray-50'
+  return (
+    <tr className={`font-semibold ${bg}`}>
+      <td className={`sticky left-0 z-10 px-4 py-2.5 ${stickyBg} ${color}`}>{label}</td>
+      {showMonthCols &&
+        months.map((ym) => {
+          const v = pick(byMonth[ym], currency)
+          return (
+            <td key={ym} className={`px-4 py-2.5 text-right tabular-nums ${color}`}>
+              {v ? fmt(v) : '·'}
+            </td>
+          )
+        })}
+      <td className={`px-4 py-2.5 text-right tabular-nums ${color}`}>{fmt(totalVal)}</td>
+    </tr>
   )
 }

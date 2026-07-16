@@ -5,17 +5,60 @@ import { query } from '@/lib/db'
 // serverless request-body limit.
 const MAX_BYTES = 4 * 1024 * 1024
 
+// The statement archive relies on a few metadata columns that ship as manual
+// migrations. Ensure they exist so listing and archiving never break on a DB
+// where those migrations weren't applied (idempotent — safe to run every call).
+let schemaEnsured = false
+async function ensureSchema() {
+  if (schemaEnsured) return
+  // Create the archive table if this DB never had migration 006 applied, then
+  // add the metadata columns from 012. All idempotent.
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS documents (
+        id             uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id     uuid        REFERENCES accounts ON DELETE SET NULL,
+        file_name      text        NOT NULL,
+        mime_type      text        NOT NULL,
+        statement_date date,
+        size_bytes     int         NOT NULL,
+        content        bytea       NOT NULL,
+        uploaded_at    timestamptz NOT NULL DEFAULT now()
+      )
+    `)
+  } catch {
+    /* table may already exist with a compatible shape */
+  }
+  const alters = [
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS statement_date date`,
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS source text`,
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS format_signature text`,
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS imported_count integer`,
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS data_rows integer`,
+  ]
+  for (const sql of alters) {
+    try {
+      await query(sql)
+    } catch {
+      /* column may already exist or table shape differs — keep going */
+    }
+  }
+  schemaEnsured = true
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/documents?accountId= — list documents (metadata only, no content)
 // ---------------------------------------------------------------------------
 
 export async function GET(request: NextRequest) {
   try {
+    await ensureSchema()
     const accountId = request.nextUrl.searchParams.get('accountId')
 
     const result = await query(
       `SELECT d.id, d.account_id, d.file_name, d.mime_type, d.statement_date,
-              d.size_bytes, d.uploaded_at, a.name AS account_name
+              d.size_bytes, d.uploaded_at, d.source, d.format_signature,
+              d.imported_count, d.data_rows, a.name AS account_name
        FROM documents d
        LEFT JOIN accounts a ON d.account_id = a.id
        ${accountId ? 'WHERE d.account_id = $1' : ''}
@@ -32,6 +75,10 @@ export async function GET(request: NextRequest) {
       statementDate: row.statement_date,
       sizeBytes: row.size_bytes,
       uploadedAt: row.uploaded_at,
+      source: row.source ?? 'upload',
+      formatSignature: row.format_signature,
+      importedCount: row.imported_count,
+      dataRows: row.data_rows,
     }))
 
     return NextResponse.json({ documents })
@@ -48,13 +95,28 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    await ensureSchema()
     const body = await request.json()
-    const { accountId, fileName, mimeType, statementDate, contentBase64 } = body as {
+    const {
+      accountId,
+      fileName,
+      mimeType,
+      statementDate,
+      contentBase64,
+      source,
+      formatSignature,
+      importedCount,
+      dataRows,
+    } = body as {
       accountId: string | null
       fileName: string
       mimeType: string
       statementDate?: string | null
       contentBase64: string
+      source?: string
+      formatSignature?: string | null
+      importedCount?: number | null
+      dataRows?: number | null
     }
 
     if (!fileName || !contentBase64) {
@@ -76,11 +138,15 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await query(
-      `INSERT INTO documents (account_id, file_name, mime_type, statement_date, size_bytes, content)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO documents
+         (account_id, file_name, mime_type, statement_date, size_bytes, content,
+          source, format_signature, imported_count, data_rows)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id`,
       [accountId || null, fileName, mimeType || 'application/octet-stream',
-        statementDate || null, content.length, content],
+        statementDate || null, content.length, content,
+        source || 'upload', formatSignature || null,
+        importedCount ?? null, dataRows ?? null],
     )
 
     return NextResponse.json({ success: true, id: result.rows[0].id })

@@ -1,6 +1,6 @@
 'use client'
 
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect } from 'react'
 import { ChevronUp, ChevronDown } from 'lucide-react'
 
 interface Column<T> {
@@ -99,12 +99,21 @@ export function DataTable<T extends Record<string, unknown>>({
   }, [data, internalSortKey, internalSortDirection, isControlled])
 
   const totalPages = Math.max(1, Math.ceil(sortedData.length / pageSize))
+
+  // When the row count changes (e.g. a filter narrows the results), jump back
+  // to the first page so we never sit on a now-empty page past the end.
+  useEffect(() => {
+    setCurrentPage(0)
+  }, [sortedData.length])
+
+  // Guard against a stale page index that's beyond the current range.
+  const safePage = Math.min(currentPage, totalPages - 1)
   const paginatedData = sortedData.slice(
-    currentPage * pageSize,
-    (currentPage + 1) * pageSize
+    safePage * pageSize,
+    (safePage + 1) * pageSize
   )
 
-  const goToPreviousPage = () => setCurrentPage((p) => Math.max(0, p - 1))
+  const goToPreviousPage = () => setCurrentPage((p) => Math.max(0, Math.min(p, totalPages - 1) - 1))
   const goToNextPage = () => setCurrentPage((p) => Math.min(totalPages - 1, p + 1))
 
   return (
@@ -174,7 +183,7 @@ export function DataTable<T extends Record<string, unknown>>({
       {sortedData.length > pageSize && (
         <div className="flex items-center justify-between border-t border-gray-200 bg-white px-4 py-3">
           <p className="text-sm text-gray-500">
-            Page {currentPage + 1} of {totalPages}
+            Page {safePage + 1} of {totalPages}
             <span className="ml-2 text-gray-400">
               ({sortedData.length} {sortedData.length === 1 ? 'row' : 'rows'})
             </span>
@@ -182,14 +191,14 @@ export function DataTable<T extends Record<string, unknown>>({
           <div className="flex gap-2">
             <button
               onClick={goToPreviousPage}
-              disabled={currentPage === 0}
+              disabled={safePage === 0}
               className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Previous
             </button>
             <button
               onClick={goToNextPage}
-              disabled={currentPage >= totalPages - 1}
+              disabled={safePage >= totalPages - 1}
               className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Next

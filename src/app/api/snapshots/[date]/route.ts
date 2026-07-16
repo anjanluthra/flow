@@ -55,7 +55,7 @@ export async function GET(
         COALESCE(bs.yield_percent, 0)   AS yield_percent,
         COALESCE(bs.annual_cashflow, 0) AS annual_cashflow
       FROM accounts a
-      LEFT JOIN balance_snapshots bs
+      JOIN balance_snapshots bs
         ON a.id = bs.account_id AND bs.snapshot_date = $1
       WHERE a.is_active = true
       ORDER BY a.is_corporate ASC, a.name ASC`,

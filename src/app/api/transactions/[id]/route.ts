@@ -17,6 +17,7 @@ export async function PATCH(
 
     const patch: TransactionPatch = {}
     if ('categoryId' in body) patch.categoryId = body.categoryId
+    if ('description' in body) patch.description = body.description
     if ('type' in body) patch.type = body.type
     if ('isBusinessExpense' in body) patch.isBusinessExpense = body.isBusinessExpense
     if ('isInternalTransfer' in body) patch.isInternalTransfer = body.isInternalTransfer

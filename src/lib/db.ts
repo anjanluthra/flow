@@ -20,9 +20,12 @@ export interface TransactionFilters {
   month?: number // 0-11
   year?: number
   categoryId?: string
+  categoryName?: string
   accountId?: string
-  type?: 'income' | 'expense' | 'transfer'
+  type?: 'income' | 'expense' | 'transfer' | 'investment'
   holder?: 'anjan' | 'kate' | 'joint'
+  from?: string // inclusive YYYY-MM-DD
+  to?: string // inclusive YYYY-MM-DD
   search?: string
   limit?: number
   offset?: number
@@ -32,7 +35,35 @@ export interface TransactionFilters {
 // Query helpers
 // ---------------------------------------------------------------------------
 
+// One-time, idempotent migration that makes `investment` a first-class type.
+// Adds the enum value to both the transaction and category enums, then relabels
+// any investment-named category (Investments, Public investments, Private
+// Investment) and its transactions from 'transfer' to 'investment'. Guarded so
+// it runs at most once per serverless instance; safe to re-run.
+let investmentTypeReady = false
+export async function ensureInvestmentType() {
+  if (investmentTypeReady) return
+  try {
+    await query(`ALTER TYPE transaction_type ADD VALUE IF NOT EXISTS 'investment'`)
+    await query(`ALTER TYPE category_type ADD VALUE IF NOT EXISTS 'investment'`)
+    await query(
+      `UPDATE categories SET type = 'investment'
+       WHERE LOWER(name) LIKE '%investment%' AND type <> 'investment'`,
+    )
+    await query(
+      `UPDATE transactions t SET type = 'investment'
+       FROM categories c
+       WHERE t.category_id = c.id AND c.type = 'investment' AND t.type <> 'investment'`,
+    )
+    investmentTypeReady = true
+  } catch (error) {
+    // Leave the flag unset so the next call retries; the ALTERs are idempotent.
+    console.error('ensureInvestmentType failed:', error)
+  }
+}
+
 export async function getTransactions(filters: TransactionFilters = {}) {
+  await ensureInvestmentType()
   let queryText = `
     SELECT
       t.*,
@@ -58,6 +89,21 @@ export async function getTransactions(filters: TransactionFilters = {}) {
   if (filters.categoryId) {
     queryText += ` AND t.category_id = $${paramIndex++}`
     params.push(filters.categoryId)
+  }
+
+  if (filters.categoryName) {
+    queryText += ` AND c.name = $${paramIndex++}`
+    params.push(filters.categoryName)
+  }
+
+  if (filters.from) {
+    queryText += ` AND t.date >= $${paramIndex++}`
+    params.push(filters.from)
+  }
+
+  if (filters.to) {
+    queryText += ` AND t.date <= $${paramIndex++}`
+    params.push(filters.to)
   }
 
   if (filters.accountId) {
@@ -96,7 +142,9 @@ export async function getTransactions(filters: TransactionFilters = {}) {
 }
 
 export async function getCategories() {
-  return query('SELECT * FROM categories ORDER BY type, sort_order')
+  // Alphabetical by name so every category dropdown/filter is easy to scan.
+  // Pages still group by type client-side; ordering within each group is A→Z.
+  return query('SELECT * FROM categories ORDER BY name ASC')
 }
 
 export async function getAccounts() {
@@ -116,13 +164,59 @@ export async function getNetWorthSnapshots() {
   return query('SELECT * FROM net_worth_snapshots ORDER BY snapshot_date DESC')
 }
 
+// The self-learning mapping relies on a table + a UNIQUE index on the pattern
+// (the target of ON CONFLICT). Both ship as migrations; ensure them here so
+// learning works even on a DB where those migrations were never applied —
+// otherwise every upsert throws and corrections are silently lost.
+let merchantSchemaEnsured = false
+async function ensureMerchantSchema() {
+  if (merchantSchemaEnsured) return
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS merchant_mappings (
+        id               uuid          PRIMARY KEY DEFAULT gen_random_uuid(),
+        merchant_pattern text          NOT NULL,
+        category_id      uuid          NOT NULL REFERENCES categories ON DELETE CASCADE,
+        confidence       numeric(3, 2) NOT NULL DEFAULT 0.80,
+        times_used       int           NOT NULL DEFAULT 0,
+        created_at       timestamptz   NOT NULL DEFAULT now(),
+        updated_at       timestamptz   NOT NULL DEFAULT now()
+      )
+    `)
+  } catch {
+    /* table may already exist */
+  }
+  // Collapse any duplicate patterns (keep the most-used), then add the unique
+  // index ON CONFLICT requires. CREATE UNIQUE INDEX IF NOT EXISTS is idempotent.
+  try {
+    await query(`
+      DELETE FROM merchant_mappings a USING merchant_mappings b
+      WHERE a.merchant_pattern = b.merchant_pattern
+        AND (a.times_used < b.times_used OR (a.times_used = b.times_used AND a.ctid < b.ctid))
+    `)
+  } catch {
+    /* nothing to dedupe */
+  }
+  try {
+    await query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_merchant_mappings_pattern ON merchant_mappings (merchant_pattern)`)
+  } catch {
+    /* index may already exist */
+  }
+  merchantSchemaEnsured = true
+}
+
 export async function getMerchantMappings() {
-  return query(`
-    SELECT mm.*, c.name AS category_name, c.color_hex AS category_color
-    FROM merchant_mappings mm
-    JOIN categories c ON mm.category_id = c.id
-    ORDER BY mm.times_used DESC
-  `)
+  try {
+    await ensureMerchantSchema()
+    return await query(`
+      SELECT mm.*, c.name AS category_name, c.color_hex AS category_color
+      FROM merchant_mappings mm
+      JOIN categories c ON mm.category_id = c.id
+      ORDER BY mm.times_used DESC
+    `)
+  } catch {
+    return { rows: [] as Record<string, unknown>[] } as Awaited<ReturnType<typeof query>>
+  }
 }
 
 /**
@@ -130,6 +224,7 @@ export async function getMerchantMappings() {
  * seen again we bump confidence and times_used so repeated corrections stick.
  */
 export async function upsertMerchantMapping(pattern: string, categoryId: string) {
+  await ensureMerchantSchema()
   await query(
     `INSERT INTO merchant_mappings (merchant_pattern, category_id, confidence, times_used)
      VALUES ($1, $2, 0.90, 1)
@@ -156,7 +251,7 @@ export interface NewTransaction {
   amountUsd: number | null
   categoryId: string | null
   accountId: string | null
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   isInternalTransfer?: boolean
   isBusinessExpense?: boolean
   notes?: string | null
@@ -171,6 +266,7 @@ export interface NewTransaction {
  */
 export async function createTransactions(rows: NewTransaction[]) {
   if (rows.length === 0) return { inserted: 0, skipped: 0 }
+  if (rows.some((r) => r.type === 'investment')) await ensureInvestmentType()
 
   const values: string[] = []
   const params: unknown[] = []
@@ -212,7 +308,8 @@ export async function createTransactions(rows: NewTransaction[]) {
 
 export interface TransactionPatch {
   categoryId?: string | null
-  type?: 'income' | 'expense' | 'transfer'
+  description?: string
+  type?: 'income' | 'expense' | 'transfer' | 'investment'
   isInternalTransfer?: boolean
   isBusinessExpense?: boolean
   isReimbursed?: boolean
@@ -227,6 +324,7 @@ export async function updateTransaction(id: string, patch: TransactionPatch) {
 
   const map: Array<[keyof TransactionPatch, string]> = [
     ['categoryId', 'category_id'],
+    ['description', 'description'],
     ['type', 'type'],
     ['isInternalTransfer', 'is_internal_transfer'],
     ['isBusinessExpense', 'is_business_expense'],
@@ -326,16 +424,60 @@ export async function getAnnualActuals(
   )
 }
 
+/**
+ * P&L line items for an arbitrary date range, grouped by type, category and
+ * month. Powers the statement view (income/expense rows × month columns).
+ * Transfers and internal transfers are excluded.
+ *
+ * Returns totals in both USD and GBP. GBP uses the transaction's native
+ * amount_local when it was recorded in GBP (so it matches source sheets to the
+ * penny) and falls back to converting USD at `gbpRate` for other currencies.
+ */
+export async function getPnLByRange(from: string, to: string, gbpRate: number) {
+  await ensureInvestmentType()
+  const rate = gbpRate > 0 ? gbpRate : 1.3231
+  return query(
+    `SELECT
+        t.type,
+        c.name       AS category_name,
+        c.color_hex  AS category_color,
+        to_char(date_trunc('month', t.date), 'YYYY-MM') AS ym,
+        SUM(COALESCE(t.amount_usd, 0)) AS total_usd,
+        SUM(
+          CASE WHEN t.currency = 'GBP' THEN t.amount_local
+               ELSE COALESCE(t.amount_usd, 0) / $3 END
+        ) AS total_gbp
+     FROM transactions t
+     LEFT JOIN categories c ON t.category_id = c.id
+     WHERE t.date >= $1 AND t.date <= $2
+       AND (
+         -- Operating: income & expenses (internal transfers are excluded).
+         (t.type IN ('income', 'expense') AND t.is_internal_transfer = false)
+         -- Investing: investment funding is a real cash outflow, surfaced in a
+         -- separate section rather than dropped like transfers / card payments.
+         OR t.type = 'investment'
+       )
+     GROUP BY t.type, c.name, c.color_hex, ym
+     ORDER BY ym`,
+    [from, to, rate],
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Forecasts
 // ---------------------------------------------------------------------------
 
 export async function getForecasts(year: number) {
-  return query(
-    `SELECT year, month, forecast_income_usd, forecast_expense_usd, notes
-     FROM forecasts WHERE year = $1 ORDER BY month`,
-    [year],
-  )
+  try {
+    return await query(
+      `SELECT year, month, forecast_income_usd, forecast_expense_usd, notes
+       FROM forecasts WHERE year = $1 ORDER BY month`,
+      [year],
+    )
+  } catch {
+    // The forecasts table is optional; treat a missing table as "no forecasts".
+    return { rows: [] as Record<string, unknown>[] } as Awaited<ReturnType<typeof query>>
+  }
 }
 
 export async function upsertForecast(
@@ -357,3 +499,26 @@ export async function upsertForecast(
   )
   return { upserted: 1 }
 }
+
+// ---------------------------------------------------------------------------
+// Account import hints (learned fingerprints for auto-detection)
+// ---------------------------------------------------------------------------
+
+export async function getAccountHints() {
+  return query(
+    `SELECT account_id, hint_type, hint_value FROM account_import_hints`,
+  )
+}
+
+/** Remember that files with this fingerprint belong to an account. Latest wins. */
+export async function upsertAccountHint(accountId: string, hintType: string, hintValue: string) {
+  await query(
+    `INSERT INTO account_import_hints (account_id, hint_type, hint_value)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (hint_type, hint_value)
+     DO UPDATE SET account_id = EXCLUDED.account_id`,
+    [accountId, hintType, hintValue],
+  )
+  return { learned: hintValue }
+}
+

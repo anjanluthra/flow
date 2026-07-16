@@ -13,6 +13,7 @@ import {
 } from 'recharts'
 import { DollarSign, TrendingDown, PiggyBank, Percent, Save, Calendar } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
+import { Select } from '@/components/ui/Select'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,11 +28,8 @@ interface MonthRow {
   forecastExpense: number | null
 }
 
-type Holder = 'all' | 'anjan' | 'kate' | 'joint'
-
 const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 const YEARS = [2024, 2025, 2026, 2027]
-const HOLDERS: Holder[] = ['all', 'anjan', 'kate', 'joint']
 
 function fmtUsd(n: number): string {
   const abs = Math.abs(Math.round(n)).toLocaleString('en-US')
@@ -50,7 +48,6 @@ interface Edit {
 export default function AnnualPage() {
   const now = new Date()
   const [year, setYear] = useState<number>(now.getFullYear())
-  const [holder, setHolder] = useState<Holder>('all')
   const [months, setMonths] = useState<MonthRow[]>([])
   const [edits, setEdits] = useState<Record<number, Edit>>({})
   const [isLoading, setIsLoading] = useState(true)
@@ -59,7 +56,6 @@ export default function AnnualPage() {
   const loadForecast = useCallback(async () => {
     setIsLoading(true)
     const params = new URLSearchParams({ year: String(year) })
-    if (holder !== 'all') params.set('holder', holder)
     try {
       const res = await fetch(`/api/forecast?${params.toString()}`)
       const data = await res.json()
@@ -91,7 +87,7 @@ export default function AnnualPage() {
     } finally {
       setIsLoading(false)
     }
-  }, [year, holder])
+  }, [year])
 
   useEffect(() => {
     loadForecast()
@@ -175,33 +171,12 @@ export default function AnnualPage() {
         <div className="mb-8 flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <Calendar className="h-4 w-4 text-gray-400" />
-            <select
-              value={year}
-              onChange={(e) => setYear(Number(e.target.value))}
-              className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            >
-              {YEARS.map((y) => (
-                <option key={y} value={y}>
-                  {y}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="flex gap-2">
-            {HOLDERS.map((h) => (
-              <button
-                key={h}
-                onClick={() => setHolder(h)}
-                className={`rounded-full px-4 py-1.5 text-sm font-medium capitalize transition-colors ${
-                  holder === h
-                    ? 'bg-gray-900 text-white'
-                    : 'border border-gray-300 bg-white text-gray-600 hover:bg-gray-100'
-                }`}
-              >
-                {h === 'all' ? 'All' : h}
-              </button>
-            ))}
+            <Select
+              value={String(year)}
+              onChange={(v) => setYear(Number(v))}
+              options={YEARS.map((y) => ({ value: String(y), label: String(y) }))}
+              ariaLabel="Year"
+            />
           </div>
 
           <button

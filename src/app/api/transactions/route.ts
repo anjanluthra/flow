@@ -43,7 +43,10 @@ export async function GET(request: NextRequest) {
     // TransactionFilters.month is 0-indexed; the API takes 1-12.
     if (month) filters.month = parseInt(month, 10) - 1
     if (sp.get('categoryId')) filters.categoryId = sp.get('categoryId')!
+    if (sp.get('categoryName')) filters.categoryName = sp.get('categoryName')!
     if (sp.get('accountId')) filters.accountId = sp.get('accountId')!
+    if (sp.get('from')) filters.from = sp.get('from')!
+    if (sp.get('to')) filters.to = sp.get('to')!
     const type = sp.get('type')
     if (type === 'income' || type === 'expense' || type === 'transfer') {
       filters.type = type
@@ -71,7 +74,7 @@ export async function GET(request: NextRequest) {
       amountLocal: parseFloat(row.amount_local),
       currency: row.currency,
       amountUsd: row.amount_usd !== null ? parseFloat(row.amount_usd) : 0,
-      type: row.type as 'income' | 'expense' | 'transfer',
+      type: row.type as 'income' | 'expense' | 'transfer' | 'investment',
       isBusinessExpense: row.is_business_expense,
       isInternalTransfer: row.is_internal_transfer,
       holder: row.holder as 'anjan' | 'kate' | 'joint',
@@ -100,7 +103,7 @@ interface IncomingTransaction {
   amountUsd?: number | null
   categoryId?: string | null
   categoryName?: string | null
-  type: 'income' | 'expense' | 'transfer'
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   isInternalTransfer?: boolean
   isBusinessExpense?: boolean
 }

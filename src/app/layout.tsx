@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Providers } from "@/components/Providers";
-import { Sidebar } from "@/components/ui/Sidebar";
+import { AppShell } from "@/components/AppShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -30,8 +30,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-full antialiased font-sans">
         <Providers>
-          <Sidebar />
-          <main className="ml-64 min-h-screen bg-slate-50/50">{children}</main>
+          <AppShell>{children}</AppShell>
         </Providers>
       </body>
     </html>

@@ -11,34 +11,58 @@ const ASSET_CLASS_MAP: Record<string, string> = {
   debt: 'Debt',
 }
 
+// Investable asset classes — everything on the balance sheet that counts as a
+// portfolio holding (i.e. not plain cash, cars or debt).
+const INVESTABLE = ['equities', 'private_equity', 'private_debt', 'crypto']
+
 // ---------------------------------------------------------------------------
-// GET /api/investments — active positions with metrics inputs
+// GET /api/investments — the portfolio, derived from the Net Worth balance
+// sheet. Each investable account's latest balance snapshot is a position, so
+// what you enter on the Net Worth page is the single source of truth.
 // ---------------------------------------------------------------------------
 
 export async function GET() {
   try {
     const result = await query(
-      `SELECT i.*, a.name AS account_name
-       FROM investments i
-       LEFT JOIN accounts a ON i.account_id = a.id
-       WHERE i.is_active = true
-       ORDER BY i.current_value_usd DESC`,
+      `SELECT a.id, a.name, a.institution, a.currency, a.asset_class,
+              bs.balance_local, bs.balance_usd, bs.annual_cashflow,
+              bs.yield_percent, bs.snapshot_date
+       FROM accounts a
+       LEFT JOIN LATERAL (
+         SELECT balance_local, balance_usd, annual_cashflow, yield_percent, snapshot_date
+         FROM balance_snapshots b
+         WHERE b.account_id = a.id
+         ORDER BY snapshot_date DESC
+         LIMIT 1
+       ) bs ON true
+       WHERE a.is_active = true
+         AND a.asset_class = ANY($1)
+       ORDER BY bs.balance_usd DESC NULLS LAST`,
+      [INVESTABLE],
     )
 
-    const investments = result.rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      accountName: row.account_name,
-      assetClass: ASSET_CLASS_MAP[row.asset_class] || row.asset_class,
-      currency: row.currency,
-      units: row.units !== null ? parseFloat(row.units) : null,
-      costBasisLocal: parseFloat(row.cost_basis_local),
-      costBasisUsd: parseFloat(row.cost_basis_usd),
-      currentValueUsd: parseFloat(row.current_value_usd),
-      annualCashflowUsd: parseFloat(row.annual_cashflow_usd),
-      purchaseDate: row.purchase_date,
-      notes: row.notes,
-    }))
+    const investments = result.rows.map((row) => {
+      const currentValueUsd = row.balance_usd != null ? parseFloat(row.balance_usd) : 0
+      const annualCashflowUsd = row.annual_cashflow != null ? parseFloat(row.annual_cashflow) : 0
+      const yieldPct =
+        row.yield_percent != null
+          ? parseFloat(row.yield_percent)
+          : currentValueUsd > 0
+            ? (annualCashflowUsd / currentValueUsd) * 100
+            : null
+      return {
+        id: row.id,
+        name: row.name,
+        accountName: row.institution ?? null,
+        assetClass: ASSET_CLASS_MAP[row.asset_class] || row.asset_class,
+        currency: row.currency,
+        balanceLocal: row.balance_local != null ? parseFloat(row.balance_local) : null,
+        currentValueUsd,
+        annualCashflowUsd,
+        yieldPct,
+        snapshotDate: row.snapshot_date,
+      }
+    })
 
     return NextResponse.json({ investments })
   } catch (error) {
