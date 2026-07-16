@@ -365,10 +365,12 @@ export interface TransactionPatch {
   isBusinessExpense?: boolean
   isReimbursed?: boolean
   notes?: string | null
+  eventId?: string | null
 }
 
 /** Patch a single transaction. Only provided fields are updated. */
 export async function updateTransaction(id: string, patch: TransactionPatch) {
+  if (patch.eventId !== undefined) await ensureCapitalEvents()
   const sets: string[] = []
   const params: unknown[] = []
   let i = 1
@@ -381,6 +383,7 @@ export async function updateTransaction(id: string, patch: TransactionPatch) {
     ['isBusinessExpense', 'is_business_expense'],
     ['isReimbursed', 'is_reimbursed'],
     ['notes', 'notes'],
+    ['eventId', 'event_id'],
   ]
 
   for (const [key, col] of map) {
@@ -487,6 +490,7 @@ export async function getAnnualActuals(
 export async function getPnLByRange(from: string, to: string, gbpRate: number) {
   await ensureInvestmentType()
   await ensureTransactionTypesMatchCategory()
+  await ensureCapitalEvents()
   const rate = gbpRate > 0 ? gbpRate : 1.3231
   return query(
     `SELECT
@@ -502,6 +506,10 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
      WHERE t.date >= $1 AND t.date <= $2
+       -- Capital events (asset sales, inheritance, gifts) are non-operating:
+       -- their proceeds AND costs are pulled out together into their own
+       -- section so the operating P&L reflects recurring income vs spending.
+       AND t.event_id IS NULL
        AND (
          -- Operating: income & expenses (internal transfers are excluded).
          (t.type IN ('income', 'expense') AND t.is_internal_transfer = false)
@@ -513,6 +521,93 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
      ORDER BY ym`,
     [from, to, rate],
   )
+}
+
+// ---------------------------------------------------------------------------
+// Capital events — asset sales, inheritance, gifts. Non-operating: proceeds and
+// their costs are bundled into one event and excluded from the operating P&L,
+// so the "operating" numbers show recurring income vs spending only.
+// ---------------------------------------------------------------------------
+
+let capitalEventsReady = false
+export async function ensureCapitalEvents() {
+  if (capitalEventsReady) return
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS capital_events (
+        id         uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+        name       text        NOT NULL,
+        kind       text        NOT NULL DEFAULT 'asset_sale',
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `)
+    await query(`ALTER TABLE transactions ADD COLUMN IF NOT EXISTS event_id uuid REFERENCES capital_events ON DELETE SET NULL`)
+    capitalEventsReady = true
+  } catch (error) {
+    console.error('ensureCapitalEvents failed:', error)
+  }
+}
+
+// Per-event proceeds / costs / net within a date range, in USD and GBP. Amounts
+// are stored absolute, so proceeds = income legs, costs = expense legs.
+export async function getCapitalEventsForRange(from: string, to: string, gbpRate: number) {
+  await ensureCapitalEvents()
+  const rate = gbpRate > 0 ? gbpRate : 1.3231
+  const gbp = (col: string) =>
+    `SUM(CASE WHEN t.type = '${col}' THEN (CASE WHEN t.currency = 'GBP' THEN t.amount_local ELSE COALESCE(t.amount_usd, 0) / $3 END) ELSE 0 END)`
+  return query(
+    `SELECT e.id, e.name, e.kind,
+        COUNT(t.id)::int AS txn_count,
+        COALESCE(SUM(CASE WHEN t.type = 'income'  THEN COALESCE(t.amount_usd, 0) ELSE 0 END), 0) AS proceeds_usd,
+        COALESCE(SUM(CASE WHEN t.type = 'expense' THEN COALESCE(t.amount_usd, 0) ELSE 0 END), 0) AS costs_usd,
+        COALESCE(${gbp('income')}, 0)  AS proceeds_gbp,
+        COALESCE(${gbp('expense')}, 0) AS costs_gbp
+     FROM capital_events e
+     LEFT JOIN transactions t ON t.event_id = e.id AND t.date >= $1 AND t.date <= $2
+     GROUP BY e.id, e.name, e.kind
+     ORDER BY (COALESCE(SUM(CASE WHEN t.type = 'income' THEN COALESCE(t.amount_usd, 0) ELSE -COALESCE(t.amount_usd, 0) END), 0)) DESC`,
+    [from, to, rate],
+  )
+}
+
+// All events with all-time transaction counts, for the management list.
+export async function getCapitalEvents() {
+  await ensureCapitalEvents()
+  return query(
+    `SELECT e.id, e.name, e.kind, e.created_at, COUNT(t.id)::int AS txn_count
+     FROM capital_events e
+     LEFT JOIN transactions t ON t.event_id = e.id
+     GROUP BY e.id, e.name, e.kind, e.created_at
+     ORDER BY e.created_at DESC`,
+  )
+}
+
+export async function createCapitalEvent(name: string, kind: string) {
+  await ensureCapitalEvents()
+  const res = await query(
+    `INSERT INTO capital_events (name, kind) VALUES ($1, $2) RETURNING id, name, kind`,
+    [name, kind || 'asset_sale'],
+  )
+  return res.rows[0]
+}
+
+export async function updateCapitalEvent(id: string, patch: { name?: string; kind?: string }) {
+  await ensureCapitalEvents()
+  const sets: string[] = []
+  const params: unknown[] = []
+  let i = 1
+  if (patch.name !== undefined) { sets.push(`name = $${i++}`); params.push(patch.name) }
+  if (patch.kind !== undefined) { sets.push(`kind = $${i++}`); params.push(patch.kind) }
+  if (!sets.length) return
+  params.push(id)
+  await query(`UPDATE capital_events SET ${sets.join(', ')} WHERE id = $${i}`, params)
+}
+
+// Deleting an event unassigns its transactions (ON DELETE SET NULL), returning
+// them to the operating P&L.
+export async function deleteCapitalEvent(id: string) {
+  await ensureCapitalEvents()
+  await query(`DELETE FROM capital_events WHERE id = $1`, [id])
 }
 
 // ---------------------------------------------------------------------------
