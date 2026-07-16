@@ -650,6 +650,8 @@ export async function ensureForecasts() {
         END IF;
       END $$;
     `)
+    // Investing can be forecast too (added later than income/expense).
+    await query(`ALTER TABLE forecasts ADD COLUMN IF NOT EXISTS forecast_investment_usd numeric(14, 2) NOT NULL DEFAULT 0`)
     forecastsReady = true
   } catch (error) {
     console.error('ensureForecasts failed:', error)
@@ -660,7 +662,7 @@ export async function getForecasts(year: number) {
   await ensureForecasts()
   try {
     return await query(
-      `SELECT year, month, forecast_income_usd, forecast_expense_usd, notes
+      `SELECT year, month, forecast_income_usd, forecast_expense_usd, forecast_investment_usd, notes
        FROM forecasts WHERE year = $1 ORDER BY month`,
       [year],
     )
@@ -675,18 +677,20 @@ export async function upsertForecast(
   month: number,
   incomeUsd: number,
   expenseUsd: number,
+  investmentUsd: number,
   notes?: string | null,
 ) {
   await ensureForecasts()
   await query(
-    `INSERT INTO forecasts (year, month, forecast_income_usd, forecast_expense_usd, notes)
-     VALUES ($1, $2, $3, $4, $5)
+    `INSERT INTO forecasts (year, month, forecast_income_usd, forecast_expense_usd, forecast_investment_usd, notes)
+     VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (year, month)
      DO UPDATE SET
-       forecast_income_usd  = EXCLUDED.forecast_income_usd,
-       forecast_expense_usd = EXCLUDED.forecast_expense_usd,
-       notes                = EXCLUDED.notes`,
-    [year, month, incomeUsd, expenseUsd, notes ?? null],
+       forecast_income_usd     = EXCLUDED.forecast_income_usd,
+       forecast_expense_usd    = EXCLUDED.forecast_expense_usd,
+       forecast_investment_usd = EXCLUDED.forecast_investment_usd,
+       notes                   = EXCLUDED.notes`,
+    [year, month, incomeUsd, expenseUsd, investmentUsd, notes ?? null],
   )
   return { upserted: 1 }
 }
