@@ -227,6 +227,29 @@ export async function getMerchantMappings() {
 }
 
 /**
+ * Every already-categorised transaction, as (description, category, type). The
+ * categoriser derives a merchant pattern from each and builds a merchant ->
+ * category model from the household's own history — so the hundreds of rows you
+ * have already classified drive auto-categorisation, not just a handful of
+ * learned mappings.
+ */
+export async function getCategorisedDescriptions(limit = 8000) {
+  try {
+    return await query(
+      `SELECT t.description, c.name AS category_name, c.type AS category_type
+       FROM transactions t
+       JOIN categories c ON t.category_id = c.id
+       WHERE t.category_id IS NOT NULL
+       ORDER BY t.date DESC
+       LIMIT $1`,
+      [limit],
+    )
+  } catch {
+    return { rows: [] as Record<string, unknown>[] } as Awaited<ReturnType<typeof query>>
+  }
+}
+
+/**
  * Learn (or reinforce) a merchant -> category mapping. When the same pattern is
  * seen again we bump confidence and times_used so repeated corrections stick.
  */

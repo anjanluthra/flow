@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { suggestCategoryName, ALL_CATEGORIES } from '@/lib/categories'
+import { suggestCategoryName, ALL_CATEGORIES, merchantMatches } from '@/lib/categories'
 
 interface MerchantMapping {
   pattern: string
@@ -22,9 +22,8 @@ function matchMerchantMapping(
   description: string,
   mappings: MerchantMapping[],
 ): CategoriseResponse | null {
-  const lower = description.toLowerCase()
   for (const mapping of mappings) {
-    if (lower.includes(mapping.pattern.toLowerCase())) {
+    if (merchantMatches(description, mapping.pattern)) {
       return {
         categoryName: mapping.categoryName,
         confidence: mapping.confidence,

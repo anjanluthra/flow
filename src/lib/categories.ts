@@ -187,23 +187,70 @@ export const ALL_CATEGORIES: CategoryDefinition[] = [
 // Auto-categorization engine
 // ────────────────────────────────────────────────
 
+// Bank/processor noise that prefixes the real merchant on a statement line.
+// Without stripping these, every "POS Settlement <merchant>" line collapses to
+// "pos settlement" and different merchants become indistinguishable — which
+// breaks learning, cascading, and matching. Longest-first so the most specific
+// prefix wins (e.g. "pos settlement" before "pos").
+const NOISE_PREFIXES = [
+  'inward telex transfer', 'outward telex transfer', 'telex transfer',
+  'debit card purchase', 'card payment received', 'card payment to', 'card payment',
+  'card purchase', 'point of sale', 'pos settlement', 'pos purchase', 'pos payment',
+  'contactless payment', 'contactless', 'online payment to', 'online payment',
+  'bill payment to', 'bill payment', 'mobile payment', 'recurring payment',
+  'faster payment to', 'faster payment', 'standing order to', 'standing order',
+  'direct debit to', 'direct debit', 'bank transfer to', 'transfer to',
+  'transfer from', 'payment to', 'payment from', 'purchase at', 'payment',
+  'purchase', 'visa purchase', 'atm withdrawal', 'cash withdrawal', 'withdrawal',
+  'apple pay', 'google pay', 'pos', 'visa', 'ecom',
+].sort((a, b) => b.length - a.length)
+
+/**
+ * Normalise a raw statement description down to just the merchant text: cut
+ * trailing reference/value-date/currency-amount noise, drop punctuation, and
+ * strip a leading bank-noise prefix. Both the pattern key and the matcher use
+ * this so they always agree.
+ */
+export function normalizeMerchantText(description: string): string {
+  let s = description.toLowerCase()
+  // Cut everything from a reference/value-date/amount marker onward.
+  s = s.split(/\bref[:\s]|\bvalue date\b|\btrf ccy\b|\bmandate\b/)[0]
+  s = s.replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim()
+  for (const p of NOISE_PREFIXES) {
+    if (s === p) return ''
+    if (s.startsWith(p + ' ')) {
+      s = s.slice(p.length + 1).trim()
+      break
+    }
+  }
+  return s
+}
+
 /**
  * Derive a stable "merchant core" pattern from a transaction description, used
- * as the key for learned merchant->category mappings. Cuts off reference codes,
- * locations, and long digit runs so "ADNOC - Fuel Station JBR" and
- * "ADNOC Marina 0042" both collapse to "adnoc".
+ * as the key for learned merchant->category mappings. Strips the bank prefix
+ * and reference/amount noise so "POS Settlement Amazon.ae Dubai AED 31.85" and
+ * "POS Settlement Amazon.ae Abu Dhabi AED 9.10" both collapse to "amazon ae".
  */
 export function deriveMerchantPattern(description: string): string {
-  const lower = description.toLowerCase()
-  const core = lower
-    .split(/\s[-–—]\s|\*|#|\d{4,}/)[0]
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const core = normalizeMerchantText(description)
+  if (!core) return ''
   const words = core.split(' ').filter(Boolean)
   const pattern = words.slice(0, 2).join(' ')
   if (pattern.length >= 3) return pattern
-  return words[0] ?? lower.trim()
+  return words[0] ?? ''
+}
+
+/**
+ * Does a raw description belong to a learned merchant pattern? Normalises the
+ * description the same way the pattern was derived, then checks containment —
+ * so "amazon ae" matches "POS Settlement Amazon.ae Dubai AED 31.85" even though
+ * the raw text has "amazon.ae" with a dot.
+ */
+export function merchantMatches(description: string, pattern: string): boolean {
+  const p = pattern.trim().toLowerCase()
+  if (p.length < 3) return false
+  return normalizeMerchantText(description).includes(p)
 }
 
 /**
@@ -239,7 +286,7 @@ export function suggestCategory(
 
   // 1. Check merchant mappings first (highest confidence)
   for (const mapping of merchantMappings) {
-    if (descLower.includes(mapping.pattern.toLowerCase())) {
+    if (merchantMatches(description, mapping.pattern)) {
       const category = ALL_CATEGORIES.find((c) => c.id === mapping.category_id)
       if (category) {
         return {
