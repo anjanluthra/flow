@@ -29,6 +29,7 @@ interface PnL {
   income: Line[]
   expense: Line[]
   investing: Line[]
+  capitalEvents: CapitalEvent[]
   totals: {
     incomeByMonth: Record<string, Amt>
     expenseByMonth: Record<string, Amt>
@@ -41,7 +42,25 @@ interface PnL {
     net: Amt
     netCash: Amt
     savingsRate: number
+    capital: { proceeds: Amt; costs: Amt; net: Amt }
   }
+}
+
+interface CapitalEvent {
+  id: string
+  name: string
+  kind: string
+  txnCount: number
+  proceeds: Amt
+  costs: Amt
+  net: Amt
+}
+
+const KIND_LABEL: Record<string, string> = {
+  asset_sale: 'Asset sale',
+  inheritance: 'Inheritance',
+  gift: 'Gift',
+  other: 'One-off',
 }
 
 type Mode = 'year' | 'month' | 'custom'
@@ -85,6 +104,8 @@ export default function CashFlowPage() {
   const [pnl, setPnl] = useState<PnL | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [currency, setCurrency] = useState<Currency>('USD')
+  // Operating (default) strips out capital events; Total folds them back in.
+  const [view, setView] = useState<'operating' | 'total'>('operating')
 
   const { from, to } = useMemo(() => {
     if (mode === 'year') return { from: `${year}-01-01`, to: `${year}-12-31` }
@@ -118,8 +139,25 @@ export default function CashFlowPage() {
   const showMonthCols = months.length > 1
   const t = pnl?.totals
 
+  // Operating figures come straight from the P&L; the "total" figures fold the
+  // non-operating capital events (asset sales & their costs) back in.
+  const hasCapital = (pnl?.capitalEvents?.length ?? 0) > 0
+  const capProceeds = pick(t?.capital.proceeds, currency)
+  const capCosts = pick(t?.capital.costs, currency)
+  const capNet = pick(t?.capital.net, currency)
+  const opIncome = pick(t?.incomeTotal, currency)
+  const opExpense = pick(t?.expenseTotal, currency)
+  const opNet = pick(t?.net, currency)
+  const opInvested = pick(t?.investingTotal, currency)
+  const opSaved = pick(t?.netCash, currency)
+  const totalIncome = opIncome + capProceeds
+  const totalExpense = opExpense + capCosts
+  const totalNet = opNet + capNet
+  const totalSaved = opSaved + capNet
+  const showTotal = view === 'total'
+
   // Drill-down: clicking a P&L cell opens the underlying transactions.
-  const [drill, setDrill] = useState<{ category: string; from: string; to: string; label: string } | null>(null)
+  const [drill, setDrill] = useState<{ category: string; from: string; to: string; label: string; eventId?: string } | null>(null)
   const openDrill = useCallback(
     (category: string, ym: string | null) => {
       if (ym) {
@@ -128,6 +166,18 @@ export default function CashFlowPage() {
       } else {
         setDrill({ category, from, to, label: `${category} · total` })
       }
+    },
+    [from, to],
+  )
+  const openEventDrill = useCallback(
+    (ev: CapitalEvent) => {
+      setDrill({
+        category: ev.name,
+        eventId: ev.id,
+        from,
+        to,
+        label: `${KIND_LABEL[ev.kind] ?? 'One-off'} · ${ev.name}`,
+      })
     },
     [from, to],
   )
@@ -193,31 +243,73 @@ export default function CashFlowPage() {
             </div>
           )}
 
-          {/* Currency toggle */}
-          <div className="ml-auto inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
-            {(['USD', 'GBP'] as Currency[]).map((c) => (
-              <button
-                key={c}
-                onClick={() => setCurrency(c)}
-                className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
-                  currency === c ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-50'
-                }`}
-              >
-                {c === 'USD' ? '$ USD' : '£ GBP'}
-              </button>
-            ))}
+          <div className="ml-auto flex flex-wrap items-center gap-3">
+            {/* Operating vs Total (folds asset sales back in). Only meaningful
+                when there are capital events in the range. */}
+            {hasCapital && (
+              <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm" title="Operating strips out asset sales; Total includes them">
+                {(['operating', 'total'] as const).map((v) => (
+                  <button
+                    key={v}
+                    onClick={() => setView(v)}
+                    className={`rounded-md px-3 py-1.5 text-sm font-medium capitalize transition-colors ${
+                      view === v ? 'bg-violet-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Currency toggle */}
+            <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
+              {(['USD', 'GBP'] as Currency[]).map((c) => (
+                <button
+                  key={c}
+                  onClick={() => setCurrency(c)}
+                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                    currency === c ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-50'
+                  }`}
+                >
+                  {c === 'USD' ? '$ USD' : '£ GBP'}
+                </button>
+              ))}
+            </div>
           </div>
 
           {isLoading && <span className="animate-pulse text-xs text-blue-500">Loading…</span>}
         </div>
 
-        {/* Summary cards */}
+        {/* Summary cards — the headline follows the Operating/Total toggle; when
+            there are asset sales, the counterpart figure is shown underneath so
+            both numbers are always visible. */}
         <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
-          <Card title="Income" value={fmt(pick(t?.incomeTotal, currency))} subtitle="for the period" icon={<DollarSign className="h-5 w-5 text-green-500" />} />
-          <Card title="Expenses" value={fmt(pick(t?.expenseTotal, currency))} subtitle="for the period" icon={<TrendingDown className="h-5 w-5 text-red-500" />} />
-          <Card title="Net Operating" value={fmt(pick(t?.net, currency))} subtitle="income − expenses" icon={<Wallet className="h-5 w-5 text-blue-500" />} />
-          <Card title="Invested" value={fmt(pick(t?.investingTotal, currency))} subtitle="capital deployed" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
-          <Card title="Saved" value={fmt(pick(t?.netCash, currency))} subtitle="operating − investing" icon={<Percent className="h-5 w-5 text-purple-500" />} />
+          <Card
+            title="Income"
+            value={fmt(showTotal ? totalIncome : opIncome)}
+            subtitle={hasCapital ? (showTotal ? `${fmt(opIncome)} operating` : `${fmt(totalIncome)} with asset sales`) : 'for the period'}
+            icon={<DollarSign className="h-5 w-5 text-green-500" />}
+          />
+          <Card
+            title="Expenses"
+            value={fmt(showTotal ? totalExpense : opExpense)}
+            subtitle={hasCapital ? (showTotal ? `${fmt(opExpense)} operating` : `${fmt(totalExpense)} with sale costs`) : 'for the period'}
+            icon={<TrendingDown className="h-5 w-5 text-red-500" />}
+          />
+          <Card
+            title={showTotal ? 'Net (Total)' : 'Net Operating'}
+            value={fmt(showTotal ? totalNet : opNet)}
+            subtitle={hasCapital ? (showTotal ? `${fmt(opNet)} operating` : `${fmt(totalNet)} with asset sales`) : 'income − expenses'}
+            icon={<Wallet className="h-5 w-5 text-blue-500" />}
+          />
+          <Card title="Invested" value={fmt(opInvested)} subtitle="capital deployed" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
+          <Card
+            title="Saved"
+            value={fmt(showTotal ? totalSaved : opSaved)}
+            subtitle={hasCapital && showTotal ? `${fmt(opSaved)} operating` : 'operating − investing'}
+            icon={<Percent className="h-5 w-5 text-purple-500" />}
+          />
         </div>
 
         {/* P&L statement */}
@@ -237,7 +329,7 @@ export default function CashFlowPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {!pnl || (pnl.income.length === 0 && pnl.expense.length === 0 && pnl.investing.length === 0) ? (
+                {!pnl || (pnl.income.length === 0 && pnl.expense.length === 0 && pnl.investing.length === 0 && pnl.capitalEvents.length === 0) ? (
                   <tr>
                     <td colSpan={months.length + 2} className="px-4 py-12 text-center text-gray-400">
                       {isLoading ? 'Loading…' : 'No transactions in this period.'}
@@ -268,6 +360,28 @@ export default function CashFlowPage() {
                         <TotalRow label="Total Invested" byMonth={t!.investingByMonth} total={t!.investingTotal} months={months} showMonthCols={showMonthCols} tone="investing" currency={currency} fmt={fmt} />
 
                         <TotalRow label="Net Cash Flow" byMonth={t!.netCashByMonth} total={t!.netCash} months={months} showMonthCols={showMonthCols} tone="netcash" currency={currency} fmt={fmt} />
+                      </>
+                    )}
+
+                    {/* Non-operating: asset sales, inheritance, gifts. Each event
+                        nets its proceeds against its own costs. Kept out of the
+                        operating figures above and totalled back in below. */}
+                    {hasCapital && (
+                      <>
+                        <SectionRow label="Asset sales & one-offs" span={months.length} showMonthCols={showMonthCols} tone="capital" />
+                        {pnl.capitalEvents.map((e) => (
+                          <EventRow key={`c-${e.id}`} event={e} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openEventDrill} />
+                        ))}
+                        <TotalRow
+                          label="Total Cash Flow (incl. asset sales)"
+                          byMonth={{}}
+                          total={{ usd: t!.netCash.usd + t!.capital.net.usd, gbp: t!.netCash.gbp + t!.capital.net.gbp }}
+                          months={months}
+                          showMonthCols={showMonthCols}
+                          tone="netcash"
+                          currency={currency}
+                          fmt={fmt}
+                        />
                       </>
                     )}
                   </>
@@ -301,6 +415,13 @@ interface DrillTxn {
   currency: string
   accountName: string | null
   categoryName: string
+  eventId: string | null
+}
+
+interface EventOption {
+  id: string
+  name: string
+  kind: string
 }
 
 interface DrillCat {
@@ -316,7 +437,7 @@ function DrillDrawer({
   onClose,
   onChanged,
 }: {
-  drill: { category: string; from: string; to: string; label: string } | null
+  drill: { category: string; from: string; to: string; label: string; eventId?: string } | null
   currency: Currency
   onClose: () => void
   onChanged: () => void
@@ -324,6 +445,7 @@ function DrillDrawer({
   const [txns, setTxns] = useState<DrillTxn[]>([])
   const [loading, setLoading] = useState(false)
   const [cats, setCats] = useState<DrillCat[]>([])
+  const [events, setEvents] = useState<EventOption[]>([])
   const [savingId, setSavingId] = useState<string | null>(null)
 
   useEffect(() => {
@@ -333,38 +455,108 @@ function DrillDrawer({
       .catch(() => {})
   }, [])
 
-  useEffect(() => {
-    if (!drill) return
-    let cancelled = false
-    setLoading(true)
-    setTxns([])
-    const qs = new URLSearchParams({ categoryName: drill.category, from: drill.from, to: drill.to, limit: '1000' })
-    fetch(`/api/transactions?${qs.toString()}`)
+  const reloadEvents = useCallback(() => {
+    fetch('/api/events')
       .then((r) => (r.ok ? r.json() : Promise.reject()))
-      .then((d) => {
-        if (!cancelled) setTxns(d.transactions || [])
-      })
+      .then((d) => setEvents(d.events || []))
       .catch(() => {})
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
-    return () => {
-      cancelled = true
+  }, [])
+
+  useEffect(() => {
+    reloadEvents()
+  }, [reloadEvents])
+
+  const loadTxns = useCallback(async () => {
+    if (!drill) return
+    setLoading(true)
+    // An event drill lists everything assigned to the event; a category drill
+    // lists that category's transactions in the range.
+    const qs = drill.eventId
+      ? new URLSearchParams({ eventId: drill.eventId, from: drill.from, to: drill.to, limit: '1000' })
+      : new URLSearchParams({ categoryName: drill.category, from: drill.from, to: drill.to, limit: '1000' })
+    try {
+      const r = await fetch(`/api/transactions?${qs.toString()}`)
+      if (!r.ok) throw new Error()
+      const d = await r.json()
+      const list: DrillTxn[] = d.transactions || []
+      // A category drill mirrors an operating P&L line, which excludes anything
+      // assigned to a capital event — so hide those here too; they surface in
+      // the event's own drill instead.
+      setTxns(drill.eventId ? list : list.filter((tx) => !tx.eventId))
+    } catch {
+      setTxns([])
+    } finally {
+      setLoading(false)
     }
   }, [drill])
+
+  useEffect(() => {
+    if (!drill) {
+      setTxns([])
+      return
+    }
+    setTxns([])
+    loadTxns()
+  }, [drill, loadTxns])
 
   const expenseCats = cats.filter((c) => c.type === 'expense')
   const incomeCats = cats.filter((c) => c.type === 'income')
   const transferCats = cats.filter((c) => c.type === 'transfer')
   const investmentCats = cats.filter((c) => c.type === 'investment')
 
+  // Assign (or clear, with null) the capital event a transaction belongs to.
+  async function assignEvent(tx: DrillTxn, eventId: string | null) {
+    if ((tx.eventId ?? null) === eventId) return
+    setSavingId(tx.id)
+    try {
+      await fetch(`/api/transactions/${tx.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventId }),
+      })
+      onChanged() // refresh the P&L behind the drawer
+      await loadTxns()
+      reloadEvents()
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  async function createEventAndAssign(tx: DrillTxn) {
+    const name = window.prompt('New event name (e.g. House sale, Car sale, Inheritance)')
+    if (!name || !name.trim()) return
+    setSavingId(tx.id)
+    try {
+      const res = await fetch('/api/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), kind: 'asset_sale' }),
+      })
+      const d = await res.json()
+      if (d.event?.id) {
+        await fetch(`/api/transactions/${tx.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eventId: d.event.id }),
+        })
+        onChanged()
+        await loadTxns()
+        reloadEvents()
+      }
+    } finally {
+      setSavingId(null)
+    }
+  }
+
   async function reclassify(tx: DrillTxn, newName: string) {
-    if (!drill || newName === drill.category) return
+    if (!drill || newName === tx.categoryName) return
     const cat = cats.find((c) => c.name === newName)
     if (!cat) return
     setSavingId(tx.id)
-    // Optimistically drop the row from this category's list (it's moving out).
-    setTxns((prev) => prev.filter((t) => t.id !== tx.id))
+    // In a category drill the row is leaving this list, so drop it for a snappy
+    // feel; in an event drill it stays (only its category changes), so we just
+    // reload below.
+    if (!drill.eventId) setTxns((prev) => prev.filter((t) => t.id !== tx.id))
     try {
       await fetch(`/api/transactions/${tx.id}`, {
         method: 'PATCH',
@@ -378,9 +570,10 @@ function DrillDrawer({
         body: JSON.stringify({ description: tx.description, categoryId: cat.id }),
       }).catch(() => {})
       onChanged() // refresh the P&L behind the drawer
+      if (drill.eventId) await loadTxns()
     } catch {
       // Put it back if the save failed.
-      setTxns((prev) => [tx, ...prev])
+      if (!drill.eventId) setTxns((prev) => [tx, ...prev])
     } finally {
       setSavingId(null)
     }
@@ -430,7 +623,7 @@ function DrillDrawer({
                   <div className="mt-1.5 flex items-center gap-2">
                     <span className="shrink-0 text-xs text-gray-400">{fmtDate(tx.date)}</span>
                     <Select
-                      value={drill.category}
+                      value={tx.categoryName}
                       onChange={(v) => reclassify(tx, v)}
                       searchable
                       ariaLabel="Reclassify"
@@ -441,6 +634,20 @@ function DrillDrawer({
                         ...investmentCats.map((c) => ({ value: c.name, label: c.name, group: 'Investments', color: c.color })),
                         ...transferCats.map((c) => ({ value: c.name, label: c.name, group: 'Transfers', color: c.color })),
                       ]}
+                    />
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-2">
+                    <span className="shrink-0 text-[11px] uppercase tracking-wide text-gray-300">Event</span>
+                    <Select
+                      value={tx.eventId ?? ''}
+                      onChange={(v) => assignEvent(tx, v || null)}
+                      ariaLabel="Assign to a capital event"
+                      buttonClassName="inline-flex h-8 w-full min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-700 hover:bg-gray-50"
+                      options={[
+                        { value: '', label: 'Operating (no event)' },
+                        ...events.map((e) => ({ value: e.id, label: `${e.name} · ${(KIND_LABEL[e.kind] ?? 'One-off').toLowerCase()}`, group: 'Events' })),
+                      ]}
+                      actions={[{ label: '＋ New event…', onSelect: () => createEventAndAssign(tx) }]}
                     />
                   </div>
                 </div>
@@ -457,17 +664,67 @@ function DrillDrawer({
 // Row components
 // ---------------------------------------------------------------------------
 
-function SectionRow({ label, span, showMonthCols, tone }: { label: string; span: number; showMonthCols: boolean; tone: 'income' | 'expense' | 'investing' }) {
+function SectionRow({ label, span, showMonthCols, tone }: { label: string; span: number; showMonthCols: boolean; tone: 'income' | 'expense' | 'investing' | 'capital' }) {
+  const color =
+    tone === 'income'
+      ? 'text-emerald-600'
+      : tone === 'investing'
+        ? 'text-indigo-600'
+        : tone === 'capital'
+          ? 'text-violet-600'
+          : 'text-rose-600'
   return (
     <tr className="bg-gray-50">
-      <td
-        className={`sticky left-0 z-10 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider ${
-          tone === 'income' ? 'text-emerald-600' : tone === 'investing' ? 'text-indigo-600' : 'text-rose-600'
-        }`}
-      >
+      <td className={`sticky left-0 z-10 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider ${color}`}>
         {label}
       </td>
       <td colSpan={(showMonthCols ? span : 0) + 1} className="bg-gray-50" />
+    </tr>
+  )
+}
+
+// A capital event row — no monthly breakdown (events are period totals), so the
+// month columns show a dot and the net lands in the Total column, drillable to
+// the underlying transactions.
+function EventRow({
+  event,
+  months,
+  showMonthCols,
+  currency,
+  fmt,
+  onDrill,
+}: {
+  event: CapitalEvent
+  months: string[]
+  showMonthCols: boolean
+  currency: Currency
+  fmt: (n: number) => string
+  onDrill: (event: CapitalEvent) => void
+}) {
+  const net = pick(event.net, currency)
+  return (
+    <tr className="hover:bg-gray-50/50">
+      <td className="sticky left-0 z-10 bg-white px-4 py-2.5">
+        <div className="flex items-center gap-2">
+          <span className="inline-block h-2.5 w-2.5 rounded-full bg-violet-400" />
+          <span className="text-gray-700">{event.name}</span>
+          <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-600">
+            {KIND_LABEL[event.kind] ?? 'One-off'}
+          </span>
+        </div>
+      </td>
+      {showMonthCols && months.map((ym) => (
+        <td key={ym} className="px-4 py-2.5 text-right text-gray-300">·</td>
+      ))}
+      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900">
+        <button
+          onClick={() => onDrill(event)}
+          className="rounded px-1 font-medium tabular-nums text-gray-900 hover:bg-blue-50 hover:text-blue-700 hover:underline"
+          title="See transactions"
+        >
+          {fmt(net)}
+        </button>
+      </td>
     </tr>
   )
 }

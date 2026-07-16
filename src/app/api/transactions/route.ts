@@ -45,6 +45,7 @@ export async function GET(request: NextRequest) {
     if (sp.get('categoryId')) filters.categoryId = sp.get('categoryId')!
     if (sp.get('categoryName')) filters.categoryName = sp.get('categoryName')!
     if (sp.get('accountId')) filters.accountId = sp.get('accountId')!
+    if (sp.get('eventId')) filters.eventId = sp.get('eventId')!
     if (sp.get('from')) filters.from = sp.get('from')!
     if (sp.get('to')) filters.to = sp.get('to')!
     const type = sp.get('type')
@@ -78,6 +79,7 @@ export async function GET(request: NextRequest) {
       isBusinessExpense: row.is_business_expense,
       isInternalTransfer: row.is_internal_transfer,
       holder: row.holder as 'anjan' | 'kate' | 'joint',
+      eventId: row.event_id ?? null,
     }))
 
     return NextResponse.json({ transactions })
