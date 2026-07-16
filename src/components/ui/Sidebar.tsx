@@ -9,7 +9,6 @@ import {
   Scale,
   LayoutDashboard,
   ArrowLeftRight,
-  CalendarRange,
   TrendingUp,
   FolderOpen,
   Settings,
@@ -62,7 +61,6 @@ export const navSections: NavSection[] = [
       { href: "/import", label: "Import", icon: FolderOpen },
       { href: "/dashboard", label: "Monthly Cash Flow", icon: LayoutDashboard },
       { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
-      { href: "/annual", label: "Forecasting", icon: CalendarRange },
     ],
   },
   {
