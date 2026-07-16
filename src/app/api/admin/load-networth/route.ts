@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { requireAdmin } from '@/lib/auth'
 import { query } from '@/lib/db'
 import history from '@/data/networth-history.json'
 
@@ -28,6 +29,8 @@ interface Snap {
 }
 
 export async function POST() {
+  const denied = await requireAdmin()
+  if (denied) return denied
   try {
     let upserted = 0
     for (const s of history as Snap[]) {

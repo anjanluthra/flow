@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { requireAdmin } from '@/lib/auth'
 import { query } from '@/lib/db'
 
 export const dynamic = 'force-dynamic'
@@ -63,6 +64,8 @@ const ENSURE_ONLY: Array<Pick<Row, 'name' | 'institution' | 'country' | 'currenc
 ]
 
 export async function POST() {
+  const denied = await requireAdmin()
+  if (denied) return denied
   try {
     // Discover valid account_type enum labels so we can create accounts safely.
     let typeLabels: string[] = []

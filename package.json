@@ -12,6 +12,7 @@
     "@vercel/postgres": "^0.10.0",
     "bcryptjs": "^3.0.3",
     "date-fns": "^4.4.0",
+    "isomorphic-dompurify": "^3.18.0",
     "lucide-react": "^1.22.0",
     "mammoth": "^1.12.0",
     "next": "16.2.9",

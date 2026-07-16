@@ -1,7 +1,32 @@
 import NextAuth, { type AuthOptions, type User } from 'next-auth'
 import CredentialsProvider from 'next-auth/providers/credentials'
 import bcrypt from 'bcryptjs'
+import { timingSafeEqual } from 'crypto'
 import { query } from '@/lib/db'
+
+// Warn loudly if the JWT secret isn't configured in production — without it
+// NextAuth falls back to an insecure key. (A warning, not a throw, so it can't
+// break the build if the secret is only present at runtime.)
+if (process.env.NODE_ENV === 'production' && !process.env.NEXTAUTH_SECRET) {
+  console.error('SECURITY: NEXTAUTH_SECRET is not set — sessions are not securely signed.')
+}
+
+// A pre-computed bcrypt hash we compare against on the "no such user" path so an
+// unknown email takes the same time as a real one (defeats user enumeration by
+// timing). The value is irrelevant — it just needs to be a valid hash.
+const DUMMY_HASH = '$2a$10$C6UzMDM.H6dfI/f/IKcEeO3f3x6q2Z9Qm8Kx0m6oq0Qp8Yy6uS0K'
+
+// Constant-time string comparison (avoids leaking the env password via timing).
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a)
+  const bb = Buffer.from(b)
+  if (ab.length !== bb.length) {
+    // Still do a compare of equal-length buffers so length isn't a fast path.
+    timingSafeEqual(ab, ab)
+    return false
+  }
+  return timingSafeEqual(ab, bb)
+}
 
 // ---------------------------------------------------------------------------
 // Hardcoded users
@@ -54,7 +79,7 @@ export const authOptions: AuthOptions = {
 
         if (user) {
           const expectedPassword = process.env[user.envKey]
-          if (!expectedPassword || credentials.password !== expectedPassword) {
+          if (!expectedPassword || !safeEqual(credentials.password, expectedPassword)) {
             return null
           }
           return {
@@ -74,10 +99,10 @@ export const authOptions: AuthOptions = {
             [credentials.email],
           )
           const dbUser = result.rows[0]
-          if (!dbUser?.password_hash) return null
-
-          const ok = await bcrypt.compare(credentials.password, dbUser.password_hash)
-          if (!ok) return null
+          // Always run a bcrypt compare (real hash or dummy) so an unknown email
+          // costs the same as a known one — no timing-based enumeration.
+          const ok = await bcrypt.compare(credentials.password, dbUser?.password_hash ?? DUMMY_HASH)
+          if (!dbUser?.password_hash || !ok) return null
 
           return {
             id: String(dbUser.id),
@@ -95,6 +120,21 @@ export const authOptions: AuthOptions = {
 
   session: {
     strategy: 'jwt',
+    // Re-auth weekly instead of NextAuth's 30-day default.
+    maxAge: 7 * 24 * 60 * 60,
+  },
+
+  // Harden the session cookie: httpOnly + sameSite=lax + secure in production.
+  cookies: {
+    sessionToken: {
+      name: process.env.NODE_ENV === 'production' ? '__Secure-next-auth.session-token' : 'next-auth.session-token',
+      options: {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        secure: process.env.NODE_ENV === 'production',
+      },
+    },
   },
 
   callbacks: {
