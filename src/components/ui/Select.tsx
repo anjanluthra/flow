@@ -21,9 +21,11 @@ export interface SelectOption {
 }
 
 interface PanelPos {
-  top: number
+  top?: number
+  bottom?: number
   left: number
   width: number
+  maxHeight: number
 }
 
 // Shared hook: track the trigger rect and keep the portal panel positioned.
@@ -44,7 +46,15 @@ function usePanelPosition(
     const width = Math.max(r.width, minWidth)
     let left = align === 'right' ? r.right - width : r.left
     left = Math.max(8, Math.min(left, window.innerWidth - width - 8))
-    setPos({ top: r.bottom + 6, left, width })
+    // Flip the panel above the trigger when there isn't room below (e.g. a row
+    // near the bottom of the viewport), and cap its height to the space so the
+    // options are always reachable.
+    const spaceBelow = window.innerHeight - r.bottom - 8
+    const spaceAbove = r.top - 8
+    const openUp = spaceBelow < 220 && spaceAbove > spaceBelow
+    const maxHeight = Math.max(140, Math.min(320, openUp ? spaceAbove : spaceBelow))
+    if (openUp) setPos({ bottom: window.innerHeight - r.top + 6, left, width, maxHeight })
+    else setPos({ top: r.bottom + 6, left, width, maxHeight })
   }
 
   useLayoutEffect(() => {
@@ -157,7 +167,7 @@ export function Select({
         createPortal(
           <div
             ref={panelRef}
-            style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width }}
+            style={{ position: 'fixed', left: pos.left, width: pos.width, ...(pos.top != null ? { top: pos.top } : { bottom: pos.bottom }) }}
             className="z-[60] rounded-xl border border-gray-200 bg-white p-2 shadow-xl"
           >
             {searchable && (
@@ -169,7 +179,7 @@ export function Select({
                 className="mb-1.5 w-full rounded-md border border-gray-200 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300"
               />
             )}
-            <div className="max-h-72 overflow-y-auto">
+            <div className="overflow-y-auto" style={{ maxHeight: pos.maxHeight }}>
               {groups.map((g) => (
                 <div key={g}>
                   {g && (
@@ -289,7 +299,7 @@ export function MultiSelect({
         createPortal(
           <div
             ref={panelRef}
-            style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width }}
+            style={{ position: 'fixed', left: pos.left, width: pos.width, ...(pos.top != null ? { top: pos.top } : { bottom: pos.bottom }) }}
             className="z-[60] rounded-xl border border-gray-200 bg-white p-2 shadow-xl"
           >
             <div className="mb-1.5 flex items-center justify-between px-1">
@@ -309,7 +319,7 @@ export function MultiSelect({
                 className="mb-1.5 w-full rounded-md border border-gray-200 px-2 py-1 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-300"
               />
             )}
-            <div className="max-h-72 overflow-y-auto">
+            <div className="overflow-y-auto" style={{ maxHeight: pos.maxHeight }}>
               {groups.map((g) => (
                 <div key={g}>
                   {g && (
