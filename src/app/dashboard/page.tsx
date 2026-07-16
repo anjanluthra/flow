@@ -165,7 +165,7 @@ export default function CashFlowPage() {
   // Forecast for the remaining (non-actual) months of the year, edited inline
   // in the P&L. Kept as strings keyed by "YYYY-MM" so the inputs are natural to
   // type into; seeded from saved forecasts, else the average of actual months.
-  const [fcEdits, setFcEdits] = useState<Record<string, { income: string; expense: string }>>({})
+  const [fcEdits, setFcEdits] = useState<Record<string, { income: string; expense: string; investment: string }>>({})
   useEffect(() => {
     if (mode !== 'year') {
       setFcEdits({})
@@ -175,18 +175,20 @@ export default function CashFlowPage() {
     fetch(`/api/forecast?year=${year}`)
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => {
-        const rows: Array<{ month: number; hasActuals: boolean; actualIncome: number; actualExpense: number; forecastIncome: number | null; forecastExpense: number | null }> = d.months || []
+        const rows: Array<{ month: number; hasActuals: boolean; actualIncome: number; actualExpense: number; actualInvestment?: number; forecastIncome: number | null; forecastExpense: number | null; forecastInvestment?: number | null }> = d.months || []
         const actual = rows.filter((r) => r.hasActuals)
         const avg = (sel: (r: typeof rows[number]) => number) =>
           actual.length ? Math.round(actual.reduce((s, r) => s + sel(r), 0) / actual.length) : 0
         const avgI = avg((r) => r.actualIncome)
         const avgE = avg((r) => r.actualExpense)
-        const seeded: Record<string, { income: string; expense: string }> = {}
+        const avgV = avg((r) => r.actualInvestment ?? 0)
+        const seeded: Record<string, { income: string; expense: string; investment: string }> = {}
         for (const r of rows) {
           if (!r.hasActuals) {
             seeded[`${year}-${String(r.month).padStart(2, '0')}`] = {
               income: String(r.forecastIncome ?? avgI),
               expense: String(r.forecastExpense ?? avgE),
+              investment: String(r.forecastInvestment ?? avgV),
             }
           }
         }
@@ -212,8 +214,10 @@ export default function CashFlowPage() {
   const fcIncome = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.income))])), [fcEdits, toDisplay])
   const fcExpense = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.expense))])), [fcEdits, toDisplay])
   const fcSaved = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.income) - num(v.expense))])), [fcEdits, toDisplay])
+  const fcInvest = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.investment))])), [fcEdits, toDisplay])
   const fcIncomeStr = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, v.income])), [fcEdits])
   const fcExpenseStr = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, v.expense])), [fcEdits])
+  const fcInvestStr = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, v.investment])), [fcEdits])
 
   // Forecast is edited in USD (its storage unit); GBP view is read-only.
   const fcEditable = mode === 'year' && currency === 'USD'
@@ -223,6 +227,7 @@ export default function CashFlowPage() {
   // The Actuals/+Forecast toggle decides whether the forecast is folded in.
   const fcIncomeTot = useMemo(() => Object.values(fcIncome).reduce((s, v) => s + v, 0), [fcIncome])
   const fcExpenseTot = useMemo(() => Object.values(fcExpense).reduce((s, v) => s + v, 0), [fcExpense])
+  const fcInvestTot = useMemo(() => Object.values(fcInvest).reduce((s, v) => s + v, 0), [fcInvest])
   const fcNetTot = fcIncomeTot - fcExpenseTot
   const addFc = cardBasis === 'projected'
   const cardIncomeOp = opIncome + (addFc ? fcIncomeTot : 0)
@@ -231,11 +236,12 @@ export default function CashFlowPage() {
   const cardExpenseTotal = totalExpense + (addFc ? fcExpenseTot : 0)
   const cardNetOp = opNet + (addFc ? fcNetTot : 0)
   const cardNetTotal = totalNet + (addFc ? fcNetTot : 0)
+  const cardInvested = opInvested + (addFc ? fcInvestTot : 0)
   const shownIncome = showTotal ? cardIncomeTotal : cardIncomeOp
   const shownNet = showTotal ? cardNetTotal : cardNetOp
   const savedPct = shownIncome > 0 ? Math.round((shownNet / shownIncome) * 100) : 0
-  const onFcChange = useCallback((ym: string, field: 'income' | 'expense', value: string) => {
-    setFcEdits((prev) => ({ ...prev, [ym]: { income: prev[ym]?.income ?? '0', expense: prev[ym]?.expense ?? '0', [field]: value } }))
+  const onFcChange = useCallback((ym: string, field: 'income' | 'expense' | 'investment', value: string) => {
+    setFcEdits((prev) => ({ ...prev, [ym]: { income: prev[ym]?.income ?? '0', expense: prev[ym]?.expense ?? '0', investment: prev[ym]?.investment ?? '0', [field]: value } }))
   }, [])
   const commitFc = useCallback(
     (ym: string) => {
@@ -246,7 +252,7 @@ export default function CashFlowPage() {
           fetch('/api/forecast', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ year: yy, month: mm, forecastIncome: num(e.income), forecastExpense: num(e.expense) }),
+            body: JSON.stringify({ year: yy, month: mm, forecastIncome: num(e.income), forecastExpense: num(e.expense), forecastInvestment: num(e.investment) }),
           }).catch(() => {})
         }
         return cur
@@ -332,7 +338,7 @@ export default function CashFlowPage() {
       <div className="mx-auto max-w-[1800px] px-4 py-8 sm:px-6 lg:px-8">
         {/* Header */}
         <div className="mb-6">
-          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Monthly Cash Flow</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Cash Flow</h1>
           <p className="mt-1 text-sm text-gray-500">Income, expenses &amp; investing activities</p>
         </div>
 
@@ -467,7 +473,7 @@ export default function CashFlowPage() {
             subtitle={`${savedPct}% of income${hasCapital ? (showTotal ? ` · ${fmt(cardNetOp)} operating` : ` · ${fmt(cardNetTotal)} with asset sales`) : addFc ? ' · incl. forecast' : ''}`}
             icon={<Wallet className="h-5 w-5 text-blue-500" />}
           />
-          <Card title="Invested" value={fmt(opInvested)} subtitle="total invested (income & reserves)" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
+          <Card title="Invested" value={fmt(cardInvested)} subtitle={addFc && fcInvestTot ? 'incl. forecast' : 'total invested (income & reserves)'} icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
         </div>
 
         {/* Expense-budget tracker — one slim line: budget vs planned (actuals +
@@ -517,7 +523,7 @@ export default function CashFlowPage() {
             Total Income / Total Expenses rows below. */}
         {fcEditable && Object.keys(fcEdits).length > 0 && (
           <p className="mb-6 text-sm italic text-gray-500">
-            Future months are editable — type a forecast into the italic cells on the Total Income and Total Expenses rows; it saves automatically and folds into the year totals.
+            Future months are editable — type a forecast into the italic cells on the Total Income, Total Expenses and Total Invested rows; it saves automatically and folds into the year totals.
           </p>
         )}
 
@@ -581,7 +587,7 @@ export default function CashFlowPage() {
                         {pnl.investing.map((l) => (
                           <LineRow key={`v-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                         ))}
-                        <TotalRow label="Total Invested" byMonth={t!.investingByMonth} total={t!.investingTotal} months={months} showMonthCols={showMonthCols} tone="investing" currency={currency} fmt={fmt} />
+                        <TotalRow label="Total Invested" byMonth={t!.investingByMonth} total={t!.investingTotal} months={months} showMonthCols={showMonthCols} tone="investing" currency={currency} fmt={fmt} forecast={fcInvest} editable={fcEditable} editValues={fcInvestStr} onEditChange={(ym, v) => onFcChange(ym, 'investment', v)} onEditCommit={commitFc} />
                       </>
                     )}
 

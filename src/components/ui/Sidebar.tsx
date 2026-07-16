@@ -58,9 +58,9 @@ export const navSections: NavSection[] = [
   {
     label: "Cash Flow",
     items: [
-      { href: "/import", label: "Import", icon: FolderOpen },
-      { href: "/dashboard", label: "Monthly Cash Flow", icon: LayoutDashboard },
+      { href: "/dashboard", label: "Cash Flow", icon: LayoutDashboard },
       { href: "/transactions", label: "Transactions", icon: ArrowLeftRight },
+      { href: "/import", label: "Import", icon: FolderOpen },
     ],
   },
   {

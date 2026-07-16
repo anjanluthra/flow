@@ -1375,7 +1375,8 @@ export default function ImportPage() {
   const yearDocs = documents
     .filter((d) => coveredMonthsInYear(d, gridYear).length > 0)
     .filter((d) => !cellFilter || (docAccount(d) === cellFilter.account && coveredMonthsInYear(d, gridYear).includes(cellFilter.month)))
-    .sort((a, b) => (b.periodEnd ?? b.statementDate ?? '').localeCompare(a.periodEnd ?? a.statementDate ?? ''))
+    // Chronological within the year — earliest month (Jan) first.
+    .sort((a, b) => (coveredMonthsInYear(a, gridYear)[0] ?? 99) - (coveredMonthsInYear(b, gridYear)[0] ?? 99))
   // Group the year's statements by account so the list reads per-account.
   const yearDocsByAccount = Array.from(
     yearDocs.reduce((m, d) => {
