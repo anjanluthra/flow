@@ -5,7 +5,8 @@ import { getToken } from 'next-auth/jwt'
 export async function middleware(request: NextRequest) {
   const token = await getToken({ req: request, secret: process.env.NEXTAUTH_SECRET })
 
-  const isAuthPage = request.nextUrl.pathname.startsWith('/auth/login')
+  // All /auth/* pages (login + set-password from an invite) are public.
+  const isAuthPage = request.nextUrl.pathname.startsWith('/auth/')
   const isApiAuth = request.nextUrl.pathname.startsWith('/api/auth')
   // Household photos are shown on the (unauthenticated) login page.
   const isPublicPhoto = request.nextUrl.pathname.startsWith('/api/couple-photo')

@@ -392,6 +392,8 @@ export default function SettingsPage() {
   const [newName, setNewName] = useState('')
   const [newRole, setNewRole] = useState('user')
   const [newPassword, setNewPassword] = useState('')
+  const [inviteLink, setInviteLink] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const load = useCallback(async () => {
@@ -441,6 +443,42 @@ export default function SettingsPage() {
       setMessage({ kind: 'err', text: 'Failed to add user.' })
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  async function createInvite(email: string, fullName?: string, role?: string) {
+    setIsSubmitting(true)
+    setMessage(null)
+    setInviteLink(null)
+    setCopied(false)
+    try {
+      const res = await fetch('/api/users/invite', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim(), fullName: fullName?.trim() || undefined, role }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setMessage({ kind: 'err', text: data.error || 'Failed to create invite.' })
+        return
+      }
+      setInviteLink(data.inviteUrl)
+      await load()
+    } catch {
+      setMessage({ kind: 'err', text: 'Failed to create invite.' })
+    } finally {
+      setIsSubmitting(false)
+    }
+  }
+
+  async function copyInvite() {
+    if (!inviteLink) return
+    try {
+      await navigator.clipboard.writeText(inviteLink)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      /* clipboard blocked — the link is selectable in the field */
     }
   }
 
@@ -534,12 +572,12 @@ export default function SettingsPage() {
               />
               <input
                 type="password"
-                placeholder="Password (min 8 chars)"
+                placeholder="Password (optional — or send an invite)"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
                 className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
               />
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <Select
                   value={newRole}
                   onChange={setNewRole}
@@ -551,13 +589,44 @@ export default function SettingsPage() {
                   buttonClassName="inline-flex h-9 min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-2 text-sm text-gray-900 hover:bg-gray-50"
                 />
                 <button
+                  onClick={() => createInvite(newEmail, newName, newRole)}
+                  disabled={isSubmitting || !newEmail.trim()}
+                  title="Create a link they open to set their own password"
+                  className="rounded-lg border border-blue-300 bg-white px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                >
+                  {isSubmitting ? 'Working…' : 'Invite via link'}
+                </button>
+                <button
                   onClick={addUser}
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || !newPassword}
+                  title="Set their password directly"
                   className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
                 >
-                  {isSubmitting ? 'Adding…' : 'Add'}
+                  {isSubmitting ? 'Adding…' : 'Add with password'}
                 </button>
               </div>
+
+              {inviteLink && (
+                <div className="sm:col-span-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+                  <p className="mb-1.5 text-xs font-medium text-emerald-800">
+                    Invite link created — send it to them. It sets their own password and expires in 7 days.
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <input
+                      readOnly
+                      value={inviteLink}
+                      onFocus={(e) => e.target.select()}
+                      className="min-w-0 flex-1 rounded-md border border-emerald-200 bg-white px-2 py-1.5 font-mono text-xs text-gray-700"
+                    />
+                    <button
+                      onClick={copyInvite}
+                      className="shrink-0 rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+                    >
+                      {copied ? 'Copied ✓' : 'Copy'}
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
@@ -621,6 +690,15 @@ export default function SettingsPage() {
                       {isAdmin && (
                         <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-2">
+                            {!isEnvUser && !u.hasPassword && (
+                              <button
+                                onClick={() => createInvite(u.email, u.fullName ?? undefined, u.role)}
+                                title="Create an invite link so they can set their password"
+                                className="rounded-md px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50"
+                              >
+                                Invite link
+                              </button>
+                            )}
                             {!isEnvUser && (
                               <button
                                 onClick={() => resetPassword(u)}
