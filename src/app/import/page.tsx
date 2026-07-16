@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useCallback, useEffect, useRef } from 'react'
-import { Upload, CheckCircle, AlertCircle, FileText, Eye, Download, Trash2 } from 'lucide-react'
+import { Upload, CheckCircle, AlertCircle, FileText, Eye, Download, Trash2, Sparkles } from 'lucide-react'
 import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 import { FileUpload } from '@/components/ui/FileUpload'
 import { Select } from '@/components/ui/Select'
@@ -329,7 +329,10 @@ export default function ImportPage() {
   const [pendingPdfRows, setPendingPdfRows] = useState<
     { date: string; description: string; amount: number }[] | null
   >(null)
-  const [pdfDoc, setPdfDoc] = useState<{ base64: string; fileName: string; format: string } | null>(null)
+  const [pdfDoc, setPdfDoc] = useState<{ base64: string; fileName: string; format: string; originDocId?: string | null } | null>(null)
+  // Set while extracting a statement that's already saved in the archive, so its
+  // card can show a spinner and we can mark it imported (not duplicated) on save.
+  const [reprocessingId, setReprocessingId] = useState<string | null>(null)
   const [viewer, setViewer] = useState<DocViewerTarget | null>(null)
   const [archiveFilter, setArchiveFilter] = useState<{ account: string; year: string } | null>(null)
 
@@ -665,7 +668,7 @@ export default function ImportPage() {
   )
 
   const handleFileSelect = useCallback(
-    async (selectedFile: File) => {
+    async (selectedFile: File, originDocId?: string | null) => {
       setFile(selectedFile)
       setParseError(null)
       setSaveResult(null)
@@ -709,7 +712,7 @@ export default function ImportPage() {
           }
           const format = `PDF · ${data.bankHint || 'statement'}`
           setPendingPdfRows(rows)
-          setPdfDoc({ base64, fileName: selectedFile.name, format })
+          setPdfDoc({ base64, fileName: selectedFile.name, format, originDocId: originDocId ?? null })
 
           const detected = detectAccount(selectedFile.name, String(data.bankHint || ''), accounts, hints)
           setAutoDetected(!!detected)
@@ -772,6 +775,35 @@ export default function ImportPage() {
       }
     },
     [processStatement, loadDocuments, accounts, hints, buildPdfTransactions],
+  )
+
+  // Extract & categorise a statement that's already saved in the archive: pull
+  // its stored bytes back down and run them through the very same review flow as
+  // a fresh upload. On confirm it flips the saved file from "uploaded" to
+  // "imported" in place (see handleConfirmImport) rather than duplicating it.
+  const processSavedDoc = useCallback(
+    async (doc: StatementDoc) => {
+      if (reprocessingId) return
+      setReprocessingId(doc.id)
+      setSaveResult(null)
+      setParseError(null)
+      try {
+        const res = await fetch(`/api/documents/${doc.id}`)
+        if (!res.ok) throw new Error('fetch failed')
+        const blob = await res.blob()
+        const type = doc.fileName.toLowerCase().endsWith('.pdf')
+          ? 'application/pdf'
+          : blob.type || 'application/octet-stream'
+        const file = new File([blob], doc.fileName, { type })
+        if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
+        await handleFileSelect(file, doc.id)
+      } catch {
+        setParseError('Could not open that saved statement to extract it. Please try again.')
+      } finally {
+        setReprocessingId(null)
+      }
+    },
+    [reprocessingId, handleFileSelect],
   )
 
   // Manual override: re-parse the same file against the chosen account, and
@@ -1053,44 +1085,68 @@ export default function ImportPage() {
         prev ? { ...prev, imported: data.inserted, duplicates: data.skipped ?? 0 } : prev,
       )
 
-      // Archive the raw statement to the library, tagged with its format.
-      const archiveBody = pdfDoc
-        ? {
-            accountId: account.id,
-            fileName: pdfDoc.fileName,
-            mimeType: 'application/pdf',
-            contentBase64: pdfDoc.base64,
-            source: 'import',
-            formatSignature: pdfDoc.format,
-            importedCount: data.inserted,
-            dataRows: recon?.dataRows ?? null,
-          }
-        : rawText
-          ? {
+      // Archive the statement. If we're re-importing one that's already saved
+      // (extracted from the archive), update that row in place so it flips to
+      // "imported" instead of creating a duplicate; otherwise file a fresh copy.
+      if (pdfDoc?.originDocId) {
+        try {
+          const patchRes = await fetch(`/api/documents/${pdfDoc.originDocId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
               accountId: account.id,
-              fileName: rawFileName || 'statement.csv',
-              mimeType: 'text/csv',
-              contentBase64: btoa(unescape(encodeURIComponent(rawText))),
               source: 'import',
-              formatSignature: headerSignature(rawText),
               importedCount: data.inserted,
               dataRows: recon?.dataRows ?? null,
-            }
-          : null
-
-      if (archiveBody) {
-        try {
-          const archRes = await fetch('/api/documents', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(archiveBody),
+              formatSignature: pdfDoc.format,
+            }),
           })
-          if (!archRes.ok) {
-            setSaveResult((prev) => `${prev ?? ''} (but filing the statement to the archive failed)`)
+          if (!patchRes.ok) {
+            setSaveResult((prev) => `${prev ?? ''} (but updating the saved statement failed)`)
           }
           await loadDocuments()
         } catch {
-          setSaveResult((prev) => `${prev ?? ''} (but filing the statement to the archive failed)`)
+          setSaveResult((prev) => `${prev ?? ''} (but updating the saved statement failed)`)
+        }
+      } else {
+        const archiveBody = pdfDoc
+          ? {
+              accountId: account.id,
+              fileName: pdfDoc.fileName,
+              mimeType: 'application/pdf',
+              contentBase64: pdfDoc.base64,
+              source: 'import',
+              formatSignature: pdfDoc.format,
+              importedCount: data.inserted,
+              dataRows: recon?.dataRows ?? null,
+            }
+          : rawText
+            ? {
+                accountId: account.id,
+                fileName: rawFileName || 'statement.csv',
+                mimeType: 'text/csv',
+                contentBase64: btoa(unescape(encodeURIComponent(rawText))),
+                source: 'import',
+                formatSignature: headerSignature(rawText),
+                importedCount: data.inserted,
+                dataRows: recon?.dataRows ?? null,
+              }
+            : null
+
+        if (archiveBody) {
+          try {
+            const archRes = await fetch('/api/documents', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(archiveBody),
+            })
+            if (!archRes.ok) {
+              setSaveResult((prev) => `${prev ?? ''} (but filing the statement to the archive failed)`)
+            }
+            await loadDocuments()
+          } catch {
+            setSaveResult((prev) => `${prev ?? ''} (but filing the statement to the archive failed)`)
+          }
         }
       }
 
@@ -1758,10 +1814,23 @@ export default function ImportPage() {
                               <p className="truncate text-sm font-medium text-gray-900" title={d.fileName}>
                                 {d.fileName}
                               </p>
-                              <p className="truncate text-xs text-gray-400">
-                                {d.source === 'import' ? 'Imported' : 'Uploaded'} · {fmtDocDate(d.uploadedAt)} · {fmtBytes(d.sizeBytes)}
-                                {d.importedCount != null ? ` · ${d.importedCount} txns` : ''}
-                              </p>
+                              <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
+                                {d.source === 'import' ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700">
+                                    <CheckCircle className="h-3 w-3" />
+                                    Added to transactions
+                                    {d.importedCount != null ? ` · ${d.importedCount} txns` : ''}
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                                    <AlertCircle className="h-3 w-3" />
+                                    Not imported yet
+                                  </span>
+                                )}
+                                <span className="truncate text-xs text-gray-400">
+                                  {fmtDocDate(d.uploadedAt)} · {fmtBytes(d.sizeBytes)}
+                                </span>
+                              </div>
                               <div className="mt-1.5 flex items-center gap-1.5">
                                 <Select
                                   ariaLabel="Assign account"
@@ -1782,6 +1851,27 @@ export default function ImportPage() {
                                   buttonClassName="inline-flex h-6 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-1.5 text-xs text-gray-600 hover:bg-gray-50"
                                 />
                               </div>
+                              {/* Not imported yet + it's a PDF → offer to extract & categorise it. */}
+                              {d.source !== 'import' && d.fileName.toLowerCase().endsWith('.pdf') && (
+                                <button
+                                  onClick={() => processSavedDoc(d)}
+                                  disabled={reprocessingId !== null}
+                                  title="Extract transactions from this statement and categorise them for review"
+                                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                >
+                                  {reprocessingId === d.id ? (
+                                    <>
+                                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                                      Extracting…
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Sparkles className="h-3.5 w-3.5" />
+                                      Extract &amp; categorise
+                                    </>
+                                  )}
+                                </button>
+                              )}
                             </div>
                             <div className="flex shrink-0 items-center gap-0.5">
                               <button
