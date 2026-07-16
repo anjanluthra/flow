@@ -112,6 +112,8 @@ export default function CashFlowPage() {
   const [currency, setCurrency] = useState<Currency>('USD')
   // Operating (default) strips out capital events; Total folds them back in.
   const [view, setView] = useState<'operating' | 'total'>('operating')
+  // Cards show actuals only (default) or actuals + the year's forecast.
+  const [cardBasis, setCardBasis] = useState<'actual' | 'projected'>('actual')
 
   const { from, to } = useMemo(() => {
     if (mode === 'year') return { from: `${year}-01-01`, to: `${year}-12-31` }
@@ -159,10 +161,6 @@ export default function CashFlowPage() {
   const totalExpense = opExpense + capCosts
   const totalNet = opNet + capNet
   const showTotal = view === 'total'
-  // Savings rate = Saved ÷ Income for the active view.
-  const shownIncome = showTotal ? totalIncome : opIncome
-  const shownNet = showTotal ? totalNet : opNet
-  const savedPct = shownIncome > 0 ? Math.round((shownNet / shownIncome) * 100) : 0
 
   // Forecast for the remaining (non-actual) months of the year, edited inline
   // in the P&L. Kept as strings keyed by "YYYY-MM" so the inputs are natural to
@@ -219,6 +217,23 @@ export default function CashFlowPage() {
 
   // Forecast is edited in USD (its storage unit); GBP view is read-only.
   const fcEditable = mode === 'year' && currency === 'USD'
+  const hasForecast = mode === 'year' && Object.keys(fcEdits).length > 0
+
+  // Forecast totals (display currency) and the resulting summary-card figures.
+  // The Actuals/+Forecast toggle decides whether the forecast is folded in.
+  const fcIncomeTot = useMemo(() => Object.values(fcIncome).reduce((s, v) => s + v, 0), [fcIncome])
+  const fcExpenseTot = useMemo(() => Object.values(fcExpense).reduce((s, v) => s + v, 0), [fcExpense])
+  const fcNetTot = fcIncomeTot - fcExpenseTot
+  const addFc = cardBasis === 'projected'
+  const cardIncomeOp = opIncome + (addFc ? fcIncomeTot : 0)
+  const cardIncomeTotal = totalIncome + (addFc ? fcIncomeTot : 0)
+  const cardExpenseOp = opExpense + (addFc ? fcExpenseTot : 0)
+  const cardExpenseTotal = totalExpense + (addFc ? fcExpenseTot : 0)
+  const cardNetOp = opNet + (addFc ? fcNetTot : 0)
+  const cardNetTotal = totalNet + (addFc ? fcNetTot : 0)
+  const shownIncome = showTotal ? cardIncomeTotal : cardIncomeOp
+  const shownNet = showTotal ? cardNetTotal : cardNetOp
+  const savedPct = shownIncome > 0 ? Math.round((shownNet / shownIncome) * 100) : 0
   const onFcChange = useCallback((ym: string, field: 'income' | 'expense', value: string) => {
     setFcEdits((prev) => ({ ...prev, [ym]: { income: prev[ym]?.income ?? '0', expense: prev[ym]?.expense ?? '0', [field]: value } }))
   }, [])
@@ -346,6 +361,24 @@ export default function CashFlowPage() {
               </div>
             )}
 
+            {/* Actuals vs actuals + forecast, for the summary cards. Only shown
+                once the year has forecast months. */}
+            {hasForecast && (
+              <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm" title="Include this year's forecast in the summary cards">
+                {([['actual', 'Actuals'], ['projected', '+ Forecast']] as const).map(([v, label]) => (
+                  <button
+                    key={v}
+                    onClick={() => setCardBasis(v)}
+                    className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${
+                      cardBasis === v ? 'bg-blue-600 text-white' : 'text-gray-600 hover:bg-gray-50'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Currency toggle */}
             <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
               {(['USD', 'GBP'] as Currency[]).map((c) => (
@@ -372,20 +405,20 @@ export default function CashFlowPage() {
         <div className="mb-3 grid grid-cols-2 gap-4 lg:grid-cols-4">
           <Card
             title="Income"
-            value={fmt(showTotal ? totalIncome : opIncome)}
-            subtitle={hasCapital ? (showTotal ? `${fmt(opIncome)} operating` : `${fmt(totalIncome)} with asset sales`) : 'for the period'}
+            value={fmt(showTotal ? cardIncomeTotal : cardIncomeOp)}
+            subtitle={hasCapital ? (showTotal ? `${fmt(cardIncomeOp)} operating` : `${fmt(cardIncomeTotal)} with asset sales`) : addFc ? 'incl. forecast' : 'for the period'}
             icon={<DollarSign className="h-5 w-5 text-green-500" />}
           />
           <Card
             title="Expenses"
-            value={fmt(showTotal ? totalExpense : opExpense)}
-            subtitle={hasCapital ? (showTotal ? `${fmt(opExpense)} operating` : `${fmt(totalExpense)} with sale costs`) : 'for the period'}
+            value={fmt(showTotal ? cardExpenseTotal : cardExpenseOp)}
+            subtitle={hasCapital ? (showTotal ? `${fmt(cardExpenseOp)} operating` : `${fmt(cardExpenseTotal)} with sale costs`) : addFc ? 'incl. forecast' : 'for the period'}
             icon={<TrendingDown className="h-5 w-5 text-red-500" />}
           />
           <Card
             title="Saved"
-            value={fmt(showTotal ? totalNet : opNet)}
-            subtitle={`${savedPct}% of income${hasCapital ? (showTotal ? ` · ${fmt(opNet)} operating` : ` · ${fmt(totalNet)} with asset sales`) : ''}`}
+            value={fmt(showTotal ? cardNetTotal : cardNetOp)}
+            subtitle={`${savedPct}% of income${hasCapital ? (showTotal ? ` · ${fmt(cardNetOp)} operating` : ` · ${fmt(cardNetTotal)} with asset sales`) : addFc ? ' · incl. forecast' : ''}`}
             icon={<Wallet className="h-5 w-5 text-blue-500" />}
           />
           <Card title="Invested" value={fmt(opInvested)} subtitle="total invested (income & reserves)" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
