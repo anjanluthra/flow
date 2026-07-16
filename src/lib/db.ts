@@ -701,6 +701,20 @@ export async function upsertForecast(
 // ---------------------------------------------------------------------------
 
 let budgetsReady = false
+// Invite-link columns on the users table: a hashed one-time token + expiry, so
+// a new user can set their own password instead of the admin choosing one.
+let userInviteColsReady = false
+export async function ensureUserInviteColumns() {
+  if (userInviteColsReady) return
+  try {
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_token_hash text`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_expires_at timestamptz`)
+    userInviteColsReady = true
+  } catch (error) {
+    console.error('ensureUserInviteColumns failed:', error)
+  }
+}
+
 export async function ensureBudgets() {
   if (budgetsReady) return
   try {
