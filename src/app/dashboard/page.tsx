@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
-import { DollarSign, TrendingDown, TrendingUp, Wallet, Percent, Pencil, Trash2 } from 'lucide-react'
+import { DollarSign, TrendingDown, TrendingUp, Wallet, Pencil, Trash2 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Select } from '@/components/ui/Select'
 
@@ -149,12 +149,55 @@ export default function CashFlowPage() {
   const opExpense = pick(t?.expenseTotal, currency)
   const opNet = pick(t?.net, currency)
   const opInvested = pick(t?.investingTotal, currency)
-  const opSaved = pick(t?.netCash, currency)
   const totalIncome = opIncome + capProceeds
   const totalExpense = opExpense + capCosts
   const totalNet = opNet + capNet
-  const totalSaved = opSaved + capNet
   const showTotal = view === 'total'
+
+  // Full-year projection (actuals + saved/averaged forecast) for the italic
+  // "projected" line — mirrors the Forecasting tab's total so the two agree.
+  const [annualProj, setAnnualProj] = useState<{ income: number; expense: number; net: number } | null>(null)
+  useEffect(() => {
+    if (mode !== 'year') {
+      setAnnualProj(null)
+      return
+    }
+    let cancelled = false
+    fetch(`/api/forecast?year=${year}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        const rows: Array<{ hasActuals: boolean; actualIncome: number; actualExpense: number; forecastIncome: number | null; forecastExpense: number | null }> = d.months || []
+        const actual = rows.filter((r) => r.hasActuals)
+        const avg = (sel: (r: typeof rows[number]) => number) =>
+          actual.length ? Math.round(actual.reduce((s, r) => s + sel(r), 0) / actual.length) : 0
+        const avgI = avg((r) => r.actualIncome)
+        const avgE = avg((r) => r.actualExpense)
+        let income = 0
+        let expense = 0
+        for (const r of rows) {
+          if (r.hasActuals) {
+            income += r.actualIncome
+            expense += r.actualExpense
+          } else {
+            income += r.forecastIncome ?? avgI
+            expense += r.forecastExpense ?? avgE
+          }
+        }
+        if (!cancelled) setAnnualProj({ income, expense, net: income - expense })
+      })
+      .catch(() => {
+        if (!cancelled) setAnnualProj(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mode, year])
+
+  // The forecast API returns USD; convert to the selected display currency.
+  const toDisplay = useCallback(
+    (usd: number) => (currency === 'GBP' ? usd / (pnl?.gbpRate || 1.3231) : usd),
+    [currency, pnl?.gbpRate],
+  )
 
   // Drill-down: clicking a P&L cell opens the underlying transactions.
   const [drill, setDrill] = useState<{ category: string; from: string; to: string; label: string; eventId?: string } | null>(null)
@@ -184,7 +227,7 @@ export default function CashFlowPage() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+      <div className="mx-auto max-w-[1800px] px-4 py-8 sm:px-6 lg:px-8">
         {/* Header */}
         <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-tight text-gray-900">Monthly Cash Flow</h1>
@@ -281,10 +324,11 @@ export default function CashFlowPage() {
           {isLoading && <span className="animate-pulse text-xs text-blue-500">Loading…</span>}
         </div>
 
-        {/* Summary cards — the headline follows the Operating/Total toggle; when
-            there are asset sales, the counterpart figure is shown underneath so
-            both numbers are always visible. */}
-        <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        {/* Summary cards. Saved = income − expenses (net operating); investing
+            is shown on its own (it's funded from reserves too, so it isn't
+            subtracted from what was saved). Headline follows the Operating/Total
+            toggle, with the counterpart underneath when there are asset sales. */}
+        <div className="mb-3 grid grid-cols-2 gap-4 lg:grid-cols-4">
           <Card
             title="Income"
             value={fmt(showTotal ? totalIncome : opIncome)}
@@ -298,19 +342,21 @@ export default function CashFlowPage() {
             icon={<TrendingDown className="h-5 w-5 text-red-500" />}
           />
           <Card
-            title={showTotal ? 'Net (Total)' : 'Net Operating'}
+            title="Saved"
             value={fmt(showTotal ? totalNet : opNet)}
             subtitle={hasCapital ? (showTotal ? `${fmt(opNet)} operating` : `${fmt(totalNet)} with asset sales`) : 'income − expenses'}
             icon={<Wallet className="h-5 w-5 text-blue-500" />}
           />
-          <Card title="Invested" value={fmt(opInvested)} subtitle="capital deployed" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
-          <Card
-            title="Saved"
-            value={fmt(showTotal ? totalSaved : opSaved)}
-            subtitle={hasCapital && showTotal ? `${fmt(opSaved)} operating` : 'operating − investing'}
-            icon={<Percent className="h-5 w-5 text-purple-500" />}
-          />
+          <Card title="Invested" value={fmt(opInvested)} subtitle="total invested (income & reserves)" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
         </div>
+
+        {/* Full-year projection incl. forecast (from the Forecasting tab), shown
+            in italics so it's clearly a projection, not an actual. */}
+        {mode === 'year' && annualProj && (
+          <p className="mb-8 text-sm italic text-gray-500">
+            Projected {year} incl. forecast — Income {fmt(toDisplay(annualProj.income))} · Expenses {fmt(toDisplay(annualProj.expense))} · Saved {fmt(toDisplay(annualProj.net))}
+          </p>
+        )}
 
         {/* First-run nudge: with no events yet, the operating/total split is
             invisible, so point the user at how to create their first event. */}
@@ -333,14 +379,14 @@ export default function CashFlowPage() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50 text-left">
-                  <th className="sticky left-0 z-20 bg-gray-50 px-4 py-3 font-medium text-gray-500">Category</th>
+                  <th className="sticky left-0 z-20 bg-gray-50 px-2.5 py-3 font-medium text-gray-500">Category</th>
                   {showMonthCols &&
                     months.map((ym) => (
-                      <th key={ym} className="px-4 py-3 text-right font-medium text-gray-500 whitespace-nowrap">
+                      <th key={ym} className="px-2.5 py-3 text-right font-medium text-gray-500 whitespace-nowrap">
                         {monthHeader(ym)}
                       </th>
                     ))}
-                  <th className="px-4 py-3 text-right font-semibold text-gray-600">Total</th>
+                  <th className="px-2.5 py-3 text-right font-semibold text-gray-600">Total</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -859,7 +905,7 @@ function SectionRow({ label, span, showMonthCols, tone }: { label: string; span:
           : 'text-rose-600'
   return (
     <tr className="bg-gray-50">
-      <td className={`sticky left-0 z-10 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider ${color}`}>
+      <td className={`sticky left-0 z-10 bg-gray-50 px-2.5 py-2 text-xs font-semibold uppercase tracking-wider ${color}`}>
         {label}
       </td>
       <td colSpan={(showMonthCols ? span : 0) + 1} className="bg-gray-50" />
@@ -888,7 +934,7 @@ function EventRow({
   const net = pick(event.net, currency)
   return (
     <tr onClick={() => onDrill(event)} className="group cursor-pointer hover:bg-blue-50/40" title="See the transactions in this event">
-      <td className="sticky left-0 z-10 bg-white px-4 py-2.5 group-hover:bg-blue-50/40">
+      <td className="sticky left-0 z-10 bg-white px-2.5 py-2 group-hover:bg-blue-50/40">
         <div className="flex items-center gap-2">
           <span className="inline-block h-2.5 w-2.5 rounded-full bg-violet-400" />
           <span className="text-gray-700 group-hover:text-blue-700 group-hover:underline">{event.name}</span>
@@ -898,9 +944,9 @@ function EventRow({
         </div>
       </td>
       {showMonthCols && months.map((ym) => (
-        <td key={ym} className="px-4 py-2.5 text-right text-gray-300">·</td>
+        <td key={ym} className="px-2.5 py-2 text-right text-gray-300">·</td>
       ))}
-      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900 group-hover:text-blue-700 group-hover:underline">
+      <td className="px-2.5 py-2 text-right font-medium tabular-nums text-gray-900 group-hover:text-blue-700 group-hover:underline">
         {fmt(net)}
       </td>
     </tr>
@@ -924,7 +970,7 @@ function LineRow({
 }) {
   return (
     <tr className="hover:bg-gray-50/50">
-      <td className="sticky left-0 z-10 bg-white px-4 py-2.5">
+      <td className="sticky left-0 z-10 bg-white px-2.5 py-2">
         <div className="flex items-center gap-2">
           <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: line.color }} />
           <span className="text-gray-700">{line.category}</span>
@@ -934,7 +980,7 @@ function LineRow({
         months.map((ym) => {
           const v = pick(line.monthly[ym], currency)
           return (
-            <td key={ym} className="px-4 py-2.5 text-right tabular-nums text-gray-500">
+            <td key={ym} className="px-2.5 py-2 text-right tabular-nums text-gray-500">
               {v ? (
                 <button
                   onClick={() => onDrill(line.category, ym)}
@@ -949,7 +995,7 @@ function LineRow({
             </td>
           )
         })}
-      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900">
+      <td className="px-2.5 py-2 text-right font-medium tabular-nums text-gray-900">
         {pick(line.total, currency) ? (
           <button
             onClick={() => onDrill(line.category, null)}
@@ -995,17 +1041,17 @@ function TotalRow({
   const stickyBg = tone === 'net' || tone === 'netcash' ? 'bg-blue-50 border-t-2 border-gray-300' : 'bg-gray-50'
   return (
     <tr className={`font-semibold ${bg}`}>
-      <td className={`sticky left-0 z-10 px-4 py-2.5 ${stickyBg} ${color}`}>{label}</td>
+      <td className={`sticky left-0 z-10 px-2.5 py-2 ${stickyBg} ${color}`}>{label}</td>
       {showMonthCols &&
         months.map((ym) => {
           const v = pick(byMonth[ym], currency)
           return (
-            <td key={ym} className={`px-4 py-2.5 text-right tabular-nums ${color}`}>
+            <td key={ym} className={`px-2.5 py-2 text-right tabular-nums ${color}`}>
               {v ? fmt(v) : '·'}
             </td>
           )
         })}
-      <td className={`px-4 py-2.5 text-right tabular-nums ${color}`}>{fmt(totalVal)}</td>
+      <td className={`px-2.5 py-2 text-right tabular-nums ${color}`}>{fmt(totalVal)}</td>
     </tr>
   )
 }
