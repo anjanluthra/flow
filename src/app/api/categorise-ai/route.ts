@@ -20,6 +20,16 @@ export const dynamic = 'force-dynamic'
 
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5'
 
+// A transaction's direction constrains its category: money-out can only be an
+// expense, money-in only income; transfers/investments move either way. When
+// the amount is unknown, allow anything. Prevents income being filed as an
+// expense category (e.g. a salary landing in "Car").
+function typeAllowed(type: string | undefined, amount: number | undefined): boolean {
+  if (amount === undefined || amount === null) return true
+  if (type === 'transfer' || type === 'investment') return true
+  return amount < 0 ? type === 'expense' : type === 'income'
+}
+
 // Build merchantPattern -> winning category from the household's own history.
 function buildHistoryModel(
   rows: Array<{ description: string; category_name: string }>,
@@ -58,8 +68,9 @@ function buildHistoryModel(
 
 export async function POST(request: NextRequest) {
   try {
-    const { descriptions, categories } = (await request.json()) as {
+    const { descriptions, amounts, categories } = (await request.json()) as {
       descriptions?: string[]
+      amounts?: number[]
       categories?: Array<{ name: string; type: string }>
     }
     if (!Array.isArray(descriptions) || descriptions.length === 0) {
@@ -70,6 +81,8 @@ export async function POST(request: NextRequest) {
     }
 
     const valid = new Set(categories.map((c) => c.name))
+    const catType = new Map(categories.map((c) => [c.name, c.type]))
+    const amountAt = (i: number): number | undefined => (Array.isArray(amounts) ? amounts[i] : undefined)
 
     // 1. Learn from history and resolve every merchant we've seen before.
     let model = new Map<string, string>()
@@ -94,13 +107,16 @@ export async function POST(request: NextRequest) {
     const resolved = new Array<string | null>(descriptions.length).fill(null)
     const unknownIdx: number[] = []
     descriptions.forEach((d, i) => {
+      // Only accept a learned match whose category suits this row's direction —
+      // an Amazon refund (money in) shouldn't inherit the "Shopping" expense.
+      const ok = (name: string) => typeAllowed(catType.get(name), amountAt(i))
       const exact = model.get(deriveMerchantPattern(d))
-      if (exact) {
+      if (exact && ok(exact)) {
         resolved[i] = exact
         return
       }
       const norm = normalizeMerchantText(d)
-      const contained = norm ? containable.find((r) => norm.includes(r.pattern)) : undefined
+      const contained = norm ? containable.find((r) => norm.includes(r.pattern) && ok(r.category)) : undefined
       if (contained) resolved[i] = contained.category
       else unknownIdx.push(i)
     })
@@ -119,6 +135,7 @@ export async function POST(request: NextRequest) {
       const system = `You are a meticulous bookkeeping assistant categorising bank and credit-card transactions for a UK→UAE household. You are given transaction descriptions and the ONLY categories you may use. For each, pick the single best-fitting category by exact name, or null only if truly impossible.
 
 Rules:
+- Direction is binding: a transaction marked [money OUT] must get an expense (or transfer/investment) category; one marked [money IN] must get an income (or transfer/investment) category. NEVER put money IN into an expense category, or money OUT into an income category.
 - Prefer the household's own past choices (given below) for the same or a similar merchant — consistency matters most.
 - Use real-world merchant knowledge: airlines/hotels/Expedia/Booking/Airbnb → travel; supermarkets (Tesco, Waitrose, M&S Food, Spinneys, Carrefour, Lulu) → groceries; restaurants/cafes/Deliveroo/Talabat/Uber Eats → eating out; Uber/Careem/bolt/trains → transport/taxis; Apple.com/Google/Netflix/Spotify → subscriptions or software; fuel/petrol/ADNOC/ENOC/Salik/parking → car; pharmacy/clinic/gym → health; a credit-card "Payment"/"Payment by Direct Debit"/"Payment received" → a credit-card payment / transfer.
 - Be decisive; avoid null unless there's genuinely no reasonable fit.
@@ -126,8 +143,12 @@ Rules:
 
 Respond with ONLY a JSON array, one object per input in the same order given: [{"i":0,"category":"Name or null"}].`
 
+      const dirTag = (idx: number): string => {
+        const a = amountAt(idx)
+        return a === undefined ? '' : a < 0 ? '[money OUT] ' : '[money IN] '
+      }
       const user = `Allowed categories:\n${catList}${examples}\n\nTransactions to categorise:\n${unknownIdx
-        .map((idx, k) => `${k}. ${descriptions[idx]}`)
+        .map((idx, k) => `${k}. ${dirTag(idx)}${descriptions[idx]}`)
         .join('\n')}\n\nReturn the JSON array now.`
 
       try {
@@ -156,7 +177,10 @@ Respond with ONLY a JSON array, one object per input in the same order given: [{
           }
           for (const p of parsed) {
             if (typeof p?.i === 'number' && p.i >= 0 && p.i < unknownIdx.length) {
-              resolved[unknownIdx[p.i]] = p.category && valid.has(p.category) ? p.category : null
+              const idx = unknownIdx[p.i]
+              // Reject a suggestion that violates the money-in/out direction.
+              const okDir = p.category ? typeAllowed(catType.get(p.category), amountAt(idx)) : false
+              resolved[idx] = p.category && valid.has(p.category) && okDir ? p.category : null
             }
           }
         }
