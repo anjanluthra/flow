@@ -1,17 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { PDFDocument } from 'pdf-lib'
 
 // ---------------------------------------------------------------------------
 // POST /api/parse-pdf — extract transactions from a bank/card statement PDF.
 //
 // Body: { contentBase64 }
 // Uses Claude's native PDF reading to return structured rows, so it works
-// across any bank's layout (including scanned/image statements). Requires
-// ANTHROPIC_API_KEY (model via ANTHROPIC_MODEL).
+// across any bank's layout (including scanned/image statements). Large
+// statements (a full month of a current account can run to ~200 transactions
+// across 30+ pages) are split into page-chunks and read concurrently, so no
+// single model call is large or slow enough to time the function out.
+// Requires ANTHROPIC_API_KEY (model via ANTHROPIC_MODEL).
 // ---------------------------------------------------------------------------
 
-export const maxDuration = 60
+export const maxDuration = 120
 
 const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5'
+// Pages per model call. Small enough that each call's JSON stays well under the
+// token limit and returns quickly; large enough to keep the call count low.
+const CHUNK_PAGES = 6
+const MAX_CONCURRENCY = 5
 
 const INSTRUCTION = `You are extracting every transaction from this bank or credit-card statement.
 
@@ -76,8 +84,8 @@ interface StatementExtract {
 }
 
 // Turn Claude's raw text into a statement, tolerating truncated JSON. On a large
-// statement the response can hit max_tokens mid-array; rather than failing the
-// whole file we salvage every complete transaction object that did come back.
+// chunk the response can hit max_tokens mid-array; rather than failing the whole
+// file we salvage every complete transaction object that did come back.
 function parseStatement(raw: string, truncated: boolean): StatementExtract | null {
   const start = raw.indexOf('{')
   if (start === -1) return null
@@ -92,7 +100,6 @@ function parseStatement(raw: string, truncated: boolean): StatementExtract | nul
   let statementDate = readField('statementDate')
   let currency = readField('currency')
 
-  // Happy path: the whole object is valid JSON.
   const end = raw.lastIndexOf('}')
   if (end > start) {
     try {
@@ -107,7 +114,6 @@ function parseStatement(raw: string, truncated: boolean): StatementExtract | nul
     }
   }
 
-  // Salvage path: pull whatever finished transaction objects exist.
   if (rows.length === 0) {
     const arrIdx = raw.indexOf('[', raw.indexOf('"transactions"'))
     if (arrIdx !== -1) {
@@ -132,6 +138,70 @@ function parseStatement(raw: string, truncated: boolean): StatementExtract | nul
   return { bankHint, statementDate, currency, transactions, truncated }
 }
 
+// One model call over a single (whole or chunked) PDF, returned as a parsed
+// statement. `context` appends period/currency hints for continuation chunks
+// whose pages don't repeat the statement header. Throws on a non-OK response so
+// the caller can drop just that chunk rather than fail the whole statement.
+async function extractChunk(base64: string, apiKey: string, context: string): Promise<StatementExtract | null> {
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: MODEL,
+      max_tokens: 16000,
+      thinking: { type: 'disabled' },
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+            { type: 'text', text: INSTRUCTION + context },
+          ],
+        },
+      ],
+    }),
+  })
+  if (!res.ok) {
+    const detail = await res.text()
+    console.error('Anthropic PDF parse error:', res.status, detail.slice(0, 300))
+    throw new Error(`anthropic ${res.status}`)
+  }
+  const data = await res.json()
+  const raw: string = Array.isArray(data?.content)
+    ? data.content.filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('')
+    : ''
+  return parseStatement(raw, data?.stop_reason === 'max_tokens')
+}
+
+// Split a PDF into base64 chunks of at most CHUNK_PAGES pages each.
+async function splitIntoChunks(bytes: Uint8Array): Promise<string[]> {
+  const src = await PDFDocument.load(bytes, { ignoreEncryption: true })
+  const total = src.getPageCount()
+  if (total <= CHUNK_PAGES) return [Buffer.from(bytes).toString('base64')]
+  const chunks: string[] = []
+  for (let start = 0; start < total; start += CHUNK_PAGES) {
+    const out = await PDFDocument.create()
+    const indices = Array.from({ length: Math.min(CHUNK_PAGES, total - start) }, (_, k) => start + k)
+    const pages = await out.copyPages(src, indices)
+    pages.forEach((p) => out.addPage(p))
+    chunks.push(Buffer.from(await out.save()).toString('base64'))
+  }
+  return chunks
+}
+
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length)
+  let idx = 0
+  const worker = async () => {
+    while (idx < items.length) {
+      const i = idx++
+      out[i] = await fn(items[i], i)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
+}
+
 export async function POST(request: NextRequest) {
   try {
     const apiKey = process.env.ANTHROPIC_API_KEY
@@ -147,69 +217,61 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'contentBase64 is required' }, { status: 400 })
     }
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: MODEL,
-        // A full month of a current account can run to ~200 transactions; 8192
-        // tokens truncated the JSON and the whole file failed. 16000 is the safe
-        // non-streaming ceiling and comfortably covers a monthly statement.
-        max_tokens: 16000,
-        // Pure extraction — no reasoning needed. Disabling thinking keeps the
-        // entire token budget for the JSON (Sonnet 5 runs adaptive thinking by
-        // default otherwise) and returns faster, well inside maxDuration.
-        thinking: { type: 'disabled' },
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'document',
-                source: { type: 'base64', media_type: 'application/pdf', data: contentBase64 },
-              },
-              { type: 'text', text: INSTRUCTION },
-            ],
-          },
-        ],
-      }),
-    })
+    // Split into page-chunks. If the PDF can't be parsed for splitting (e.g.
+    // unusual encoding) fall back to reading the whole document in one call.
+    let chunks: string[]
+    try {
+      chunks = await splitIntoChunks(Buffer.from(contentBase64, 'base64'))
+    } catch {
+      chunks = [contentBase64]
+    }
 
-    if (!res.ok) {
-      const detail = await res.text()
-      console.error('Anthropic PDF parse error:', res.status, detail)
+    // Read the first chunk on its own to capture the statement period/currency,
+    // then hand that to the remaining chunks (whose pages may not repeat the
+    // header) so dates without a year are attributed to the right period.
+    let first: StatementExtract | null = null
+    try {
+      first = await extractChunk(chunks[0], apiKey, '')
+    } catch {
+      first = null
+    }
+
+    const rest: StatementExtract[] = []
+    if (chunks.length > 1) {
+      const period = first?.statementDate ? ` dated around ${first.statementDate}` : ''
+      const ccy = first?.currency ? ` in ${first.currency}` : ''
+      const context = `\n\nContext: these are continuation pages of one bank statement${period}${ccy}. If a transaction row shows a day and month but no year, use the statement period's year. Return the same JSON shape.`
+      const results = await mapLimit(chunks.slice(1), MAX_CONCURRENCY, async (b64) => {
+        try {
+          return await extractChunk(b64, apiKey, context)
+        } catch {
+          return null
+        }
+      })
+      for (const r of results) if (r) rest.push(r)
+    }
+
+    const all = [first, ...rest].filter((r): r is StatementExtract => r !== null)
+    if (all.length === 0) {
       return NextResponse.json(
         { error: 'Claude could not read that PDF. Try a CSV export instead.' },
         { status: 502 },
       )
     }
 
-    const data = await res.json()
-    const raw: string = Array.isArray(data?.content)
-      ? data.content.filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('')
-      : ''
-
-    const wasTruncated = data?.stop_reason === 'max_tokens'
-    const extract = parseStatement(raw, wasTruncated)
-    if (!extract) {
-      return NextResponse.json({ error: 'Could not read the statement layout.' }, { status: 422 })
-    }
-    if (extract.transactions.length === 0) {
+    const transactions = all.flatMap((r) => r.transactions)
+    if (transactions.length === 0) {
       return NextResponse.json({ error: 'No transactions found in that PDF.' }, { status: 422 })
     }
 
     return NextResponse.json({
-      transactions: extract.transactions,
-      bankHint: extract.bankHint,
-      statementDate: extract.statementDate,
-      currency: extract.currency,
-      // True when the statement was too large to return in full — the client
-      // gets every transaction we could recover plus a signal to warn the user.
-      truncated: extract.truncated,
+      transactions,
+      bankHint: all.find((r) => r.bankHint)?.bankHint ?? '',
+      statementDate: all.find((r) => r.statementDate)?.statementDate ?? null,
+      currency: all.find((r) => r.currency)?.currency ?? null,
+      // True if any chunk was cut off by the token limit (rare now that chunks
+      // are small) — the client still gets everything we recovered.
+      truncated: all.some((r) => r.truncated),
     })
   } catch (error) {
     console.error('PDF parse failed:', error)
