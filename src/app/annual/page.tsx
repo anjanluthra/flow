@@ -52,6 +52,7 @@ export default function AnnualPage() {
   const [edits, setEdits] = useState<Record<number, Edit>>({})
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saved' | 'error'>('idle')
 
   const loadForecast = useCallback(async () => {
     setIsLoading(true)
@@ -133,10 +134,11 @@ export default function AnnualPage() {
 
   const handleSave = async () => {
     setIsSaving(true)
+    setSaveStatus('idle')
     try {
       // Only persist forecast months (elapsed months are driven by actuals).
       const toSave = months.filter((r) => !r.hasActuals)
-      await Promise.all(
+      const results = await Promise.all(
         toSave.map((r) =>
           fetch('/api/forecast', {
             method: 'POST',
@@ -147,10 +149,14 @@ export default function AnnualPage() {
               forecastIncome: num(edits[r.month]?.income),
               forecastExpense: num(edits[r.month]?.expense),
             }),
-          }),
+          }).then((res) => res.ok),
         ),
       )
+      const allOk = results.every(Boolean)
+      setSaveStatus(allOk ? 'saved' : 'error')
       await loadForecast()
+    } catch {
+      setSaveStatus('error')
     } finally {
       setIsSaving(false)
     }
@@ -188,6 +194,8 @@ export default function AnnualPage() {
             {isSaving ? 'Saving…' : 'Save Forecast'}
           </button>
 
+          {saveStatus === 'saved' && !isSaving && <span className="text-xs font-medium text-emerald-600">Saved ✓</span>}
+          {saveStatus === 'error' && !isSaving && <span className="text-xs font-medium text-red-600">Couldn&rsquo;t save — try again</span>}
           {isLoading && <span className="animate-pulse text-xs text-blue-500">Loading…</span>}
         </div>
 

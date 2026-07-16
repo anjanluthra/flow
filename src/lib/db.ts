@@ -620,7 +620,44 @@ export async function deleteCapitalEvent(id: string) {
 // Forecasts
 // ---------------------------------------------------------------------------
 
+// Idempotent guard so saving a forecast works even on a DB where the
+// 003_forecasts migration was never applied. Creates the table AND its
+// UNIQUE (year, month) constraint — the target of the upsert's ON CONFLICT.
+// Without this the POST throws (relation/constraint missing) and, because the
+// UI reloaded from averages, edits silently reverted.
+let forecastsReady = false
+export async function ensureForecasts() {
+  if (forecastsReady) return
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS forecasts (
+        id                    uuid           PRIMARY KEY DEFAULT gen_random_uuid(),
+        year                  int            NOT NULL,
+        month                 int            NOT NULL,
+        forecast_income_usd   numeric(14, 2) NOT NULL DEFAULT 0,
+        forecast_expense_usd  numeric(14, 2) NOT NULL DEFAULT 0,
+        notes                 text,
+        created_at            timestamptz    NOT NULL DEFAULT now(),
+        updated_at            timestamptz    NOT NULL DEFAULT now()
+      )
+    `)
+    // Add the unique constraint if it's somehow missing (e.g. table pre-exists
+    // without it). ON CONFLICT (year, month) needs it.
+    await query(`
+      DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'uq_forecasts_year_month') THEN
+          ALTER TABLE forecasts ADD CONSTRAINT uq_forecasts_year_month UNIQUE (year, month);
+        END IF;
+      END $$;
+    `)
+    forecastsReady = true
+  } catch (error) {
+    console.error('ensureForecasts failed:', error)
+  }
+}
+
 export async function getForecasts(year: number) {
+  await ensureForecasts()
   try {
     return await query(
       `SELECT year, month, forecast_income_usd, forecast_expense_usd, notes
@@ -640,6 +677,7 @@ export async function upsertForecast(
   expenseUsd: number,
   notes?: string | null,
 ) {
+  await ensureForecasts()
   await query(
     `INSERT INTO forecasts (year, month, forecast_income_usd, forecast_expense_usd, notes)
      VALUES ($1, $2, $3, $4, $5)
