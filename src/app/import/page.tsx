@@ -698,9 +698,21 @@ export default function ImportPage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ contentBase64: base64 }),
           })
-          const data = await res.json()
+          // A timed-out/edge response can be an HTML error page, not JSON — read
+          // defensively so it surfaces a clear message instead of throwing.
+          let data: { error?: string; transactions?: { date: string; description: string; amount: number }[]; bankHint?: string; statementDate?: string | null } = {}
+          try {
+            data = await res.json()
+          } catch {
+            data = {}
+          }
           if (!res.ok) {
-            setParseError(data.error || 'Could not read that PDF.')
+            setParseError(
+              data.error ||
+                (res.status === 504 || res.status === 408
+                  ? 'That statement took too long to read — please try Extract again.'
+                  : 'Could not read that PDF.'),
+            )
             return
           }
           const rows: { date: string; description: string; amount: number }[] = data.transactions || []
