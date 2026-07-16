@@ -62,8 +62,22 @@ export default function TransactionsPage() {
   // Data state
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [categories, setCategories] = useState<Category[]>([])
+  const [accounts, setAccounts] = useState<{ id: string; name: string; currency?: string }[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [dbConnected, setDbConnected] = useState(true)
+
+  // Manual "add transaction" form.
+  const [showAdd, setShowAdd] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const todayIso = new Date().toISOString().slice(0, 10)
+  const [addForm, setAddForm] = useState({
+    date: todayIso,
+    description: '',
+    amount: '',
+    currency: 'USD',
+    accountId: '',
+    categoryId: '',
+  })
 
   // Filter state
   const [search, setSearch] = useState('')
@@ -77,38 +91,37 @@ export default function TransactionsPage() {
   const [editingDesc, setEditingDesc] = useState<string | null>(null)
   const [descDraft, setDescDraft] = useState('')
 
-  // ---- Fetch data on mount ----
-  useEffect(() => {
-    let cancelled = false
-    async function load() {
-      setIsLoading(true)
-      try {
-        const [txRes, catRes] = await Promise.all([
-          // This page filters client-side (multi-select category/account, year,
-          // month, search), so it must have every transaction — not just the
-          // API's default newest-500 window, which hid all older-year rows and
-          // made year filters (e.g. 2024) come back empty.
-          fetch('/api/transactions?limit=100000'),
-          fetch('/api/categories'),
-        ])
-        if (!txRes.ok || !catRes.ok) throw new Error('API error')
-        const txData = await txRes.json()
-        const catData = await catRes.json()
-        if (cancelled) return
-        setTransactions(txData.transactions || [])
-        setCategories(catData.categories || [])
-        setDbConnected(true)
-      } catch {
-        if (!cancelled) setDbConnected(false)
-      } finally {
-        if (!cancelled) setIsLoading(false)
-      }
-    }
-    load()
-    return () => {
-      cancelled = true
+  // ---- Fetch data ----
+  const load = useCallback(async () => {
+    setIsLoading(true)
+    try {
+      const [txRes, catRes, accRes] = await Promise.all([
+        // This page filters client-side (multi-select category/account, year,
+        // month, search), so it must have every transaction — not just the
+        // API's default newest-500 window, which hid all older-year rows and
+        // made year filters (e.g. 2024) come back empty.
+        fetch('/api/transactions?limit=100000'),
+        fetch('/api/categories'),
+        fetch('/api/accounts'),
+      ])
+      if (!txRes.ok || !catRes.ok) throw new Error('API error')
+      const txData = await txRes.json()
+      const catData = await catRes.json()
+      const accData = accRes.ok ? await accRes.json() : { accounts: [] }
+      setTransactions(txData.transactions || [])
+      setCategories(catData.categories || [])
+      setAccounts(accData.accounts || [])
+      setDbConnected(true)
+    } catch {
+      setDbConnected(false)
+    } finally {
+      setIsLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
 
   const expenseCategories = useMemo(
     () => categories.filter((c) => c.type === 'expense'),
@@ -380,13 +393,137 @@ export default function TransactionsPage() {
   const getRowClassName = (tx: Transaction) =>
     CURRENCY_ROW_CLASS[tx.accountCurrency ?? ''] ?? ''
 
+  async function submitManual() {
+    const amt = parseFloat(addForm.amount)
+    if (!addForm.description.trim() || isNaN(amt) || amt === 0) return
+    const cat = categories.find((c) => c.id === addForm.categoryId)
+    const type = cat?.type ?? 'expense'
+    setAdding(true)
+    try {
+      const res = await fetch('/api/transactions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          transactions: [
+            {
+              accountId: addForm.accountId || null,
+              date: addForm.date,
+              description: addForm.description.trim(),
+              amountLocal: Math.abs(amt),
+              currency: addForm.currency,
+              categoryId: addForm.categoryId || null,
+              type,
+            },
+          ],
+        }),
+      })
+      if (res.ok) {
+        setShowAdd(false)
+        setAddForm({ date: todayIso, description: '', amount: '', currency: 'USD', accountId: '', categoryId: '' })
+        await load()
+      }
+    } finally {
+      setAdding(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-gray-50/50 px-4 py-8 sm:px-6 lg:px-8">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight text-gray-900">Transactions</h1>
-        <p className="mt-1 text-sm text-gray-500">Transaction Explorer</p>
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-gray-900">Transactions</h1>
+          <p className="mt-1 text-sm text-gray-500">Transaction Explorer</p>
+        </div>
+        <button
+          onClick={() => setShowAdd((v) => !v)}
+          className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
+        >
+          + Add transaction
+        </button>
       </div>
+
+      {/* Manual add form — for spend that never came through a statement (e.g. a
+          personal expense on a business card). Counts in the P&L like any other. */}
+      {showAdd && (
+        <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50/50 p-4">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">Date</label>
+              <input
+                type="date"
+                value={addForm.date}
+                onChange={(e) => setAddForm((f) => ({ ...f, date: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div className="sm:col-span-1 lg:col-span-2">
+              <label className="mb-1 block text-xs font-medium text-gray-600">Description</label>
+              <input
+                type="text"
+                placeholder="e.g. Flights to London (personal, on business card)"
+                value={addForm.description}
+                onChange={(e) => setAddForm((f) => ({ ...f, description: e.target.value }))}
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">Amount</label>
+              <div className="flex gap-2">
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  placeholder="12000"
+                  value={addForm.amount}
+                  onChange={(e) => setAddForm((f) => ({ ...f, amount: e.target.value }))}
+                  className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
+                />
+                <Select
+                  value={addForm.currency}
+                  onChange={(v) => setAddForm((f) => ({ ...f, currency: v }))}
+                  ariaLabel="Currency"
+                  options={['USD', 'GBP', 'AED', 'EUR'].map((c) => ({ value: c, label: c }))}
+                  buttonClassName="inline-flex h-[38px] w-20 items-center justify-between gap-1 rounded-lg border border-gray-300 bg-white px-2 text-sm hover:bg-gray-50"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">Category</label>
+              <Select
+                value={addForm.categoryId}
+                onChange={(v) => setAddForm((f) => ({ ...f, categoryId: v }))}
+                searchable
+                placeholder="Choose a category"
+                ariaLabel="Category"
+                options={categorySelectOptions}
+                buttonClassName="inline-flex h-[38px] w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 text-sm hover:bg-gray-50"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-gray-600">Account</label>
+              <Select
+                value={addForm.accountId}
+                onChange={(v) => setAddForm((f) => ({ ...f, accountId: v }))}
+                ariaLabel="Account"
+                options={[{ value: '', label: 'None (manual / off-statement)' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
+                buttonClassName="inline-flex h-[38px] w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 text-sm hover:bg-gray-50"
+              />
+            </div>
+          </div>
+          <div className="mt-3 flex items-center justify-end gap-2">
+            <button onClick={() => setShowAdd(false)} className="rounded-lg px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100">
+              Cancel
+            </button>
+            <button
+              onClick={submitManual}
+              disabled={adding || !addForm.description.trim() || !addForm.amount}
+              className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            >
+              {adding ? 'Adding…' : 'Add transaction'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {!dbConnected && !isLoading && (
         <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">

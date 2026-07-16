@@ -7,6 +7,7 @@ import {
   type NewTransaction,
   type TransactionFilters,
 } from '@/lib/db'
+import { getUsdRates } from '@/lib/fx'
 
 /**
  * Content hash for de-duplication. The occurrence index disambiguates
@@ -129,6 +130,27 @@ export async function POST(request: NextRequest) {
       nameToId.set((c.name as string).toLowerCase(), c.id as string)
     }
 
+    // For manual entries that don't carry a USD amount, convert from the local
+    // currency so the P&L (which sums USD) counts them. The CSV/PDF importers
+    // already supply amountUsd, so this only runs when it's missing.
+    const needsFx = incoming.some((t) => t.amountUsd == null && (t.currency || 'USD') !== 'USD')
+    let fxRates: Record<string, number> = { USD_USD: 1 }
+    if (needsFx) {
+      try {
+        const fx = await getUsdRates()
+        fxRates = { ...fxRates, ...fx.rates }
+      } catch {
+        /* fall back to no conversion (amountUsd stays as local) */
+      }
+    }
+    const toUsd = (amountLocal: number, currency: string, provided?: number | null): number | null => {
+      if (provided != null) return provided
+      const ccy = currency || 'USD'
+      if (ccy === 'USD') return amountLocal
+      const rate = fxRates[`${ccy}_USD`]
+      return rate ? amountLocal * rate : null
+    }
+
     // Assign an occurrence index within each identical (account,date,amount,
     // description) group so repeated-but-genuine rows don't collide.
     const seen = new Map<string, number>()
@@ -148,7 +170,7 @@ export async function POST(request: NextRequest) {
         description: t.description,
         amountLocal: t.amountLocal,
         currency: t.currency,
-        amountUsd: t.amountUsd ?? null,
+        amountUsd: toUsd(t.amountLocal, t.currency, t.amountUsd),
         categoryId:
           t.categoryId ??
           (t.categoryName ? nameToId.get(t.categoryName.toLowerCase()) ?? null : null),
