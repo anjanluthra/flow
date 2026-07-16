@@ -538,18 +538,18 @@ export default function CashFlowPage() {
 
         {/* P&L statement */}
         <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-          <div className="overflow-x-auto">
+          <div className="max-h-[75vh] overflow-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50 text-left">
-                  <th className="sticky left-0 z-20 bg-gray-50 px-2.5 py-3 font-medium text-gray-500">Category</th>
+                  <th className="sticky left-0 top-0 z-30 bg-gray-50 px-2.5 py-3 font-medium text-gray-500">Category</th>
                   {showMonthCols &&
                     months.map((ym) => (
-                      <th key={ym} className="px-2.5 py-3 text-right font-medium text-gray-500 whitespace-nowrap">
+                      <th key={ym} className="sticky top-0 z-20 bg-gray-50 px-2.5 py-3 text-right font-medium text-gray-500 whitespace-nowrap">
                         {monthHeader(ym)}
                       </th>
                     ))}
-                  <th className="px-2.5 py-3 text-right font-semibold text-gray-600">Total</th>
+                  <th className="sticky top-0 z-20 bg-gray-50 px-2.5 py-3 text-right font-semibold text-gray-600">Total</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
