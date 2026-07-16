@@ -24,6 +24,7 @@ export interface TransactionFilters {
   accountId?: string
   type?: 'income' | 'expense' | 'transfer' | 'investment'
   holder?: 'anjan' | 'kate' | 'joint'
+  eventId?: string // capital event the transaction belongs to
   from?: string // inclusive YYYY-MM-DD
   to?: string // inclusive YYYY-MM-DD
   search?: string
@@ -147,6 +148,11 @@ export async function getTransactions(filters: TransactionFilters = {}) {
   if (filters.holder) {
     queryText += ` AND a.holder = $${paramIndex++}`
     params.push(filters.holder)
+  }
+
+  if (filters.eventId) {
+    queryText += ` AND t.event_id = $${paramIndex++}`
+    params.push(filters.eventId)
   }
 
   if (filters.search) {
