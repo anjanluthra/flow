@@ -52,6 +52,8 @@ export async function PATCH(
     const body = (await request.json()) as {
       accountId?: string | null
       statementDate?: string | null
+      periodStart?: string | null
+      periodEnd?: string | null
       source?: string | null
       importedCount?: number | null
       dataRows?: number | null
@@ -67,6 +69,14 @@ export async function PATCH(
     if ('statementDate' in body) {
       sets.push(`statement_date = $${i++}`)
       vals.push(body.statementDate || null)
+    }
+    if ('periodStart' in body) {
+      sets.push(`period_start = $${i++}`)
+      vals.push(body.periodStart || null)
+    }
+    if ('periodEnd' in body) {
+      sets.push(`period_end = $${i++}`)
+      vals.push(body.periodEnd || null)
     }
     // Import metadata — set when a previously-uploaded statement is extracted
     // and imported from the archive, so it flips from "uploaded" to "imported"

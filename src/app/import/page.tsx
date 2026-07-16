@@ -111,11 +111,56 @@ interface StatementDoc {
   accountName: string | null
   fileName: string
   statementDate: string | null
+  periodStart: string | null
+  periodEnd: string | null
   sizeBytes: number
   uploadedAt: string
   source: string | null // 'upload' | 'import'
   formatSignature: string | null
   importedCount: number | null
+}
+
+// Pull a date range out of a filename, e.g. "2026.01.01-2026.06.30" or
+// "..._2026-01-01_2026-06-30_..." → { start, end } ISO date strings.
+function parseFilePeriod(name: string): { start: string; end: string } | null {
+  const m = name.match(/(\d{4})[.\-_/](\d{1,2})[.\-_/](\d{1,2})\D+(\d{4})[.\-_/](\d{1,2})[.\-_/](\d{1,2})/)
+  if (!m) return null
+  const pad = (s: string) => s.padStart(2, '0')
+  const start = `${m[1]}-${pad(m[2])}-${pad(m[3])}`
+  const end = `${m[4]}-${pad(m[5])}-${pad(m[6])}`
+  return start <= end ? { start, end } : { start: end, end: start }
+}
+
+// Months (1-12) of `year` that a statement covers — from its stored period, a
+// range parsed from the filename, or its single representative month.
+function coveredMonthsInYear(d: StatementDoc, year: number): number[] {
+  let s = d.periodStart
+  let e = d.periodEnd
+  if (!s || !e) {
+    const fp = parseFilePeriod(d.fileName)
+    if (fp) { s = fp.start; e = fp.end }
+  }
+  if (s && e) {
+    const st = new Date(s).getTime()
+    const en = new Date(e).getTime()
+    const out: number[] = []
+    for (let m = 1; m <= 12; m++) {
+      const first = Date.UTC(year, m - 1, 1)
+      const last = Date.UTC(year, m, 0)
+      if (first <= en && last >= st) out.push(m)
+    }
+    return out
+  }
+  if (d.statementDate && new Date(d.statementDate).getUTCFullYear() === year) {
+    return [new Date(d.statementDate).getUTCMonth() + 1]
+  }
+  return []
+}
+
+// Whether a statement can be placed on the grid at all (has period, filename
+// range, or a single month).
+function docHasPeriod(d: StatementDoc): boolean {
+  return !!(d.periodStart || d.periodEnd || d.statementDate || parseFilePeriod(d.fileName))
 }
 
 interface ParsedTransaction {
@@ -1115,9 +1160,13 @@ export default function ImportPage() {
         prev ? { ...prev, imported: data.inserted, duplicates: data.skipped ?? 0 } : prev,
       )
 
-      // Auto-detect the statement month from the transactions themselves so it
-      // lands on the right cell of the coverage grid without manual tagging.
+      // Auto-detect the statement month AND its full span from the transactions
+      // themselves, so multi-month statements light up every month they cover on
+      // the grid without manual tagging.
       const stmtDate = statementMonthFromTxns(parsedTransactions)
+      const txDates = parsedTransactions.map((tx) => tx.date).filter((d) => /^\d{4}-\d{2}-\d{2}/.test(d)).sort()
+      const periodStart = txDates[0] ?? null
+      const periodEnd = txDates[txDates.length - 1] ?? null
 
       // Archive the statement. If we're re-importing one that's already saved
       // (extracted from the archive), update that row in place so it flips to
@@ -1134,6 +1183,7 @@ export default function ImportPage() {
               dataRows: recon?.dataRows ?? null,
               formatSignature: pdfDoc.format,
               ...(stmtDate ? { statementDate: stmtDate } : {}),
+              ...(periodStart ? { periodStart, periodEnd } : {}),
             }),
           })
           if (!patchRes.ok) {
@@ -1155,6 +1205,8 @@ export default function ImportPage() {
               importedCount: data.inserted,
               dataRows: recon?.dataRows ?? null,
               statementDate: stmtDate,
+              periodStart,
+              periodEnd,
             }
           : rawText
             ? {
@@ -1167,6 +1219,8 @@ export default function ImportPage() {
                 importedCount: data.inserted,
                 dataRows: recon?.dataRows ?? null,
                 statementDate: stmtDate,
+                periodStart,
+                periodEnd,
               }
             : null
 
@@ -1262,7 +1316,7 @@ export default function ImportPage() {
   const handleBulkFiles = useCallback((files: File[]) => startReviewQueue(files), [startReviewQueue])
 
   // Reassign an archived statement's account or year.
-  const patchDoc = async (id: string, patch: { accountId?: string | null; statementDate?: string | null }) => {
+  const patchDoc = async (id: string, patch: { accountId?: string | null; statementDate?: string | null; periodStart?: string | null; periodEnd?: string | null }) => {
     await fetch(`/api/documents/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -1277,9 +1331,7 @@ export default function ImportPage() {
     new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
   const docAccount = (d: StatementDoc): string => d.accountName ?? 'Unassigned'
-  // Statement month/year come from the (now auto-detected) statement date.
-  const docMonth = (d: StatementDoc): number | null =>
-    d.statementDate ? new Date(d.statementDate).getUTCMonth() + 1 : null
+  // Representative statement year, from the single statement date.
   const docYearN = (d: StatementDoc): number | null =>
     d.statementDate ? new Date(d.statementDate).getUTCFullYear() : null
   const isImported = (d: StatementDoc): boolean => d.source === 'import' || (d.importedCount ?? 0) > 0
@@ -1288,29 +1340,44 @@ export default function ImportPage() {
   const gridAccountNames = Array.from(new Set(documents.map(docAccount))).sort((a, b) =>
     a === 'Unassigned' ? 1 : b === 'Unassigned' ? -1 : a.localeCompare(b),
   )
+  // Years covered by any statement (via period, filename range, or single date).
+  const docYears = (d: StatementDoc): number[] => {
+    let s = d.periodStart
+    let e = d.periodEnd
+    if (!s || !e) {
+      const fp = parseFilePeriod(d.fileName)
+      if (fp) { s = fp.start; e = fp.end }
+    }
+    if (s && e) {
+      const ys: number[] = []
+      for (let y = new Date(s).getUTCFullYear(); y <= new Date(e).getUTCFullYear(); y++) ys.push(y)
+      return ys
+    }
+    return docYearN(d) != null ? [docYearN(d)!] : []
+  }
   const gridYearOptions = Array.from(
-    new Set<number>([new Date().getFullYear(), ...documents.map(docYearN).filter((y): y is number => y != null)]),
+    new Set<number>([new Date().getFullYear(), ...documents.flatMap(docYears)]),
   ).sort((a, b) => b - a)
-  // key `${account}|${month}` -> { imported, count }
+  // key `${account}|${month}` -> { imported, count }. A statement fills every
+  // month of its period, so a Jan–Jun export lights up all six cells.
   const coverage = new Map<string, { imported: boolean; count: number }>()
   for (const d of documents) {
-    const m = docMonth(d)
-    if (m == null || docYearN(d) !== gridYear) continue
-    const key = `${docAccount(d)}|${m}`
-    const cur = coverage.get(key) ?? { imported: false, count: 0 }
-    cur.count += 1
-    if (isImported(d)) cur.imported = true
-    coverage.set(key, cur)
+    for (const m of coveredMonthsInYear(d, gridYear)) {
+      const key = `${docAccount(d)}|${m}`
+      const cur = coverage.get(key) ?? { imported: false, count: 0 }
+      cur.count += 1
+      if (isImported(d)) cur.imported = true
+      coverage.set(key, cur)
+    }
   }
-  // Docs for the list: this year (by statement date), optionally narrowed to a
-  // clicked cell; sorted newest month first.
+  // Docs for the list: any that touch this year, optionally narrowed to a
+  // clicked cell (account + month within the statement's span).
   const yearDocs = documents
-    .filter((d) => docYearN(d) === gridYear)
-    .filter((d) => !cellFilter || (docAccount(d) === cellFilter.account && docMonth(d) === cellFilter.month))
-    .sort((a, b) => (b.statementDate ?? '').localeCompare(a.statementDate ?? ''))
-  // Docs that can't be placed on the grid yet (no statement date) — surfaced so
-  // you can give them a month.
-  const undatedDocs = documents.filter((d) => !d.statementDate)
+    .filter((d) => coveredMonthsInYear(d, gridYear).length > 0)
+    .filter((d) => !cellFilter || (docAccount(d) === cellFilter.account && coveredMonthsInYear(d, gridYear).includes(cellFilter.month)))
+    .sort((a, b) => (b.periodEnd ?? b.statementDate ?? '').localeCompare(a.periodEnd ?? a.statementDate ?? ''))
+  // Docs that can't be placed on the grid yet — surfaced so you can date them.
+  const undatedDocs = documents.filter((d) => !docHasPeriod(d))
   const importedTotal = documents.filter(isImported).length
   const notImportedTotal = documents.length - importedTotal
 
@@ -1337,14 +1404,22 @@ export default function ImportPage() {
 
   const splitReview = statementPreview !== null && parsedTransactions.length > 0
 
-  // Set a saved statement's month/year (first of month) — used by the compact
-  // list's period pickers.
-  const setPeriod = (d: StatementDoc, opts: { year?: number; month?: number }) => {
-    const y = opts.year ?? docYearN(d) ?? gridYear
-    const m = opts.month ?? docMonth(d) ?? 1
-    patchDoc(d.id, { statementDate: `${y}-${String(m).padStart(2, '0')}-01` })
+  // Set a saved statement's covered period (from/to month within a year). Also
+  // stamps statement_date to the first month for back-compat.
+  const setPeriodRange = (d: StatementDoc, opts: { year?: number; from?: number; to?: number }) => {
+    const y = opts.year ?? docYears(d)[0] ?? gridYear
+    const cur = coveredMonthsInYear(d, y)
+    const from = opts.from ?? cur[0] ?? 1
+    const to = opts.to ?? cur[cur.length - 1] ?? from
+    const lo = Math.min(from, to)
+    const hi = Math.max(from, to)
+    const start = `${y}-${String(lo).padStart(2, '0')}-01`
+    const lastDay = new Date(Date.UTC(y, hi, 0)).getUTCDate()
+    const end = `${y}-${String(hi).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
+    patchDoc(d.id, { periodStart: start, periodEnd: end, statementDate: start })
   }
   const PERIOD_YEARS = ['2023', '2024', '2025', '2026', '2027']
+  const MONTH_OPTS = MONTHS_SHORT.map((m, i) => ({ value: String(i + 1), label: m }))
 
   // One compact row in the statements list.
   const renderStatementRow = (d: StatementDoc) => {
@@ -1383,24 +1458,21 @@ export default function ImportPage() {
           options={[{ value: '', label: 'Unassigned' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
           buttonClassName="inline-flex h-7 max-w-[150px] min-w-0 shrink-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50"
         />
-        <div className="flex shrink-0 items-center gap-1">
-          <Select
-            ariaLabel="Statement month"
-            value={docMonth(d) ? String(docMonth(d)) : ''}
-            onChange={(v) => setPeriod(d, { month: Number(v) })}
-            options={MONTHS_SHORT.map((m, i) => ({ value: String(i + 1), label: m }))}
-            placeholder="Mon"
-            buttonClassName="inline-flex h-7 w-16 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50"
-          />
-          <Select
-            ariaLabel="Statement year"
-            value={docYearN(d) ? String(docYearN(d)) : ''}
-            onChange={(v) => setPeriod(d, { year: Number(v) })}
-            options={PERIOD_YEARS.map((y) => ({ value: y, label: y }))}
-            placeholder="Year"
-            buttonClassName="inline-flex h-7 w-20 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50"
-          />
-        </div>
+        {(() => {
+          const yr = docYears(d)[0] ?? gridYear
+          const cov = coveredMonthsInYear(d, yr)
+          const fromM = cov[0]
+          const toM = cov[cov.length - 1]
+          const small = 'inline-flex h-7 w-16 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50'
+          return (
+            <div className="flex shrink-0 items-center gap-1" title="Months this statement covers">
+              <Select ariaLabel="Period from" value={fromM ? String(fromM) : ''} onChange={(v) => setPeriodRange(d, { from: Number(v) })} options={MONTH_OPTS} placeholder="From" buttonClassName={small} />
+              <span className="text-gray-300">–</span>
+              <Select ariaLabel="Period to" value={toM ? String(toM) : ''} onChange={(v) => setPeriodRange(d, { to: Number(v) })} options={MONTH_OPTS} placeholder="To" buttonClassName={small} />
+              <Select ariaLabel="Year" value={docYears(d)[0] ? String(docYears(d)[0]) : ''} onChange={(v) => setPeriodRange(d, { year: Number(v) })} options={PERIOD_YEARS.map((y) => ({ value: y, label: y }))} placeholder="Year" buttonClassName="inline-flex h-7 w-20 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50" />
+            </div>
+          )
+        })()}
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           {!imported && isPdf && (
             <button

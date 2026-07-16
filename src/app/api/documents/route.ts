@@ -35,6 +35,10 @@ async function ensureSchema() {
     `ALTER TABLE documents ADD COLUMN IF NOT EXISTS format_signature text`,
     `ALTER TABLE documents ADD COLUMN IF NOT EXISTS imported_count integer`,
     `ALTER TABLE documents ADD COLUMN IF NOT EXISTS data_rows integer`,
+    // A statement can span several months; period_start/end capture that range
+    // (statement_date stays the single representative month for back-compat).
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS period_start date`,
+    `ALTER TABLE documents ADD COLUMN IF NOT EXISTS period_end date`,
   ]
   for (const sql of alters) {
     try {
@@ -57,6 +61,7 @@ export async function GET(request: NextRequest) {
 
     const result = await query(
       `SELECT d.id, d.account_id, d.file_name, d.mime_type, d.statement_date,
+              d.period_start, d.period_end,
               d.size_bytes, d.uploaded_at, d.source, d.format_signature,
               d.imported_count, d.data_rows, a.name AS account_name
        FROM documents d
@@ -73,6 +78,8 @@ export async function GET(request: NextRequest) {
       fileName: row.file_name,
       mimeType: row.mime_type,
       statementDate: row.statement_date,
+      periodStart: row.period_start,
+      periodEnd: row.period_end,
       sizeBytes: row.size_bytes,
       uploadedAt: row.uploaded_at,
       source: row.source ?? 'upload',
@@ -102,6 +109,8 @@ export async function POST(request: NextRequest) {
       fileName,
       mimeType,
       statementDate,
+      periodStart,
+      periodEnd,
       contentBase64,
       source,
       formatSignature,
@@ -112,6 +121,8 @@ export async function POST(request: NextRequest) {
       fileName: string
       mimeType: string
       statementDate?: string | null
+      periodStart?: string | null
+      periodEnd?: string | null
       contentBase64: string
       source?: string
       formatSignature?: string | null
@@ -140,13 +151,14 @@ export async function POST(request: NextRequest) {
     const result = await query(
       `INSERT INTO documents
          (account_id, file_name, mime_type, statement_date, size_bytes, content,
-          source, format_signature, imported_count, data_rows)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          source, format_signature, imported_count, data_rows, period_start, period_end)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [accountId || null, fileName, mimeType || 'application/octet-stream',
         statementDate || null, content.length, content,
         source || 'upload', formatSignature || null,
-        importedCount ?? null, dataRows ?? null],
+        importedCount ?? null, dataRows ?? null,
+        periodStart || null, periodEnd || null],
     )
 
     return NextResponse.json({ success: true, id: result.rows[0].id })
