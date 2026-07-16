@@ -692,6 +692,50 @@ export async function upsertForecast(
 }
 
 // ---------------------------------------------------------------------------
+// Annual budgets — a single operating-expense target per year, tracked against
+// planned spend (actuals + forecast). Idempotent guard like the others.
+// ---------------------------------------------------------------------------
+
+let budgetsReady = false
+export async function ensureBudgets() {
+  if (budgetsReady) return
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS annual_budgets (
+        year               int            PRIMARY KEY,
+        expense_budget_usd numeric(14, 2) NOT NULL DEFAULT 0,
+        updated_at         timestamptz    NOT NULL DEFAULT now()
+      )
+    `)
+    budgetsReady = true
+  } catch (error) {
+    console.error('ensureBudgets failed:', error)
+  }
+}
+
+export async function getBudget(year: number): Promise<number | null> {
+  await ensureBudgets()
+  try {
+    const res = await query(`SELECT expense_budget_usd FROM annual_budgets WHERE year = $1`, [year])
+    return res.rows[0] ? parseFloat(res.rows[0].expense_budget_usd as string) : null
+  } catch {
+    return null
+  }
+}
+
+export async function upsertBudget(year: number, expenseBudgetUsd: number) {
+  await ensureBudgets()
+  await query(
+    `INSERT INTO annual_budgets (year, expense_budget_usd)
+     VALUES ($1, $2)
+     ON CONFLICT (year)
+     DO UPDATE SET expense_budget_usd = EXCLUDED.expense_budget_usd, updated_at = now()`,
+    [year, expenseBudgetUsd],
+  )
+  return { upserted: 1 }
+}
+
+// ---------------------------------------------------------------------------
 // Account import hints (learned fingerprints for auto-detection)
 // ---------------------------------------------------------------------------
 

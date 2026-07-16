@@ -255,6 +255,52 @@ export default function CashFlowPage() {
     [],
   )
 
+  // Operating-expense budget for the year (USD), tracked against planned spend.
+  const [budgetUsd, setBudgetUsd] = useState<number | null>(null)
+  const [budgetStr, setBudgetStr] = useState('')
+  useEffect(() => {
+    if (mode !== 'year') {
+      setBudgetUsd(null)
+      setBudgetStr('')
+      return
+    }
+    let cancelled = false
+    fetch(`/api/budget?year=${year}`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        if (cancelled) return
+        setBudgetUsd(d.expenseBudget ?? null)
+        setBudgetStr(d.expenseBudget != null ? String(d.expenseBudget) : '')
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setBudgetUsd(null)
+          setBudgetStr('')
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [mode, year])
+  const saveBudget = useCallback(() => {
+    const val = num(budgetStr)
+    setBudgetUsd(val)
+    fetch('/api/budget', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ year, expenseBudget: val }),
+    }).catch(() => {})
+  }, [budgetStr, year])
+
+  // Budget tracker: planned operating spend (actual expenses YTD + forecast)
+  // against the year's budget. All in display currency.
+  const plannedExpense = opExpense + fcExpenseTot
+  const budgetDisplay = toDisplay(budgetUsd ?? 0)
+  const budgetRemaining = budgetDisplay - plannedExpense
+  const budgetPct = budgetDisplay > 0 ? Math.min(100, (plannedExpense / budgetDisplay) * 100) : 0
+  const overBudget = budgetDisplay > 0 && plannedExpense > budgetDisplay
+  const budgetEditable = mode === 'year' && currency === 'USD'
+
   // Drill-down: clicking a P&L cell opens the underlying transactions.
   const [drill, setDrill] = useState<{ category: string; from: string; to: string; label: string; eventId?: string } | null>(null)
   const openDrill = useCallback(
@@ -423,6 +469,49 @@ export default function CashFlowPage() {
           />
           <Card title="Invested" value={fmt(opInvested)} subtitle="total invested (income & reserves)" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
         </div>
+
+        {/* Expense-budget tracker — one slim line: budget vs planned (actuals +
+            forecast) spend, with what's left. Year view only. */}
+        {mode === 'year' && (
+          <div className="mb-3 rounded-lg border border-gray-200 bg-white px-4 py-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="font-medium text-gray-700">{year} expense budget</span>
+                {budgetEditable ? (
+                  <span className="inline-flex items-center rounded-md border border-gray-200 bg-white pl-1.5">
+                    <span className="text-gray-400">$</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={budgetStr}
+                      onChange={(e) => setBudgetStr(e.target.value)}
+                      onBlur={saveBudget}
+                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                      placeholder="150000"
+                      className="w-24 bg-transparent px-1 py-0.5 text-right text-sm text-gray-900 focus:outline-none"
+                    />
+                  </span>
+                ) : (
+                  <span className="font-semibold text-gray-900">{budgetUsd != null ? fmt(budgetDisplay) : '—'}</span>
+                )}
+              </div>
+              {budgetDisplay > 0 && (
+                <div className="text-gray-500">
+                  Planned <span className="font-semibold text-gray-900">{fmt(plannedExpense)}</span>
+                  {' · '}
+                  <span className={overBudget ? 'font-semibold text-rose-600' : 'font-semibold text-emerald-600'}>
+                    {overBudget ? `${fmt(plannedExpense - budgetDisplay)} over` : `${fmt(budgetRemaining)} left`}
+                  </span>
+                </div>
+              )}
+            </div>
+            {budgetDisplay > 0 && (
+              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-gray-100">
+                <div className={`h-full rounded-full ${overBudget ? 'bg-rose-500' : 'bg-emerald-500'}`} style={{ width: `${budgetPct}%` }} />
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Inline-forecast hint. Future months are typed straight into the
             Total Income / Total Expenses rows below. */}
