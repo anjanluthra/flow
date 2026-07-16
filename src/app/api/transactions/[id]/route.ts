@@ -23,6 +23,9 @@ export async function PATCH(
     if ('isInternalTransfer' in body) patch.isInternalTransfer = body.isInternalTransfer
     if ('isReimbursed' in body) patch.isReimbursed = body.isReimbursed
     if ('notes' in body) patch.notes = body.notes
+    // Assign to (or clear, with null) a capital event — pulls it out of the
+    // operating P&L into the Asset Sales section.
+    if ('eventId' in body) patch.eventId = body.eventId
 
     const { updated } = await updateTransaction(id, patch)
     return NextResponse.json({ success: true, updated })

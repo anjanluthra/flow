@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getPnLByRange } from '@/lib/db'
+import { getPnLByRange, getCapitalEventsForRange } from '@/lib/db'
 import { getUsdRates } from '@/lib/fx'
 
 // ---------------------------------------------------------------------------
@@ -57,6 +57,33 @@ export async function GET(request: NextRequest) {
 
     const months = monthsBetween(from, to)
     const result = await getPnLByRange(from, to, gbpRate)
+
+    // Capital events (asset sales / inheritance / gifts) within the range — kept
+    // out of the operating rows above and surfaced separately so the user sees
+    // both an operating figure and a total-cash-flow figure.
+    const capRes = await getCapitalEventsForRange(from, to, gbpRate)
+    const capitalEvents = (capRes.rows as Array<{
+      id: string; name: string; kind: string; txn_count: number
+      proceeds_usd: string; costs_usd: string; proceeds_gbp: string; costs_gbp: string
+    }>)
+      .map((r) => {
+        const proceeds: Amt = { usd: parseFloat(r.proceeds_usd), gbp: parseFloat(r.proceeds_gbp) }
+        const costs: Amt = { usd: parseFloat(r.costs_usd), gbp: parseFloat(r.costs_gbp) }
+        return {
+          id: r.id, name: r.name, kind: r.kind, txnCount: r.txn_count,
+          proceeds, costs,
+          net: { usd: proceeds.usd - costs.usd, gbp: proceeds.gbp - costs.gbp } as Amt,
+        }
+      })
+      .filter((e) => e.txnCount > 0)
+    const capitalTotal = capitalEvents.reduce(
+      (a, e) => ({
+        proceeds: { usd: a.proceeds.usd + e.proceeds.usd, gbp: a.proceeds.gbp + e.proceeds.gbp },
+        costs: { usd: a.costs.usd + e.costs.usd, gbp: a.costs.gbp + e.costs.gbp },
+        net: { usd: a.net.usd + e.net.usd, gbp: a.net.gbp + e.net.gbp },
+      }),
+      { proceeds: zero(), costs: zero(), net: zero() },
+    )
 
     const income = new Map<string, Line>()
     const expense = new Map<string, Line>()
@@ -148,6 +175,7 @@ export async function GET(request: NextRequest) {
       income: incomeLines,
       expense: expenseLines,
       investing: investingLines,
+      capitalEvents,
       totals: {
         incomeByMonth,
         expenseByMonth,
@@ -160,6 +188,9 @@ export async function GET(request: NextRequest) {
         net,
         netCash,
         savingsRate,
+        // Non-operating capital total for the range. Total cash flow =
+        // operating + capital (the frontend combines these for the "Total" view).
+        capital: capitalTotal,
       },
     })
   } catch (error) {
