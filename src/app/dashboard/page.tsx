@@ -312,6 +312,21 @@ export default function CashFlowPage() {
           />
         </div>
 
+        {/* First-run nudge: with no events yet, the operating/total split is
+            invisible, so point the user at how to create their first event. */}
+        {pnl && !hasCapital && (pnl.income.length > 0 || pnl.expense.length > 0) && (
+          <div className="mb-4 flex items-start gap-2 rounded-lg border border-violet-200 bg-violet-50 px-4 py-3 text-sm text-violet-900">
+            <span aria-hidden>💡</span>
+            <p>
+              Sold a house or car, or had an inheritance or gift? Click a line below — e.g.{' '}
+              <span className="font-medium">Asset Sale</span> — then use{' '}
+              <span className="font-medium">Move all to an event</span> in the panel to lift it (and its costs)
+              out of operating cash flow. Once an event exists, an{' '}
+              <span className="font-medium">Operating / Total</span> toggle appears up here.
+            </p>
+          </div>
+        )}
+
         {/* P&L statement */}
         <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
           <div className="overflow-x-auto">
@@ -447,6 +462,7 @@ function DrillDrawer({
   const [cats, setCats] = useState<DrillCat[]>([])
   const [events, setEvents] = useState<EventOption[]>([])
   const [savingId, setSavingId] = useState<string | null>(null)
+  const [bulkSaving, setBulkSaving] = useState(false)
 
   useEffect(() => {
     fetch('/api/categories')
@@ -548,6 +564,54 @@ function DrillDrawer({
     }
   }
 
+  // Bulk-assign every transaction currently shown in the drawer to (or, with
+  // null, out of) an event in one go — the fast path for turning a whole
+  // "Asset Sale" line into a single event.
+  async function patchEventForIds(ids: string[], eventId: string | null) {
+    await Promise.all(
+      ids.map((id) =>
+        fetch(`/api/transactions/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eventId }),
+        }),
+      ),
+    )
+    onChanged()
+    await loadTxns()
+    reloadEvents()
+  }
+
+  async function bulkAssign(eventId: string | null) {
+    const ids = txns.filter((t) => (t.eventId ?? null) !== eventId).map((t) => t.id)
+    if (ids.length === 0) return
+    setBulkSaving(true)
+    try {
+      await patchEventForIds(ids, eventId)
+    } finally {
+      setBulkSaving(false)
+    }
+  }
+
+  async function bulkCreateAndAssign() {
+    const name = window.prompt('Name this event — all of these transactions go into it (e.g. House sale, Car sale, Inheritance)')
+    if (!name || !name.trim()) return
+    const ids = txns.map((t) => t.id)
+    if (ids.length === 0) return
+    setBulkSaving(true)
+    try {
+      const res = await fetch('/api/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), kind: 'asset_sale' }),
+      })
+      const d = await res.json()
+      if (d.event?.id) await patchEventForIds(ids, d.event.id)
+    } finally {
+      setBulkSaving(false)
+    }
+  }
+
   async function reclassify(tx: DrillTxn, newName: string) {
     if (!drill || newName === tx.categoryName) return
     const cat = cats.find((c) => c.name === newName)
@@ -602,6 +666,37 @@ function DrillDrawer({
           <span className="text-xs font-medium uppercase tracking-wider text-gray-400">Total</span>
           <span className="text-lg font-bold text-gray-900">{fmtMoney(total, currency)}</span>
         </div>
+
+        {/* Bulk event assignment — the fast path. In a category drill, group the
+            whole line into an event; in an event drill, send it all back to
+            operating. */}
+        {!loading && txns.length > 0 && !drill.eventId && (
+          <div className="flex flex-wrap items-center gap-2 border-b border-violet-100 bg-violet-50/60 px-5 py-2.5">
+            <span className="text-xs text-violet-800">Non-operating (asset sale, gift, inheritance)?</span>
+            <Select
+              value=""
+              placeholder={bulkSaving ? 'Saving…' : `Move all ${txns.length} to an event…`}
+              onChange={(v) => bulkAssign(v || null)}
+              ariaLabel="Move all shown transactions to a capital event"
+              buttonClassName="inline-flex h-8 items-center justify-between gap-1 rounded-md border border-violet-200 bg-white px-2 text-sm font-medium text-violet-700 hover:bg-violet-50"
+              options={events.map((e) => ({ value: e.id, label: `${e.name} · ${(KIND_LABEL[e.kind] ?? 'One-off').toLowerCase()}`, group: 'Existing events' }))}
+              actions={[{ label: '＋ New event for all these…', onSelect: () => bulkCreateAndAssign() }]}
+            />
+          </div>
+        )}
+        {!loading && txns.length > 0 && drill.eventId && (
+          <div className="flex items-center justify-between border-b border-violet-100 bg-violet-50/60 px-5 py-2.5">
+            <span className="text-xs text-violet-800">{txns.length} in this event</span>
+            <button
+              onClick={() => bulkAssign(null)}
+              disabled={bulkSaving}
+              className="rounded-md border border-violet-200 bg-white px-2 py-1 text-xs font-medium text-violet-700 hover:bg-violet-50 disabled:opacity-50"
+            >
+              {bulkSaving ? 'Saving…' : 'Move all back to operating'}
+            </button>
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto">
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-16 text-sm text-gray-400">
