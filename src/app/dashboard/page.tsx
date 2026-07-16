@@ -454,7 +454,7 @@ export default function CashFlowPage() {
             is shown on its own (it's funded from reserves too, so it isn't
             subtracted from what was saved). Headline follows the Operating/Total
             toggle, with the counterpart underneath when there are asset sales. */}
-        <div className="mb-3 grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <div className="mb-3 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <Card
             title="Income"
             value={fmt(showTotal ? cardIncomeTotal : cardIncomeOp)}
