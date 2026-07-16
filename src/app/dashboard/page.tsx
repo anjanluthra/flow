@@ -80,6 +80,12 @@ function fmtMoney(n: number, currency: Currency): string {
 
 const pick = (a: Amt | undefined, c: Currency): number => (!a ? 0 : c === 'GBP' ? a.gbp : a.usd)
 
+// Lenient numeric parse for the free-text forecast inputs.
+const num = (s: string | undefined): number => {
+  const n = parseFloat(s ?? '')
+  return isNaN(n) ? 0 : n
+}
+
 function monthHeader(ym: string): string {
   const [y, m] = ym.split('-').map(Number)
   return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m - 1]} ${String(y).slice(2)}`
@@ -153,18 +159,18 @@ export default function CashFlowPage() {
   const totalExpense = opExpense + capCosts
   const totalNet = opNet + capNet
   const showTotal = view === 'total'
+  // Savings rate = Saved ÷ Income for the active view.
+  const shownIncome = showTotal ? totalIncome : opIncome
+  const shownNet = showTotal ? totalNet : opNet
+  const savedPct = shownIncome > 0 ? Math.round((shownNet / shownIncome) * 100) : 0
 
-  // Forecast (actuals + saved/averaged forecast) for the italic "projected"
-  // line and the italic per-month overlay in the table. Mirrors the
-  // Forecasting tab so the two agree.
-  const [annualProj, setAnnualProj] = useState<{ income: number; expense: number; net: number } | null>(null)
-  // Per-forecast-month figures in USD, keyed by "YYYY-MM" (only months without
-  // actuals — those are what the table leaves blank).
-  const [forecastMonthly, setForecastMonthly] = useState<Record<string, { income: number; expense: number }>>({})
+  // Forecast for the remaining (non-actual) months of the year, edited inline
+  // in the P&L. Kept as strings keyed by "YYYY-MM" so the inputs are natural to
+  // type into; seeded from saved forecasts, else the average of actual months.
+  const [fcEdits, setFcEdits] = useState<Record<string, { income: string; expense: string }>>({})
   useEffect(() => {
     if (mode !== 'year') {
-      setAnnualProj(null)
-      setForecastMonthly({})
+      setFcEdits({})
       return
     }
     let cancelled = false
@@ -177,59 +183,62 @@ export default function CashFlowPage() {
           actual.length ? Math.round(actual.reduce((s, r) => s + sel(r), 0) / actual.length) : 0
         const avgI = avg((r) => r.actualIncome)
         const avgE = avg((r) => r.actualExpense)
-        let income = 0
-        let expense = 0
-        const monthly: Record<string, { income: number; expense: number }> = {}
+        const seeded: Record<string, { income: string; expense: string }> = {}
         for (const r of rows) {
-          if (r.hasActuals) {
-            income += r.actualIncome
-            expense += r.actualExpense
-          } else {
-            const fi = r.forecastIncome ?? avgI
-            const fe = r.forecastExpense ?? avgE
-            income += fi
-            expense += fe
-            monthly[`${year}-${String(r.month).padStart(2, '0')}`] = { income: fi, expense: fe }
+          if (!r.hasActuals) {
+            seeded[`${year}-${String(r.month).padStart(2, '0')}`] = {
+              income: String(r.forecastIncome ?? avgI),
+              expense: String(r.forecastExpense ?? avgE),
+            }
           }
         }
-        if (!cancelled) {
-          setAnnualProj({ income, expense, net: income - expense })
-          setForecastMonthly(monthly)
-        }
+        if (!cancelled) setFcEdits(seeded)
       })
       .catch(() => {
-        if (!cancelled) {
-          setAnnualProj(null)
-          setForecastMonthly({})
-        }
+        if (!cancelled) setFcEdits({})
       })
     return () => {
       cancelled = true
     }
   }, [mode, year])
 
-  // The forecast API returns USD; convert to the selected display currency.
+  // The forecast is stored in USD; convert to the selected display currency for
+  // the read-only overlays and totals.
   const toDisplay = useCallback(
     (usd: number) => (currency === 'GBP' ? usd / (pnl?.gbpRate || 1.3231) : usd),
     [currency, pnl?.gbpRate],
   )
 
-  // Per-month forecast overlays for the Total rows, in display currency.
-  const fcIncome = useMemo(() => {
-    const o: Record<string, number> = {}
-    for (const [ym, v] of Object.entries(forecastMonthly)) o[ym] = toDisplay(v.income)
-    return o
-  }, [forecastMonthly, toDisplay])
-  const fcExpense = useMemo(() => {
-    const o: Record<string, number> = {}
-    for (const [ym, v] of Object.entries(forecastMonthly)) o[ym] = toDisplay(v.expense)
-    return o
-  }, [forecastMonthly, toDisplay])
-  const fcSaved = useMemo(() => {
-    const o: Record<string, number> = {}
-    for (const [ym, v] of Object.entries(forecastMonthly)) o[ym] = toDisplay(v.income - v.expense)
-    return o
-  }, [forecastMonthly, toDisplay])
+  // Per-month forecast overlays for the Total rows, in display currency, plus
+  // the raw edit strings the income/expense inputs bind to.
+  const fcIncome = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.income))])), [fcEdits, toDisplay])
+  const fcExpense = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.expense))])), [fcEdits, toDisplay])
+  const fcSaved = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.income) - num(v.expense))])), [fcEdits, toDisplay])
+  const fcIncomeStr = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, v.income])), [fcEdits])
+  const fcExpenseStr = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, v.expense])), [fcEdits])
+
+  // Forecast is edited in USD (its storage unit); GBP view is read-only.
+  const fcEditable = mode === 'year' && currency === 'USD'
+  const onFcChange = useCallback((ym: string, field: 'income' | 'expense', value: string) => {
+    setFcEdits((prev) => ({ ...prev, [ym]: { income: prev[ym]?.income ?? '0', expense: prev[ym]?.expense ?? '0', [field]: value } }))
+  }, [])
+  const commitFc = useCallback(
+    (ym: string) => {
+      setFcEdits((cur) => {
+        const e = cur[ym]
+        if (e) {
+          const [yy, mm] = ym.split('-').map(Number)
+          fetch('/api/forecast', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ year: yy, month: mm, forecastIncome: num(e.income), forecastExpense: num(e.expense) }),
+          }).catch(() => {})
+        }
+        return cur
+      })
+    },
+    [],
+  )
 
   // Drill-down: clicking a P&L cell opens the underlying transactions.
   const [drill, setDrill] = useState<{ category: string; from: string; to: string; label: string; eventId?: string } | null>(null)
@@ -376,17 +385,17 @@ export default function CashFlowPage() {
           <Card
             title="Saved"
             value={fmt(showTotal ? totalNet : opNet)}
-            subtitle={hasCapital ? (showTotal ? `${fmt(opNet)} operating` : `${fmt(totalNet)} with asset sales`) : 'income − expenses'}
+            subtitle={`${savedPct}% of income${hasCapital ? (showTotal ? ` · ${fmt(opNet)} operating` : ` · ${fmt(totalNet)} with asset sales`) : ''}`}
             icon={<Wallet className="h-5 w-5 text-blue-500" />}
           />
           <Card title="Invested" value={fmt(opInvested)} subtitle="total invested (income & reserves)" icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
         </div>
 
-        {/* Full-year projection incl. forecast (from the Forecasting tab), shown
-            in italics so it's clearly a projection, not an actual. */}
-        {mode === 'year' && annualProj && (
-          <p className="mb-8 text-sm italic text-gray-500">
-            Projected {year} incl. forecast — Income {fmt(toDisplay(annualProj.income))} · Expenses {fmt(toDisplay(annualProj.expense))} · Saved {fmt(toDisplay(annualProj.net))}
+        {/* Inline-forecast hint. Future months are typed straight into the
+            Total Income / Total Expenses rows below. */}
+        {fcEditable && Object.keys(fcEdits).length > 0 && (
+          <p className="mb-6 text-sm italic text-gray-500">
+            Future months are editable — type a forecast into the italic cells on the Total Income and Total Expenses rows; it saves automatically and folds into the year totals.
           </p>
         )}
 
@@ -434,13 +443,13 @@ export default function CashFlowPage() {
                     {pnl.income.map((l) => (
                       <LineRow key={`i-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                     ))}
-                    <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} forecast={fcIncome} />
+                    <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} forecast={fcIncome} editable={fcEditable} editValues={fcIncomeStr} onEditChange={(ym, v) => onFcChange(ym, 'income', v)} onEditCommit={commitFc} />
 
                     <SectionRow label="Expenses" span={months.length} showMonthCols={showMonthCols} tone="expense" />
                     {pnl.expense.map((l) => (
                       <LineRow key={`e-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                     ))}
-                    <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} forecast={fcExpense} />
+                    <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} forecast={fcExpense} editable={fcEditable} editValues={fcExpenseStr} onEditChange={(ym, v) => onFcChange(ym, 'expense', v)} onEditCommit={commitFc} />
 
                     <TotalRow label="Saved" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} forecast={fcSaved} />
 
@@ -1043,6 +1052,10 @@ function TotalRow({
   currency,
   fmt,
   forecast,
+  editable,
+  editValues,
+  onEditChange,
+  onEditCommit,
 }: {
   label: string
   byMonth: Record<string, Amt>
@@ -1055,8 +1068,17 @@ function TotalRow({
   // Optional per-month forecast (display currency) shown in italics where a
   // month has no actuals yet.
   forecast?: Record<string, number>
+  // When editable, forecast months render an input bound to editValues (raw
+  // strings) instead of read-only text.
+  editable?: boolean
+  editValues?: Record<string, string>
+  onEditChange?: (ym: string, value: string) => void
+  onEditCommit?: (ym: string) => void
 }) {
-  const totalVal = pick(total, currency)
+  // The year total includes any per-month forecast, so the row's cells (actuals
+  // + italic forecast) add up to the Total shown on the right.
+  const fcSum = forecast ? Object.values(forecast).reduce((s, v) => s + v, 0) : 0
+  const totalVal = pick(total, currency) + fcSum
   const color =
     tone === 'net' || tone === 'netcash'
       ? totalVal >= 0 ? 'text-emerald-700' : 'text-rose-700'
@@ -1073,6 +1095,22 @@ function TotalRow({
           if (!v) {
             const f = forecast?.[ym]
             if (f !== undefined) {
+              if (editable && editValues && onEditChange) {
+                return (
+                  <td key={ym} className="px-1 py-1 text-right">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={editValues[ym] ?? ''}
+                      onChange={(e) => onEditChange(ym, e.target.value)}
+                      onBlur={() => onEditCommit?.(ym)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
+                      title="Forecast — type to edit; saves automatically"
+                      className="w-full min-w-0 rounded border border-gray-200 bg-white px-1 py-0.5 text-right text-xs italic font-normal text-gray-600 focus:border-blue-400 focus:text-gray-900 focus:outline-none focus:ring-1 focus:ring-blue-200"
+                    />
+                  </td>
+                )
+              }
               return (
                 <td key={ym} className="px-2.5 py-2 text-right tabular-nums italic font-normal text-gray-400" title="Forecast">
                   {fmt(f)}
