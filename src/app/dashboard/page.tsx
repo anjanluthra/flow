@@ -410,7 +410,7 @@ export default function CashFlowPage() {
                     ))}
                     <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} />
 
-                    <TotalRow label={pnl.investing.length > 0 ? 'Net Operating' : 'Net Cash Flow'} byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} />
+                    <TotalRow label="Saved" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} />
 
                     {pnl.investing.length > 0 && (
                       <>
@@ -419,8 +419,6 @@ export default function CashFlowPage() {
                           <LineRow key={`v-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                         ))}
                         <TotalRow label="Total Invested" byMonth={t!.investingByMonth} total={t!.investingTotal} months={months} showMonthCols={showMonthCols} tone="investing" currency={currency} fmt={fmt} />
-
-                        <TotalRow label="Net Cash Flow" byMonth={t!.netCashByMonth} total={t!.netCash} months={months} showMonthCols={showMonthCols} tone="netcash" currency={currency} fmt={fmt} />
                       </>
                     )}
 
@@ -433,16 +431,6 @@ export default function CashFlowPage() {
                         {pnl.capitalEvents.map((e) => (
                           <EventRow key={`c-${e.id}`} event={e} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openEventDrill} />
                         ))}
-                        <TotalRow
-                          label="Total Cash Flow (incl. asset sales)"
-                          byMonth={{}}
-                          total={{ usd: t!.netCash.usd + t!.capital.net.usd, gbp: t!.netCash.gbp + t!.capital.net.gbp }}
-                          months={months}
-                          showMonthCols={showMonthCols}
-                          tone="netcash"
-                          currency={currency}
-                          fmt={fmt}
-                        />
                       </>
                     )}
                   </>
@@ -453,9 +441,10 @@ export default function CashFlowPage() {
         </div>
         <p className="mt-3 text-xs text-gray-400">
           Figures shown in {currency}. GBP uses each transaction&rsquo;s recorded pound amount where
-          available. Income and expenses form the operating section; cash put into the
-          &ldquo;Investments&rdquo; category is shown separately as investing activity and subtracted to give
-          Net Cash Flow. Internal transfers and credit-card payments are excluded (they net to zero).
+          available. Income and expenses form the operating section; &ldquo;Saved&rdquo; is income minus
+          expenses. Cash put into the &ldquo;Investments&rdquo; category is shown separately as investing
+          activity (funded from income and reserves, so it isn&rsquo;t netted against Saved). Internal
+          transfers and credit-card payments are excluded (they net to zero).
         </p>
       </div>
       <DrillDrawer drill={drill} currency={currency} onClose={() => setDrill(null)} onChanged={load} />
