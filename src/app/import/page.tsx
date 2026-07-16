@@ -459,6 +459,7 @@ export default function ImportPage() {
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 descriptions: unknown.map(({ tx }) => tx.description),
+                amounts: unknown.map(({ tx }) => tx.amount),
                 categories: categories.map((c) => ({ name: c.name, type: c.type })),
               }),
             })
@@ -1666,8 +1667,12 @@ export default function ImportPage() {
                       value={tx.category}
                       onChange={(v) => handleCategoryChange(index, v)}
                       options={[
-                        ...expenseCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Expenses' })),
-                        ...incomeCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Income' })),
+                        // Money-out can only be an expense, money-in only income;
+                        // transfers/investments move either way. Keeps you from
+                        // filing income under an expense category (e.g. Car).
+                        ...(tx.amount < 0
+                          ? expenseCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Expenses' }))
+                          : incomeCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Income' }))),
                         ...investmentCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Investments' })),
                         ...transferCategories.map((cat) => ({ value: cat.name, label: cat.name, group: 'Transfers' })),
                       ]}
