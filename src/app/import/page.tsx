@@ -1057,20 +1057,13 @@ export default function ImportPage() {
       const catByName = new Map(categories.map((c) => [c.name, c]))
       const payload = parsedTransactions.map((tx) => {
         const cat = tx.category ? catByName.get(tx.category) : undefined
-        // Category type wins over sign: an investment category → 'investment'
-        // (its own cash-flow section); a transfer category → 'transfer' (kept
-        // out of P&L); an income category → 'income'; otherwise fall back to the
+        // Type follows the category, always: an expense category stays an
+        // expense even on a positive (refund) amount — so a "Car" row can never
+        // land in the income section. Only uncategorised rows fall back to the
         // debit/credit sign.
         const type: 'income' | 'expense' | 'transfer' | 'investment' =
-          cat?.type === 'investment'
-            ? 'investment'
-            : cat?.type === 'transfer'
-              ? 'transfer'
-              : cat?.type === 'income'
-                ? 'income'
-                : tx.amount < 0
-                  ? 'expense'
-                  : 'income'
+          (cat?.type as 'income' | 'expense' | 'transfer' | 'investment' | undefined) ??
+          (tx.amount < 0 ? 'expense' : 'income')
         return {
           accountId: account.id,
           date: tx.date,
