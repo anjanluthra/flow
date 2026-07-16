@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react'
-import { DollarSign, TrendingDown, TrendingUp, Wallet, Percent } from 'lucide-react'
+import { DollarSign, TrendingDown, TrendingUp, Wallet, Percent, Pencil, Trash2 } from 'lucide-react'
 import { Card } from '@/components/ui/Card'
 import { Select } from '@/components/ui/Select'
 
@@ -430,6 +430,7 @@ interface DrillTxn {
   currency: string
   accountName: string | null
   categoryName: string
+  type: 'income' | 'expense' | 'transfer' | 'investment'
   eventId: string | null
 }
 
@@ -463,6 +464,14 @@ function DrillDrawer({
   const [events, setEvents] = useState<EventOption[]>([])
   const [savingId, setSavingId] = useState<string | null>(null)
   const [bulkSaving, setBulkSaving] = useState(false)
+  // Local echo of the event's name/kind so header edits show instantly; reset
+  // whenever a different row is opened.
+  const [eventName, setEventName] = useState<string | null>(null)
+  const [eventKind, setEventKind] = useState<string | null>(null)
+  useEffect(() => {
+    setEventName(drill?.eventId ? drill.category : null)
+    setEventKind(null)
+  }, [drill])
 
   useEffect(() => {
     fetch('/api/categories')
@@ -564,6 +573,45 @@ function DrillDrawer({
     }
   }
 
+  // Rename / re-kind / delete the event currently open in the drawer.
+  async function renameEvent() {
+    if (!drill?.eventId) return
+    const current = eventName ?? drill.category
+    const next = window.prompt('Rename this event', current)
+    if (next === null) return
+    const trimmed = next.trim()
+    if (!trimmed || trimmed === current) return
+    setEventName(trimmed) // instant echo in the header
+    await fetch(`/api/events/${drill.eventId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: trimmed }),
+    })
+    onChanged() // refresh the P&L so the row label updates too
+    reloadEvents()
+  }
+
+  async function changeEventKind(kind: string) {
+    if (!drill?.eventId) return
+    setEventKind(kind)
+    await fetch(`/api/events/${drill.eventId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind }),
+    })
+    onChanged()
+    reloadEvents()
+  }
+
+  async function deleteEvent() {
+    if (!drill?.eventId) return
+    if (!window.confirm('Delete this event? Its transactions go back to operating cash flow (nothing is deleted).')) return
+    await fetch(`/api/events/${drill.eventId}`, { method: 'DELETE' })
+    onChanged()
+    reloadEvents()
+    onClose()
+  }
+
   // Bulk-assign every transaction currently shown in the drawer to (or, with
   // null, out of) an event in one go — the fast path for turning a whole
   // "Asset Sale" line into a single event.
@@ -645,7 +693,19 @@ function DrillDrawer({
 
   if (!drill) return null
 
-  const amt = (tx: DrillTxn) => (currency === 'GBP' && tx.currency === 'GBP' ? tx.amountLocal : tx.amountUsd)
+  // Amounts are stored as magnitudes; sign them by direction (money in +,
+  // money out −) so income and expense read at a glance and the total nets out
+  // to the event's true figure (proceeds − costs) rather than summing both.
+  const magnitude = (tx: DrillTxn) => Math.abs(currency === 'GBP' && tx.currency === 'GBP' ? tx.amountLocal : tx.amountUsd)
+  const amt = (tx: DrillTxn) => (tx.type === 'expense' ? -magnitude(tx) : magnitude(tx))
+  const amtColor = (tx: DrillTxn) =>
+    tx.type === 'income'
+      ? 'text-emerald-600'
+      : tx.type === 'expense'
+        ? 'text-rose-600'
+        : tx.type === 'investment'
+          ? 'text-indigo-600'
+          : 'text-gray-600'
   const total = txns.reduce((s, tx) => s + amt(tx), 0)
   const fmtDate = (d: string) => new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
@@ -654,17 +714,43 @@ function DrillDrawer({
       <div className="absolute inset-0 bg-black/20" onClick={onClose} />
       <div className="relative flex h-full w-full max-w-md flex-col bg-white shadow-2xl">
         <div className="flex items-start justify-between gap-3 border-b border-gray-200 px-5 py-4">
-          <div>
-            <h3 className="text-base font-semibold text-gray-900">{drill.category}</h3>
+          <div className="min-w-0">
+            <div className="flex items-center gap-1.5">
+              <h3 className="truncate text-base font-semibold text-gray-900">{drill.eventId ? (eventName ?? drill.category) : drill.category}</h3>
+              {drill.eventId && (
+                <button onClick={renameEvent} className="shrink-0 rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700" title="Rename event">
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
             <p className="text-xs text-gray-500">{drill.label.replace(`${drill.category} · `, '')} · {txns.length} transaction{txns.length !== 1 ? 's' : ''}</p>
           </div>
-          <button onClick={onClose} className="rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="Close">
+          <button onClick={onClose} className="shrink-0 rounded-md p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600" title="Close">
             ✕
           </button>
         </div>
+        {drill.eventId && (
+          <div className="flex items-center gap-2 border-b border-gray-100 px-5 py-2.5">
+            <span className="text-[11px] uppercase tracking-wide text-gray-400">Type</span>
+            <Select
+              value={eventKind ?? events.find((e) => e.id === drill.eventId)?.kind ?? 'asset_sale'}
+              onChange={(v) => changeEventKind(v)}
+              ariaLabel="Event type"
+              buttonClassName="inline-flex h-8 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-sm text-gray-700 hover:bg-gray-50"
+              options={Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }))}
+            />
+            <button
+              onClick={deleteEvent}
+              className="ml-auto inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50"
+              title="Delete event (transactions return to operating)"
+            >
+              <Trash2 className="h-3.5 w-3.5" /> Delete
+            </button>
+          </div>
+        )}
         <div className="flex items-baseline justify-between border-b border-gray-100 bg-gray-50 px-5 py-3">
-          <span className="text-xs font-medium uppercase tracking-wider text-gray-400">Total</span>
-          <span className="text-lg font-bold text-gray-900">{fmtMoney(total, currency)}</span>
+          <span className="text-xs font-medium uppercase tracking-wider text-gray-400">{drill.eventId ? 'Net total' : 'Total'}</span>
+          <span className={`text-lg font-bold ${total < 0 ? 'text-rose-600' : 'text-gray-900'}`}>{fmtMoney(total, currency)}</span>
         </div>
 
         {/* Bulk event assignment — the fast path. In a category drill, group the
@@ -711,7 +797,10 @@ function DrillDrawer({
                 <div key={tx.id} className={`px-5 py-3 ${savingId === tx.id ? 'opacity-50' : ''}`}>
                   <div className="flex items-baseline justify-between gap-3">
                     <p className="min-w-0 flex-1 truncate text-sm font-medium text-gray-900" title={tx.description}>{tx.description}</p>
-                    <span className={`shrink-0 font-mono text-sm ${amt(tx) < 0 ? 'text-rose-600' : 'text-gray-900'}`}>
+                    <span className={`flex shrink-0 items-baseline gap-1.5 font-mono text-sm ${amtColor(tx)}`}>
+                      <span className="font-sans text-[10px] font-medium uppercase tracking-wide opacity-70">
+                        {tx.type === 'income' ? 'in' : tx.type === 'expense' ? 'out' : tx.type}
+                      </span>
                       {fmtMoney(amt(tx), currency)}
                     </span>
                   </div>
