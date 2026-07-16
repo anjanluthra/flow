@@ -294,6 +294,23 @@ function formatLocal(amount: number, currency: string): string {
   return `${amount < 0 ? '-' : ''}${symbol}${Math.abs(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+// The statement's month, inferred from the transactions it contains: the most
+// common YYYY-MM across the rows (statements often spill a day or two into the
+// next month, so the mode beats min/max). Returns a first-of-month date string.
+function statementMonthFromTxns(txns: { date: string }[]): string | null {
+  const counts = new Map<string, number>()
+  for (const t of txns) {
+    const m = (t.date || '').slice(0, 7) // YYYY-MM
+    if (/^\d{4}-\d{2}$/.test(m)) counts.set(m, (counts.get(m) ?? 0) + 1)
+  }
+  let best: string | null = null
+  let bestN = 0
+  for (const [m, n] of counts) if (n > bestN) { best = m; bestN = n }
+  return best ? `${best}-01` : null
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -334,7 +351,10 @@ export default function ImportPage() {
   // card can show a spinner and we can mark it imported (not duplicated) on save.
   const [reprocessingId, setReprocessingId] = useState<string | null>(null)
   const [viewer, setViewer] = useState<DocViewerTarget | null>(null)
-  const [archiveFilter, setArchiveFilter] = useState<{ account: string; year: string } | null>(null)
+  // Coverage grid: the year in view, and an optional cell (account+month) the
+  // list below is narrowed to.
+  const [gridYear, setGridYear] = useState<number>(new Date().getFullYear())
+  const [cellFilter, setCellFilter] = useState<{ account: string; month: number } | null>(null)
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -1095,6 +1115,10 @@ export default function ImportPage() {
         prev ? { ...prev, imported: data.inserted, duplicates: data.skipped ?? 0 } : prev,
       )
 
+      // Auto-detect the statement month from the transactions themselves so it
+      // lands on the right cell of the coverage grid without manual tagging.
+      const stmtDate = statementMonthFromTxns(parsedTransactions)
+
       // Archive the statement. If we're re-importing one that's already saved
       // (extracted from the archive), update that row in place so it flips to
       // "imported" instead of creating a duplicate; otherwise file a fresh copy.
@@ -1109,6 +1133,7 @@ export default function ImportPage() {
               importedCount: data.inserted,
               dataRows: recon?.dataRows ?? null,
               formatSignature: pdfDoc.format,
+              ...(stmtDate ? { statementDate: stmtDate } : {}),
             }),
           })
           if (!patchRes.ok) {
@@ -1129,6 +1154,7 @@ export default function ImportPage() {
               formatSignature: pdfDoc.format,
               importedCount: data.inserted,
               dataRows: recon?.dataRows ?? null,
+              statementDate: stmtDate,
             }
           : rawText
             ? {
@@ -1140,6 +1166,7 @@ export default function ImportPage() {
                 formatSignature: headerSignature(rawText),
                 importedCount: data.inserted,
                 dataRows: recon?.dataRows ?? null,
+                statementDate: stmtDate,
               }
             : null
 
@@ -1249,25 +1276,43 @@ export default function ImportPage() {
   const fmtDocDate = (d: string) =>
     new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
 
-  // Year for an archived doc: statement date if set, else guessed from filename.
-  const docYear = (d: StatementDoc): string => {
-    if (d.statementDate) return String(new Date(d.statementDate).getUTCFullYear())
-    const y = yearFromFileName(d.fileName)
-    return y ? String(y) : 'Unknown'
-  }
   const docAccount = (d: StatementDoc): string => d.accountName ?? 'Unassigned'
+  // Statement month/year come from the (now auto-detected) statement date.
+  const docMonth = (d: StatementDoc): number | null =>
+    d.statementDate ? new Date(d.statementDate).getUTCMonth() + 1 : null
+  const docYearN = (d: StatementDoc): number | null =>
+    d.statementDate ? new Date(d.statementDate).getUTCFullYear() : null
+  const isImported = (d: StatementDoc): boolean => d.source === 'import' || (d.importedCount ?? 0) > 0
 
-  // Distinct years and accounts for the archive filters.
-  const archiveYears = Array.from(new Set(documents.map(docYear))).sort((a, b) => b.localeCompare(a))
-  const archiveAccounts = Array.from(new Set(documents.map(docAccount))).sort()
-  const filteredDocs = documents
-    .filter((d) => {
-      if (!archiveFilter) return true
-      const okA = archiveFilter.account === 'all' || docAccount(d) === archiveFilter.account
-      const okY = archiveFilter.year === 'all' || docYear(d) === archiveFilter.year
-      return okA && okY
-    })
-    .sort((a, b) => (b.uploadedAt ?? '').localeCompare(a.uploadedAt ?? ''))
+  // ---- Coverage grid + compact list data ----------------------------------
+  const gridAccountNames = Array.from(new Set(documents.map(docAccount))).sort((a, b) =>
+    a === 'Unassigned' ? 1 : b === 'Unassigned' ? -1 : a.localeCompare(b),
+  )
+  const gridYearOptions = Array.from(
+    new Set<number>([new Date().getFullYear(), ...documents.map(docYearN).filter((y): y is number => y != null)]),
+  ).sort((a, b) => b - a)
+  // key `${account}|${month}` -> { imported, count }
+  const coverage = new Map<string, { imported: boolean; count: number }>()
+  for (const d of documents) {
+    const m = docMonth(d)
+    if (m == null || docYearN(d) !== gridYear) continue
+    const key = `${docAccount(d)}|${m}`
+    const cur = coverage.get(key) ?? { imported: false, count: 0 }
+    cur.count += 1
+    if (isImported(d)) cur.imported = true
+    coverage.set(key, cur)
+  }
+  // Docs for the list: this year (by statement date), optionally narrowed to a
+  // clicked cell; sorted newest month first.
+  const yearDocs = documents
+    .filter((d) => docYearN(d) === gridYear)
+    .filter((d) => !cellFilter || (docAccount(d) === cellFilter.account && docMonth(d) === cellFilter.month))
+    .sort((a, b) => (b.statementDate ?? '').localeCompare(a.statementDate ?? ''))
+  // Docs that can't be placed on the grid yet (no statement date) — surfaced so
+  // you can give them a month.
+  const undatedDocs = documents.filter((d) => !d.statementDate)
+  const importedTotal = documents.filter(isImported).length
+  const notImportedTotal = documents.length - importedTotal
 
   // Summary stats
   const totalTransactions = parsedTransactions.length
@@ -1291,6 +1336,107 @@ export default function ImportPage() {
   ) : null
 
   const splitReview = statementPreview !== null && parsedTransactions.length > 0
+
+  // Set a saved statement's month/year (first of month) — used by the compact
+  // list's period pickers.
+  const setPeriod = (d: StatementDoc, opts: { year?: number; month?: number }) => {
+    const y = opts.year ?? docYearN(d) ?? gridYear
+    const m = opts.month ?? docMonth(d) ?? 1
+    patchDoc(d.id, { statementDate: `${y}-${String(m).padStart(2, '0')}-01` })
+  }
+  const PERIOD_YEARS = ['2023', '2024', '2025', '2026', '2027']
+
+  // One compact row in the statements list.
+  const renderStatementRow = (d: StatementDoc) => {
+    const imported = isImported(d)
+    const isPdf = d.fileName.toLowerCase().endsWith('.pdf')
+    const acctId = accounts.find((a) => a.name === d.accountName)?.id ?? ''
+    return (
+      <div key={d.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-gray-100 px-4 py-2.5 last:border-0 hover:bg-gray-50/50">
+        <FileText className="h-4 w-4 shrink-0 text-gray-300" />
+        <button
+          onClick={() => setViewer({ url: `/api/documents/${d.id}`, downloadUrl: `/api/documents/${d.id}?download=1`, fileName: d.fileName })}
+          className="min-w-0 flex-1 basis-48 truncate text-left text-sm font-medium text-gray-900 hover:text-blue-700 hover:underline"
+          title={d.fileName}
+        >
+          {d.fileName}
+        </button>
+        <span
+          className={`inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${
+            imported ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+          }`}
+        >
+          {imported ? (
+            <>
+              <CheckCircle className="h-3 w-3" /> Imported{d.importedCount != null ? ` · ${d.importedCount}` : ''}
+            </>
+          ) : (
+            <>
+              <AlertCircle className="h-3 w-3" /> Not imported
+            </>
+          )}
+        </span>
+        <Select
+          ariaLabel="Account"
+          value={acctId}
+          onChange={(v) => patchDoc(d.id, { accountId: v || null })}
+          options={[{ value: '', label: 'Unassigned' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
+          buttonClassName="inline-flex h-7 max-w-[150px] min-w-0 shrink-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50"
+        />
+        <div className="flex shrink-0 items-center gap-1">
+          <Select
+            ariaLabel="Statement month"
+            value={docMonth(d) ? String(docMonth(d)) : ''}
+            onChange={(v) => setPeriod(d, { month: Number(v) })}
+            options={MONTHS_SHORT.map((m, i) => ({ value: String(i + 1), label: m }))}
+            placeholder="Mon"
+            buttonClassName="inline-flex h-7 w-16 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50"
+          />
+          <Select
+            ariaLabel="Statement year"
+            value={docYearN(d) ? String(docYearN(d)) : ''}
+            onChange={(v) => setPeriod(d, { year: Number(v) })}
+            options={PERIOD_YEARS.map((y) => ({ value: y, label: y }))}
+            placeholder="Year"
+            buttonClassName="inline-flex h-7 w-20 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50"
+          />
+        </div>
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          {!imported && isPdf && (
+            <button
+              onClick={() => processSavedDoc(d)}
+              disabled={reprocessingId !== null}
+              title="Extract transactions and categorise them for review"
+              className="mr-1 inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {reprocessingId === d.id ? (
+                <>
+                  <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" /> Extracting…
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-3.5 w-3.5" /> Extract
+                </>
+              )}
+            </button>
+          )}
+          <button
+            onClick={() => setViewer({ url: `/api/documents/${d.id}`, downloadUrl: `/api/documents/${d.id}?download=1`, fileName: d.fileName })}
+            title="View"
+            className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
+          >
+            <Eye className="h-4 w-4" />
+          </button>
+          <a href={`/api/documents/${d.id}?download=1`} title="Download" className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600">
+            <Download className="h-4 w-4" />
+          </a>
+          <button onClick={() => handleDeleteDoc(d.id, d.fileName)} title="Delete" className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
+            <Trash2 className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 font-[Inter,sans-serif]">
@@ -1732,13 +1878,35 @@ export default function ImportPage() {
         </div>
 
         {/* ------------------------------------------------------------------ */}
-        {/* Saved statements — the archive + per-bank format history           */}
+        {/* Saved statements — coverage grid + compact list                    */}
         {/* ------------------------------------------------------------------ */}
         <div className="mt-12">
-          <h2 className="mb-1 text-lg font-semibold text-gray-900">Saved statements</h2>
-          <p className="mb-4 text-sm text-gray-500">
-            Every statement, filed by account and year. Click a number to see those statements.
-          </p>
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-gray-900">Saved statements</h2>
+              <p className="mt-0.5 text-sm text-gray-500">
+                {documents.length} statement{documents.length !== 1 ? 's' : ''}
+                {documents.length > 0 && (
+                  <> · <span className="text-emerald-600">{importedTotal} imported</span> · <span className="text-amber-600">{notImportedTotal} to import</span></>
+                )}
+              </p>
+            </div>
+            {documents.length > 0 && (
+              <div className="flex items-center gap-4">
+                <div className="hidden items-center gap-3 text-xs text-gray-500 sm:flex">
+                  <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm bg-emerald-500" /> Imported</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm bg-amber-400" /> Uploaded</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm border border-gray-200 bg-gray-50" /> Missing</span>
+                </div>
+                <Select
+                  ariaLabel="Coverage year"
+                  value={String(gridYear)}
+                  onChange={(v) => { setGridYear(Number(v)); setCellFilter(null) }}
+                  options={gridYearOptions.map((y) => ({ value: String(y), label: String(y) }))}
+                />
+              </div>
+            )}
+          </div>
 
           {documents.length === 0 ? (
             <div className="rounded-xl border border-dashed border-gray-300 bg-white px-6 py-12 text-center">
@@ -1749,164 +1917,72 @@ export default function ImportPage() {
             </div>
           ) : (
             <>
-              {/* Filter pills — year and account */}
-              {(() => {
-                const af = archiveFilter ?? { account: 'all', year: 'all' }
-                const setYear = (year: string) => {
-                  const next = { account: af.account, year }
-                  setArchiveFilter(next.account === 'all' && next.year === 'all' ? null : next)
-                }
-                const setAcct = (account: string) => {
-                  const next = { account, year: af.year }
-                  setArchiveFilter(next.account === 'all' && next.year === 'all' ? null : next)
-                }
-                const Pill = ({ on, onClick, children }: { on: boolean; onClick: () => void; children: React.ReactNode }) => (
-                  <button
-                    onClick={onClick}
-                    className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
-                      on ? 'bg-gray-900 text-white' : 'border border-gray-200 bg-white text-gray-600 hover:bg-gray-50'
-                    }`}
-                  >
-                    {children}
-                  </button>
-                )
-                return (
-                  <div className="mb-5 space-y-2">
-                    <div className="flex flex-wrap items-center gap-1.5">
-                      <span className="mr-1 text-xs font-medium uppercase tracking-wider text-gray-400">Year</span>
-                      <Pill on={af.year === 'all'} onClick={() => setYear('all')}>All</Pill>
-                      {archiveYears.map((y) => (
-                        <Pill key={y} on={af.year === y} onClick={() => setYear(y)}>{y}</Pill>
-                      ))}
-                    </div>
-                    {archiveAccounts.length > 1 && (
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="mr-1 text-xs font-medium uppercase tracking-wider text-gray-400">Account</span>
-                        <Pill on={af.account === 'all'} onClick={() => setAcct('all')}>All</Pill>
-                        {archiveAccounts.map((a) => (
-                          <Pill key={a} on={af.account === a} onClick={() => setAcct(a)}>{a}</Pill>
+              {gridAccountNames.length > 0 && (
+                <div className="mb-6 overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
+                  <table className="w-full border-separate border-spacing-0 text-sm">
+                    <thead>
+                      <tr>
+                        <th className="sticky left-0 z-10 bg-white px-4 py-2 text-left text-xs font-medium text-gray-500">Account</th>
+                        {MONTHS_SHORT.map((m) => (
+                          <th key={m} className="px-1 py-2 text-center text-xs font-medium text-gray-400">{m}</th>
                         ))}
-                      </div>
-                    )}
-                  </div>
-                )
-              })()}
-
-              {/* Statement cards, grouped by account */}
-              {filteredDocs.length === 0 ? (
-                <div className="rounded-xl border border-dashed border-gray-300 bg-white px-6 py-10 text-center text-sm text-gray-400">
-                  No statements match this filter.
-                </div>
-              ) : (
-                <div className="space-y-6">
-                  {Array.from(
-                    filteredDocs.reduce((m, d) => {
-                      const a = docAccount(d)
-                      const list = m.get(a) ?? []
-                      list.push(d)
-                      m.set(a, list)
-                      return m
-                    }, new Map<string, StatementDoc[]>()),
-                  ).map(([acct, docs]) => (
-                    <div key={acct}>
-                      <div className="mb-2 flex items-center gap-2">
-                        <h3 className="text-sm font-semibold text-gray-900">{acct}</h3>
-                        <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">
-                          {docs.length}
-                        </span>
-                      </div>
-                      <div className="grid gap-2.5 sm:grid-cols-2">
-                        {docs.map((d) => (
-                          <div
-                            key={d.id}
-                            className="group flex items-center gap-3 rounded-xl border border-gray-200 bg-white p-3 shadow-sm transition-shadow hover:shadow-md"
-                          >
-                            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-blue-50 text-blue-500">
-                              <FileText className="h-4 w-4" />
-                            </span>
-                            <div className="min-w-0 flex-1">
-                              <p className="truncate text-sm font-medium text-gray-900" title={d.fileName}>
-                                {d.fileName}
-                              </p>
-                              <div className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                                {d.source === 'import' ? (
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[11px] font-medium text-green-700">
-                                    <CheckCircle className="h-3 w-3" />
-                                    Added to transactions
-                                    {d.importedCount != null ? ` · ${d.importedCount} txns` : ''}
-                                  </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
-                                    <AlertCircle className="h-3 w-3" />
-                                    Not imported yet
-                                  </span>
-                                )}
-                                <span className="truncate text-xs text-gray-400">
-                                  {fmtDocDate(d.uploadedAt)} · {fmtBytes(d.sizeBytes)}
-                                </span>
-                              </div>
-                              <div className="mt-1.5 flex items-center gap-1.5">
-                                <Select
-                                  ariaLabel="Assign account"
-                                  value={accounts.find((a) => a.name === d.accountName)?.id ?? ''}
-                                  onChange={(v) => patchDoc(d.id, { accountId: v || null })}
-                                  options={[
-                                    { value: '', label: 'Unassigned' },
-                                    ...accounts.map((a) => ({ value: a.id, label: a.name })),
-                                  ]}
-                                  buttonClassName="inline-flex h-6 max-w-[130px] min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-1.5 text-xs text-gray-600 hover:bg-gray-50"
-                                />
-                                <Select
-                                  ariaLabel="Statement year"
-                                  value={docYear(d)}
-                                  onChange={(v) => patchDoc(d.id, { statementDate: `${v}-01-01` })}
-                                  options={['2023', '2024', '2025', '2026', '2027'].map((y) => ({ value: y, label: y }))}
-                                  placeholder="Unknown"
-                                  buttonClassName="inline-flex h-6 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-1.5 text-xs text-gray-600 hover:bg-gray-50"
-                                />
-                              </div>
-                              {/* Not imported yet + it's a PDF → offer to extract & categorise it. */}
-                              {d.source !== 'import' && d.fileName.toLowerCase().endsWith('.pdf') && (
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {gridAccountNames.map((name) => (
+                        <tr key={name} className="hover:bg-gray-50/40">
+                          <td className="sticky left-0 z-10 bg-white px-4 py-1.5 whitespace-nowrap text-gray-700">{name}</td>
+                          {MONTHS_SHORT.map((_, i) => {
+                            const m = i + 1
+                            const cov = coverage.get(`${name}|${m}`)
+                            const active = !!cellFilter && cellFilter.account === name && cellFilter.month === m
+                            const cls = cov ? (cov.imported ? 'bg-emerald-500' : 'bg-amber-400') : 'border border-gray-200 bg-gray-50'
+                            return (
+                              <td key={i} className="px-1 py-1.5 text-center">
                                 <button
-                                  onClick={() => processSavedDoc(d)}
-                                  disabled={reprocessingId !== null}
-                                  title="Extract transactions from this statement and categorise them for review"
-                                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-medium text-white shadow-sm transition-colors hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
-                                >
-                                  {reprocessingId === d.id ? (
-                                    <>
-                                      <span className="h-3 w-3 animate-spin rounded-full border-2 border-white border-t-transparent" />
-                                      Extracting…
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Sparkles className="h-3.5 w-3.5" />
-                                      Extract &amp; categorise
-                                    </>
-                                  )}
-                                </button>
-                              )}
-                            </div>
-                            <div className="flex shrink-0 items-center gap-0.5">
-                              <button
-                                onClick={() => setViewer({ url: `/api/documents/${d.id}`, downloadUrl: `/api/documents/${d.id}?download=1`, fileName: d.fileName })}
-                                title="View"
-                                className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
-                              >
-                                <Eye className="h-4 w-4" />
-                              </button>
-                              <a href={`/api/documents/${d.id}?download=1`} title="Download" className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600">
-                                <Download className="h-4 w-4" />
-                              </a>
-                              <button onClick={() => handleDeleteDoc(d.id, d.fileName)} title="Delete" className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500">
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ))}
+                                  disabled={!cov}
+                                  onClick={() => setCellFilter(active ? null : { account: name, month: m })}
+                                  title={cov ? `${cov.count} statement${cov.count !== 1 ? 's' : ''} — ${cov.imported ? 'imported' : 'uploaded, not imported'}` : `No ${MONTHS_SHORT[i]} ${gridYear} statement`}
+                                  className={`mx-auto block h-6 w-full max-w-[40px] rounded-sm ${cls} ${cov ? 'cursor-pointer hover:opacity-80' : 'cursor-default'} ${active ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
+                                />
+                              </td>
+                            )
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {cellFilter && (
+                <div className="mb-3 flex items-center gap-2 text-sm">
+                  <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
+                    {cellFilter.account} · {MONTHS_SHORT[cellFilter.month - 1]} {gridYear}
+                  </span>
+                  <button onClick={() => setCellFilter(null)} className="text-xs font-medium text-gray-500 hover:text-gray-700 hover:underline">Clear</button>
+                </div>
+              )}
+
+              <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                <div className="border-b border-gray-200 bg-gray-50/60 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  {gridYear} · {yearDocs.length} statement{yearDocs.length !== 1 ? 's' : ''}
+                </div>
+                {yearDocs.length === 0 ? (
+                  <p className="px-4 py-8 text-center text-sm text-gray-400">
+                    {cellFilter ? 'No statement here yet.' : `No ${gridYear} statements yet.`}
+                  </p>
+                ) : (
+                  yearDocs.map((d) => renderStatementRow(d))
+                )}
+              </div>
+
+              {undatedDocs.length > 0 && (
+                <div className="mt-6 overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">
+                  <div className="border-b border-amber-200 bg-amber-50/60 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-amber-700">
+                    Needs a date · {undatedDocs.length} — set a month so they appear on the grid
+                  </div>
+                  {undatedDocs.map((d) => renderStatementRow(d))}
                 </div>
               )}
             </>
