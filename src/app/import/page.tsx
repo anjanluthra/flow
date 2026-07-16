@@ -1376,6 +1376,16 @@ export default function ImportPage() {
     .filter((d) => coveredMonthsInYear(d, gridYear).length > 0)
     .filter((d) => !cellFilter || (docAccount(d) === cellFilter.account && coveredMonthsInYear(d, gridYear).includes(cellFilter.month)))
     .sort((a, b) => (b.periodEnd ?? b.statementDate ?? '').localeCompare(a.periodEnd ?? a.statementDate ?? ''))
+  // Group the year's statements by account so the list reads per-account.
+  const yearDocsByAccount = Array.from(
+    yearDocs.reduce((m, d) => {
+      const a = docAccount(d)
+      const list = m.get(a) ?? []
+      list.push(d)
+      m.set(a, list)
+      return m
+    }, new Map<string, StatementDoc[]>()),
+  ).sort((a, b) => (a[0] === 'Unassigned' ? 1 : b[0] === 'Unassigned' ? -1 : a[0].localeCompare(b[0])))
   // Docs that can't be placed on the grid yet — surfaced so you can date them.
   const undatedDocs = documents.filter((d) => !docHasPeriod(d))
   const importedTotal = documents.filter(isImported).length
@@ -2045,7 +2055,15 @@ export default function ImportPage() {
                     {cellFilter ? 'No statement here yet.' : `No ${gridYear} statements yet.`}
                   </p>
                 ) : (
-                  yearDocs.map((d) => renderStatementRow(d))
+                  yearDocsByAccount.map(([acct, docs]) => (
+                    <div key={acct}>
+                      <div className="flex items-center gap-2 border-b border-gray-100 bg-gray-50/40 px-4 py-1.5">
+                        <span className="text-xs font-semibold text-gray-700">{acct}</span>
+                        <span className="rounded-full bg-gray-200/70 px-1.5 text-[10px] font-medium text-gray-500">{docs.length}</span>
+                      </div>
+                      {docs.map((d) => renderStatementRow(d))}
+                    </div>
+                  ))
                 )}
               </div>
 
