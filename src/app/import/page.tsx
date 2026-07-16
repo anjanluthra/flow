@@ -6,7 +6,7 @@ import { DocViewer, type DocViewerTarget } from '@/components/DocViewer'
 import { FileUpload } from '@/components/ui/FileUpload'
 import { Select } from '@/components/ui/Select'
 import { convertToUSD } from '@/lib/currency'
-import { deriveMerchantPattern } from '@/lib/categories'
+import { deriveMerchantPattern, merchantMatches } from '@/lib/categories'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -596,8 +596,7 @@ export default function ImportPage() {
         if (amount >= 0) sumCredits += amount
         else sumDebits += amount
 
-        const lowerDesc = description.toLowerCase()
-        const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
+        const learned = mappings.find((m) => merchantMatches(description, m.pattern))
         // Learned mappings win; everything else is left for Claude to assess.
         const category = learned?.categoryName ?? ''
         const amountUSD = convertToUSD(amount, activeAccount.currency, fxRates ?? undefined)
@@ -639,8 +638,7 @@ export default function ImportPage() {
         const amount = r.amount
         if (amount >= 0) sumCredits += amount
         else sumDebits += amount
-        const lowerDesc = r.description.toLowerCase()
-        const learned = mappings.find((m) => lowerDesc.includes(m.pattern.toLowerCase()))
+        const learned = mappings.find((m) => merchantMatches(r.description, m.pattern))
         const category = learned?.categoryName ?? ''
         transactions.push({
           date: normalizeDate(r.date),
