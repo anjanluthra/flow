@@ -1246,10 +1246,9 @@ export default function NetWorthPage() {
                   data={allocationData}
                   cx="50%"
                   cy="50%"
-                  outerRadius={110}
-                  innerRadius={55}
+                  outerRadius="80%"
+                  innerRadius="45%"
                   dataKey="value"
-                  label={renderPieLabel}
                   labelLine={false}
                   stroke="#fff"
                   strokeWidth={2}

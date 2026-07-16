@@ -22,14 +22,14 @@ export function Card({
 }: CardProps) {
   return (
     <div
-      className={`rounded-xl border border-gray-200 bg-white p-6 shadow-sm transition-shadow hover:shadow-md ${className}`}
+      className={`rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition-shadow hover:shadow-md sm:p-6 ${className}`}
     >
       <div className="flex items-start justify-between">
         <div className="space-y-1">
           <p className="text-sm font-medium uppercase tracking-wide text-gray-500">
             {title}
           </p>
-          <p className="text-2xl font-semibold text-gray-900">{value}</p>
+          <p className="text-xl font-semibold text-gray-900 sm:text-2xl">{value}</p>
         </div>
         {icon && (
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-gray-50 text-gray-400">
