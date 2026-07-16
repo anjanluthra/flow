@@ -798,11 +798,11 @@ function EventRow({
 }) {
   const net = pick(event.net, currency)
   return (
-    <tr className="hover:bg-gray-50/50">
-      <td className="sticky left-0 z-10 bg-white px-4 py-2.5">
+    <tr onClick={() => onDrill(event)} className="group cursor-pointer hover:bg-blue-50/40" title="See the transactions in this event">
+      <td className="sticky left-0 z-10 bg-white px-4 py-2.5 group-hover:bg-blue-50/40">
         <div className="flex items-center gap-2">
           <span className="inline-block h-2.5 w-2.5 rounded-full bg-violet-400" />
-          <span className="text-gray-700">{event.name}</span>
+          <span className="text-gray-700 group-hover:text-blue-700 group-hover:underline">{event.name}</span>
           <span className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-violet-600">
             {KIND_LABEL[event.kind] ?? 'One-off'}
           </span>
@@ -811,14 +811,8 @@ function EventRow({
       {showMonthCols && months.map((ym) => (
         <td key={ym} className="px-4 py-2.5 text-right text-gray-300">·</td>
       ))}
-      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900">
-        <button
-          onClick={() => onDrill(event)}
-          className="rounded px-1 font-medium tabular-nums text-gray-900 hover:bg-blue-50 hover:text-blue-700 hover:underline"
-          title="See transactions"
-        >
-          {fmt(net)}
-        </button>
+      <td className="px-4 py-2.5 text-right font-medium tabular-nums text-gray-900 group-hover:text-blue-700 group-hover:underline">
+        {fmt(net)}
       </td>
     </tr>
   )
