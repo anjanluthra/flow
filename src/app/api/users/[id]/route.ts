@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import bcrypt from 'bcryptjs'
 import { authOptions } from '@/app/api/auth/[...nextauth]/route'
-import { query } from '@/lib/db'
+import { ensureUserInviteColumns, query } from '@/lib/db'
 
 async function requireAdmin(): Promise<NextResponse | null> {
   const session = await getServerSession(authOptions)
@@ -26,6 +26,7 @@ export async function PATCH(
   if (denied) return denied
 
   try {
+    await ensureUserInviteColumns()
     const { id } = await params
     const body = await request.json()
 
