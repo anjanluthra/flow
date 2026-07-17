@@ -1585,8 +1585,12 @@ export default function ImportPage() {
   ).sort((a, b) => (a[0] === 'Unassigned' ? 1 : b[0] === 'Unassigned' ? -1 : a[0].localeCompare(b[0])))
   // Docs that can't be placed on the grid yet — surfaced so you can date them.
   const undatedDocs = documents.filter(isUndated)
-  const importedTotal = documents.filter(isImported).length
-  const notImportedTotal = documents.length - importedTotal
+  // Header counts are scoped to the year in view, so they match the grid/list
+  // below (which are year-scoped) rather than lumping in other years.
+  const yearAllDocs = documents.filter((d) => coveredMonthsInYear(d, gridYear).length > 0)
+  const yearTotal = yearAllDocs.length
+  const importedTotal = yearAllDocs.filter(isImported).length
+  const notImportedTotal = yearTotal - importedTotal
 
   // Summary stats
   const totalTransactions = parsedTransactions.length
@@ -2283,10 +2287,11 @@ export default function ImportPage() {
             <div>
               <h2 className="text-lg font-semibold text-gray-900">Saved statements</h2>
               <p className="mt-0.5 text-sm text-gray-500">
-                {documents.length} statement{documents.length !== 1 ? 's' : ''}
-                {documents.length > 0 && (
+                {yearTotal} statement{yearTotal !== 1 ? 's' : ''} in {gridYear}
+                {yearTotal > 0 && (
                   <> · <span className="text-emerald-600">{importedTotal} imported</span> · <span className="text-amber-600">{notImportedTotal} to import</span></>
                 )}
+                {documents.length !== yearTotal && <span className="text-gray-400"> · {documents.length} all-time</span>}
               </p>
             </div>
             {documents.length > 0 && (
