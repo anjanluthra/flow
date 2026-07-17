@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import bcrypt from 'bcryptjs'
 import { authOptions } from '@/app/api/auth/[...nextauth]/route'
-import { query } from '@/lib/db'
+import { ensureUserInviteColumns, query } from '@/lib/db'
 
 async function requireAdmin(): Promise<NextResponse | null> {
   const session = await getServerSession(authOptions)
@@ -22,6 +22,7 @@ export async function GET() {
   if (denied) return denied
 
   try {
+    await ensureUserInviteColumns()
     const result = await query(
       `SELECT id, email, full_name, role, is_active,
               (password_hash IS NOT NULL) AS has_password,
@@ -72,6 +73,7 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    await ensureUserInviteColumns()
     const hash = await bcrypt.hash(password, 10)
     const result = await query(
       `INSERT INTO users (email, full_name, role, password_hash)

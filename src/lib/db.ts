@@ -915,12 +915,17 @@ export async function deleteBankConnection(id: string) {
   await query(`DELETE FROM bank_connections WHERE id = $1`, [id])
 }
 
-// Invite-link columns on the users table: a hashed one-time token + expiry, so
-// a new user can set their own password instead of the admin choosing one.
+// Auth columns on the users table. This app applies schema via idempotent
+// guards (not the sql/ migration files), so the password_hash / is_active
+// columns from sql/007_user_auth.sql are NOT present unless ensured here — and
+// authorize() selects them, so without this DB login silently fails and falls
+// back to the env password. Also adds the invite-link columns.
 let userInviteColsReady = false
 export async function ensureUserInviteColumns() {
   if (userInviteColsReady) return
   try {
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text`)
+    await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active boolean NOT NULL DEFAULT true`)
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_token_hash text`)
     await query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS invite_expires_at timestamptz`)
     userInviteColsReady = true

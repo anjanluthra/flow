@@ -2,7 +2,7 @@ import NextAuth, { type AuthOptions, type User } from 'next-auth'
 import CredentialsProvider from 'next-auth/providers/credentials'
 import bcrypt from 'bcryptjs'
 import { timingSafeEqual } from 'crypto'
-import { query } from '@/lib/db'
+import { query, ensureUserInviteColumns } from '@/lib/db'
 
 // Warn loudly if the JWT secret isn't configured in production — without it
 // NextAuth falls back to an insecure key. (A warning, not a throw, so it can't
@@ -71,6 +71,7 @@ export const authOptions: AuthOptions = {
         // 1. DB-first: everyone signs in against their bcrypt password hash.
         let dbUser: { id: string; email: string; full_name: string | null; role: string; password_hash: string | null } | null = null
         try {
+          await ensureUserInviteColumns() // make sure password_hash / is_active exist
           const result = await query(
             `SELECT id, email, full_name, role, password_hash
              FROM users
