@@ -607,12 +607,13 @@ export async function getAnnualActuals(
  * amount_local when it was recorded in GBP (so it matches source sheets to the
  * penny) and falls back to converting USD at `gbpRate` for other currencies.
  */
-export async function getPnLByRange(from: string, to: string, gbpRate: number) {
+export async function getPnLByRange(from: string, to: string, gbpRate: number, aedRate: number) {
   await ensureInvestmentType()
   await ensureTransactionTypesMatchCategory()
   await ensureCapitalEvents()
   await ensureCategoryNonCore()
   const rate = gbpRate > 0 ? gbpRate : 1.3231
+  const aed = aedRate > 0 ? aedRate : 0.272294
   return query(
     `SELECT
         t.type,
@@ -624,7 +625,11 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
         SUM(
           CASE WHEN t.currency = 'GBP' THEN t.amount_local
                ELSE COALESCE(t.amount_usd, 0) / $3 END
-        ) AS total_gbp
+        ) AS total_gbp,
+        SUM(
+          CASE WHEN t.currency = 'AED' THEN t.amount_local
+               ELSE COALESCE(t.amount_usd, 0) / $4 END
+        ) AS total_aed
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
      WHERE t.date >= $1 AND t.date <= $2
@@ -641,7 +646,7 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
        )
      GROUP BY t.type, c.name, c.color_hex, c.non_core, ym
      ORDER BY ym`,
-    [from, to, rate],
+    [from, to, rate, aed],
   )
 }
 
@@ -672,23 +677,28 @@ export async function ensureCapitalEvents() {
 
 // Per-event proceeds / costs / net within a date range, in USD and GBP. Amounts
 // are stored absolute, so proceeds = income legs, costs = expense legs.
-export async function getCapitalEventsForRange(from: string, to: string, gbpRate: number) {
+export async function getCapitalEventsForRange(from: string, to: string, gbpRate: number, aedRate: number) {
   await ensureCapitalEvents()
   const rate = gbpRate > 0 ? gbpRate : 1.3231
+  const aed = aedRate > 0 ? aedRate : 0.272294
   const gbp = (col: string) =>
     `SUM(CASE WHEN t.type = '${col}' THEN (CASE WHEN t.currency = 'GBP' THEN t.amount_local ELSE COALESCE(t.amount_usd, 0) / $3 END) ELSE 0 END)`
+  const aedCol = (col: string) =>
+    `SUM(CASE WHEN t.type = '${col}' THEN (CASE WHEN t.currency = 'AED' THEN t.amount_local ELSE COALESCE(t.amount_usd, 0) / $4 END) ELSE 0 END)`
   return query(
     `SELECT e.id, e.name, e.kind,
         COUNT(t.id)::int AS txn_count,
         COALESCE(SUM(CASE WHEN t.type = 'income'  THEN COALESCE(t.amount_usd, 0) ELSE 0 END), 0) AS proceeds_usd,
         COALESCE(SUM(CASE WHEN t.type = 'expense' THEN COALESCE(t.amount_usd, 0) ELSE 0 END), 0) AS costs_usd,
         COALESCE(${gbp('income')}, 0)  AS proceeds_gbp,
-        COALESCE(${gbp('expense')}, 0) AS costs_gbp
+        COALESCE(${gbp('expense')}, 0) AS costs_gbp,
+        COALESCE(${aedCol('income')}, 0)  AS proceeds_aed,
+        COALESCE(${aedCol('expense')}, 0) AS costs_aed
      FROM capital_events e
      LEFT JOIN transactions t ON t.event_id = e.id AND t.date >= $1 AND t.date <= $2
      GROUP BY e.id, e.name, e.kind
      ORDER BY (COALESCE(SUM(CASE WHEN t.type = 'income' THEN COALESCE(t.amount_usd, 0) ELSE -COALESCE(t.amount_usd, 0) END), 0)) DESC`,
-    [from, to, rate],
+    [from, to, rate, aed],
   )
 }
 
