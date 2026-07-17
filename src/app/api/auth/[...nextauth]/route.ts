@@ -29,13 +29,14 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Founding-account bootstrap
+// Founding-account fallback
 //
 // Auth is DB-first: everyone signs in against their bcrypt password in the
-// users table. These env-var passwords are only a BOOTSTRAP — they let a
-// founding account sign in *until it has set a DB password*, at which point the
-// env path is never taken again (see authorize()). Once both accounts have DB
-// passwords you can delete AUTH_PASSWORD_* from the environment entirely.
+// users table. These env-var passwords are a FALLBACK — a founding account can
+// always sign in with its env password *as long as the env var is set*, even
+// after it has a DB password. To fully retire env auth, DELETE the AUTH_PASSWORD_*
+// vars in Vercel (deleting the var disables the fallback). This avoids any
+// lockout if a DB password is forgotten or mis-set.
 // ---------------------------------------------------------------------------
 
 const FOUNDING: Array<{
@@ -45,6 +46,7 @@ const FOUNDING: Array<{
   envKey: string
 }> = [
   { email: 'admin@joinindexed.com', name: 'Anjan', role: 'admin', envKey: 'AUTH_PASSWORD_ANJAN' },
+  { email: 'luthraanjan@gmail.com', name: 'Anjan', role: 'admin', envKey: 'AUTH_PASSWORD_ANJAN' },
   { email: 'kate@joinindexed.com', name: 'Kate', role: 'user', envKey: 'AUTH_PASSWORD_KATE' },
 ]
 
@@ -81,28 +83,33 @@ export const authOptions: AuthOptions = {
         }
 
         if (dbUser?.password_hash) {
-          // Once a user has a DB password, that is the ONLY way they sign in —
-          // the env bootstrap is never consulted for them again.
           const ok = await bcrypt.compare(credentials.password, dbUser.password_hash)
-          return ok
-            ? ({ id: String(dbUser.id), email: dbUser.email, name: dbUser.full_name ?? dbUser.email, role: dbUser.role } as User)
-            : null
+          if (ok) {
+            return { id: String(dbUser.id), email: dbUser.email, name: dbUser.full_name ?? dbUser.email, role: dbUser.role } as User
+          }
+          // Wrong DB password — fall through to the env fallback (recovery), so
+          // a mis-set or forgotten DB password can never lock a founder out
+          // while the env var still exists.
         }
 
-        // 2. Bootstrap: a founding account with NO DB password yet may sign in
-        //    with its env-var password, just long enough to set a DB password.
+        // 2. Env fallback: a founding account may sign in with its env-var
+        //    password whenever the var is set (delete the var to disable this).
         const founder = FOUNDING.find((u) => u.email === email)
         if (founder) {
           const expected = process.env[founder.envKey]
           if (expected && safeEqual(credentials.password, expected)) {
-            return { id: dbUser ? String(dbUser.id) : founder.email, email: founder.email, name: founder.name, role: founder.role } as User
+            return {
+              id: dbUser ? String(dbUser.id) : founder.email,
+              email: founder.email,
+              name: dbUser?.full_name ?? founder.name,
+              role: dbUser?.role ?? founder.role,
+            } as User
           }
-          return null
         }
 
-        // 3. Unknown email — a dummy bcrypt compare so timing doesn't reveal
-        //    whether the account exists.
-        await bcrypt.compare(credentials.password, DUMMY_HASH)
+        // 3. Nothing matched. If we didn't already run a real bcrypt compare,
+        //    run a dummy one so timing doesn't reveal whether the account exists.
+        if (!dbUser?.password_hash) await bcrypt.compare(credentials.password, DUMMY_HASH)
         return null
       },
     }),
