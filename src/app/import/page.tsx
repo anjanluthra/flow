@@ -430,6 +430,9 @@ export default function ImportPage() {
     { date: string; description: string; amount: number }[] | null
   >(null)
   const [pdfDoc, setPdfDoc] = useState<{ base64: string; fileName: string; format: string; originDocId?: string | null } | null>(null)
+  // When re-extracting a statement already saved in the archive (PDF or CSV),
+  // its id — so on confirm we update that row in place instead of duplicating it.
+  const [originDocId, setOriginDocId] = useState<string | null>(null)
   // Set while extracting a statement that's already saved in the archive, so its
   // card can show a spinner and we can mark it imported (not duplicated) on save.
   const [reprocessingId, setReprocessingId] = useState<string | null>(null)
@@ -848,6 +851,7 @@ export default function ImportPage() {
       setAutoDetected(false)
       setPendingPdfRows(null)
       setPdfDoc(null)
+      setOriginDocId(originDocId ?? null)
 
       const isPdf = selectedFile.name.toLowerCase().endsWith('.pdf')
       const isCsv = selectedFile.name.toLowerCase().endsWith('.csv')
@@ -1212,6 +1216,7 @@ export default function ImportPage() {
     setRecon(null)
     setRawText(null)
     setPdfDoc(null)
+    setOriginDocId(null)
     setPendingPdfRows(null)
     setParseError(null)
     setFile(null)
@@ -1300,9 +1305,9 @@ export default function ImportPage() {
       // Archive the statement. If we're re-importing one that's already saved
       // (extracted from the archive), update that row in place so it flips to
       // "imported" instead of creating a duplicate; otherwise file a fresh copy.
-      if (pdfDoc?.originDocId) {
+      if (originDocId) {
         try {
-          const patchRes = await fetch(`/api/documents/${pdfDoc.originDocId}`, {
+          const patchRes = await fetch(`/api/documents/${originDocId}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -1310,7 +1315,7 @@ export default function ImportPage() {
               source: 'import',
               importedCount: data.inserted,
               dataRows: recon?.dataRows ?? null,
-              formatSignature: pdfDoc.format,
+              formatSignature: pdfDoc ? pdfDoc.format : rawText ? headerSignature(rawText) : null,
               ...(stmtDate ? { statementDate: stmtDate } : {}),
               ...(periodStart ? { periodStart, periodEnd } : {}),
             }),
@@ -1395,6 +1400,7 @@ export default function ImportPage() {
       setFile(null)
       setPendingPdfRows(null)
       setPdfDoc(null)
+      setOriginDocId(null)
       setRawText(null)
       setRecon(null)
       setSelectedAccountId('')
@@ -1714,6 +1720,7 @@ export default function ImportPage() {
   const renderStatementRow = (d: StatementDoc) => {
     const imported = isImported(d)
     const isPdf = d.fileName.toLowerCase().endsWith('.pdf')
+    const isCsv = d.fileName.toLowerCase().endsWith('.csv')
     const acctId = accounts.find((a) => a.name === d.accountName)?.id ?? ''
     return (
       <div key={d.id} className={`flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-gray-100 px-4 py-2.5 last:border-0 ${selectedIds.has(d.id) ? 'bg-blue-50/60' : 'hover:bg-gray-50/50'}`}>
@@ -1804,7 +1811,7 @@ export default function ImportPage() {
           )
         })()}
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
-          {!imported && isPdf && (
+          {!imported && (isPdf || isCsv) && (
             <button
               onClick={() => processSavedDoc(d)}
               disabled={reprocessingId !== null}
