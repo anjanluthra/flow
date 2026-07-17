@@ -20,6 +20,7 @@ interface Line {
   color: string
   monthly: Record<string, Amt>
   total: Amt
+  nonCore?: boolean
 }
 
 function monthsBetween(from: string, to: string): string[] {
@@ -103,7 +104,7 @@ export async function GET(request: NextRequest) {
       const usd = Math.abs(parseFloat(row.total_usd))
       const gbp = Math.abs(parseFloat(row.total_gbp))
       if (!bucket.has(name)) {
-        bucket.set(name, { category: name, color: row.category_color ?? '#94A3B8', monthly: {}, total: zero() })
+        bucket.set(name, { category: name, color: row.category_color ?? '#94A3B8', monthly: {}, total: zero(), nonCore: !!row.non_core })
       }
       const line = bucket.get(name)!
       const cell = (line.monthly[row.ym] ??= zero())
@@ -132,11 +133,21 @@ export async function GET(request: NextRequest) {
     const sumTotal = (lines: Line[]) =>
       lines.reduce((a, l) => ({ usd: a.usd + l.total.usd, gbp: a.gbp + l.total.gbp }), zero())
 
+    // Split expenses into core (operating living costs) and non-core
+    // (non-operating but still expenses — reimbursables, refundable deposits…).
+    // Both stay in the operating P&L; the frontend subtotals them separately.
+    const expenseCoreLines = expenseLines.filter((l) => !l.nonCore)
+    const expenseNonCoreLines = expenseLines.filter((l) => l.nonCore)
+
     const incomeByMonth = sumByMonth(incomeLines)
     const expenseByMonth = sumByMonth(expenseLines)
+    const expenseCoreByMonth = sumByMonth(expenseCoreLines)
+    const expenseNonCoreByMonth = sumByMonth(expenseNonCoreLines)
     const investingByMonth = sumByMonth(investingLines)
     const incomeTotal = sumTotal(incomeLines)
     const expenseTotal = sumTotal(expenseLines)
+    const expenseCoreTotal = sumTotal(expenseCoreLines)
+    const expenseNonCoreTotal = sumTotal(expenseNonCoreLines)
     const investingTotal = sumTotal(investingLines)
 
     // Operating net = income − expenses (the P&L bottom line).
@@ -174,16 +185,22 @@ export async function GET(request: NextRequest) {
       gbpRate,
       income: incomeLines,
       expense: expenseLines,
+      expenseCore: expenseCoreLines,
+      expenseNonCore: expenseNonCoreLines,
       investing: investingLines,
       capitalEvents,
       totals: {
         incomeByMonth,
         expenseByMonth,
+        expenseCoreByMonth,
+        expenseNonCoreByMonth,
         investingByMonth,
         netByMonth,
         netCashByMonth,
         incomeTotal,
         expenseTotal,
+        expenseCoreTotal,
+        expenseNonCoreTotal,
         investingTotal,
         net,
         netCash,

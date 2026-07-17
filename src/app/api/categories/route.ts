@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getCategories, ensureInvestmentType } from '@/lib/db'
+import { getCategories, ensureInvestmentType, setCategoryNonCore } from '@/lib/db'
 import { query } from '@/lib/db'
 
 // ---------------------------------------------------------------------------
@@ -33,6 +33,7 @@ export async function GET(request: NextRequest) {
       color: row.color_hex,
       iconName: row.icon_name,
       sortOrder: row.sort_order,
+      nonCore: !!row.non_core,
       ...(withCounts ? { count: countByCat[row.id] ?? 0 } : {}),
     }))
     return NextResponse.json({ categories })
@@ -80,20 +81,33 @@ export async function POST(request: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// PATCH /api/categories — rename a category. Body: { id, name }
+// PATCH /api/categories — update a category. Body: { id, name?, nonCore? }
+//   name    — rename the category
+//   nonCore — tag/untag it as a non-core (non-operating) expense
 // ---------------------------------------------------------------------------
 
 export async function PATCH(request: NextRequest) {
   try {
-    const { id, name } = (await request.json()) as { id?: string; name?: string }
-    if (!id || !name?.trim()) {
-      return NextResponse.json({ error: 'id and name are required' }, { status: 400 })
+    const { id, name, nonCore } = (await request.json()) as {
+      id?: string
+      name?: string
+      nonCore?: boolean
     }
-    await query(`UPDATE categories SET name = $2 WHERE id = $1`, [id, name.trim()])
-    return NextResponse.json({ success: true, id, name: name.trim() })
+    if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
+    if (name === undefined && nonCore === undefined) {
+      return NextResponse.json({ error: 'name or nonCore is required' }, { status: 400 })
+    }
+    if (typeof nonCore === 'boolean') {
+      await setCategoryNonCore(id, nonCore)
+    }
+    if (name !== undefined) {
+      if (!name.trim()) return NextResponse.json({ error: 'name cannot be empty' }, { status: 400 })
+      await query(`UPDATE categories SET name = $2 WHERE id = $1`, [id, name.trim()])
+    }
+    return NextResponse.json({ success: true, id, ...(name !== undefined ? { name: name.trim() } : {}), ...(nonCore !== undefined ? { nonCore } : {}) })
   } catch (error) {
-    console.error('Failed to rename category:', error)
+    console.error('Failed to update category:', error)
     const detail = error instanceof Error ? error.message : String(error)
-    return NextResponse.json({ error: `Failed to rename category: ${detail}` }, { status: 500 })
+    return NextResponse.json({ error: `Failed to update category: ${detail}` }, { status: 500 })
   }
 }
