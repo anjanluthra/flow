@@ -49,9 +49,6 @@ interface AppUser {
   createdAt: string
 }
 
-// The two founding accounts authenticate via env vars, not DB passwords.
-const ENV_USERS = new Set(['admin@joinindexed.com', 'kate@joinindexed.com'])
-
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -396,6 +393,9 @@ export default function SettingsPage() {
   const [inviteLink, setInviteLink] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  // Set/change the signed-in user's own DB password (moves them off the env bootstrap).
+  const [myPassword, setMyPassword] = useState('')
+  const [savingMine, setSavingMine] = useState(false)
 
   const load = useCallback(async () => {
     setIsLoading(true)
@@ -444,6 +444,34 @@ export default function SettingsPage() {
       setMessage({ kind: 'err', text: 'Failed to add user.' })
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  async function saveMyPassword() {
+    if (myPassword.length < 8) {
+      setMessage({ kind: 'err', text: 'Password must be at least 8 characters.' })
+      return
+    }
+    setSavingMine(true)
+    setMessage(null)
+    try {
+      const res = await fetch('/api/users/me/password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: myPassword }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setMessage({ kind: 'err', text: data.error || 'Failed to set password.' })
+        return
+      }
+      setMyPassword('')
+      setMessage({ kind: 'ok', text: 'Password set. You now sign in with this password — the environment-variable bootstrap no longer applies to you.' })
+      await load()
+    } catch {
+      setMessage({ kind: 'err', text: 'Failed to set password.' })
+    } finally {
+      setSavingMine(false)
     }
   }
 
@@ -536,6 +564,40 @@ export default function SettingsPage() {
             {message.text}
           </div>
         )}
+
+        {/* Your login — set your own DB password (moves you off the env bootstrap) */}
+        <div className="mb-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+          <div className="flex items-center gap-2 border-b border-gray-200 px-6 py-4">
+            <KeyRound className="h-4 w-4 text-gray-400" />
+            <h2 className="text-base font-semibold text-gray-900">Your login</h2>
+            {session?.user?.email && (
+              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-500">{session.user.email}</span>
+            )}
+          </div>
+          <div className="px-6 py-5">
+            <p className="mb-3 text-sm text-gray-500">
+              Set your own password. Once set, you sign in with it and the environment-variable
+              login no longer applies to you — so you can remove <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">AUTH_PASSWORD_*</code> from Vercel once everyone has one.
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <input
+                type="password"
+                value={myPassword}
+                onChange={(e) => setMyPassword(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter' && myPassword.length >= 8) saveMyPassword() }}
+                placeholder="New password (min 8 characters)"
+                className="h-9 min-w-[240px] flex-1 rounded-lg border border-gray-300 px-3 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-200"
+              />
+              <button
+                onClick={saveMyPassword}
+                disabled={savingMine || myPassword.length < 8}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {savingMine ? 'Saving…' : 'Set my password'}
+              </button>
+            </div>
+          </div>
+        </div>
 
         {/* Users card */}
         <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
@@ -658,7 +720,6 @@ export default function SettingsPage() {
                 </tr>
               ) : (
                 users.map((u) => {
-                  const isEnvUser = ENV_USERS.has(u.email.toLowerCase())
                   return (
                     <tr key={u.id} className="hover:bg-gray-50/50">
                       <td className="px-6 py-3">
@@ -677,7 +738,7 @@ export default function SettingsPage() {
                         </span>
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-500">
-                        {isEnvUser ? 'Env password' : u.hasPassword ? 'DB password' : 'No password set'}
+                        {u.hasPassword ? 'DB password' : 'No password set'}
                       </td>
                       <td className="px-4 py-3">
                         <span
@@ -691,7 +752,7 @@ export default function SettingsPage() {
                       {isAdmin && (
                         <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-2">
-                            {!isEnvUser && !u.hasPassword && (
+                            {!u.hasPassword && (
                               <button
                                 onClick={() => createInvite(u.email, u.fullName ?? undefined, u.role)}
                                 title="Create an invite link so they can set their password"
@@ -700,16 +761,14 @@ export default function SettingsPage() {
                                 Invite link
                               </button>
                             )}
-                            {!isEnvUser && (
-                              <button
-                                onClick={() => resetPassword(u)}
-                                title="Reset password"
-                                className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
-                              >
-                                <KeyRound className="h-4 w-4" />
-                              </button>
-                            )}
-                            {!isEnvUser && (
+                            <button
+                              onClick={() => resetPassword(u)}
+                              title="Reset password"
+                              className="rounded-md p-1.5 text-gray-400 hover:bg-blue-50 hover:text-blue-600"
+                            >
+                              <KeyRound className="h-4 w-4" />
+                            </button>
+                            {u.email.toLowerCase() !== session?.user?.email?.toLowerCase() && (
                               <button
                                 onClick={() => toggleActive(u)}
                                 className={`rounded-lg border px-2.5 py-1 text-xs font-medium ${
@@ -1058,9 +1117,11 @@ export default function SettingsPage() {
         )}
 
         <p className="mt-4 text-xs text-gray-400">
-          The two founding accounts sign in with passwords set via environment variables
-          (AUTH_PASSWORD_ANJAN / AUTH_PASSWORD_KATE). Users added here sign in with the password
-          you set, stored as a bcrypt hash.
+          Everyone signs in against a password stored as a bcrypt hash in the database. The
+          <code className="mx-1 rounded bg-gray-100 px-1 py-0.5">AUTH_PASSWORD_*</code> environment
+          variables are only a one-time bootstrap for the founding accounts, and stop applying to
+          each account the moment it sets a password above — you can delete them from Vercel once
+          both accounts have one.
         </p>
       </div>
     </div>
