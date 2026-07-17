@@ -2,16 +2,14 @@ import { NextRequest, NextResponse } from 'next/server'
 import crypto from 'crypto'
 import { requireAdmin } from '@/lib/auth'
 import {
-  gocardlessConfigured,
-  createRequisition,
-  getRequisition,
+  enableBankingConfigured,
+  startAuth,
   getAccountTransactions,
-} from '@/lib/gocardless'
+} from '@/lib/enablebanking'
 import {
   listBankConnections,
   getBankConnection,
   insertBankConnection,
-  updateBankConnectionStatus,
   setBankConnectionAccount,
   markBankConnectionSynced,
   deleteBankConnection,
@@ -22,15 +20,15 @@ import { getUsdRates } from '@/lib/fx'
 
 // ---------------------------------------------------------------------------
 // GET  /api/banks — configured flag + the list of bank connections.
-// POST /api/banks — { action: 'link'|'refresh'|'sync'|'map'|'delete', ... }
-// Admin only. Dormant until GOCARDLESS_SECRET_ID/KEY are set.
+// POST /api/banks — { action: 'link'|'sync'|'map'|'delete', ... }
+// Admin only. Dormant until ENABLE_BANKING_APP_ID / ENABLE_BANKING_PRIVATE_KEY.
+// The consent redirect is handled by GET /api/banks/callback.
 // ---------------------------------------------------------------------------
 
 export async function GET() {
   const denied = await requireAdmin()
   if (denied) return denied
-  const configured = gocardlessConfigured()
-  if (!configured) return NextResponse.json({ configured: false, connections: [] })
+  if (!enableBankingConfigured()) return NextResponse.json({ configured: false, connections: [] })
   try {
     const res = await listBankConnections()
     const connections = res.rows.map((r) => ({
@@ -52,8 +50,11 @@ export async function GET() {
 export async function POST(request: NextRequest) {
   const denied = await requireAdmin()
   if (denied) return denied
-  if (!gocardlessConfigured()) {
-    return NextResponse.json({ error: 'GoCardless is not configured. Add GOCARDLESS_SECRET_ID and GOCARDLESS_SECRET_KEY in Vercel.' }, { status: 503 })
+  if (!enableBankingConfigured()) {
+    return NextResponse.json(
+      { error: 'Enable Banking is not configured. Add ENABLE_BANKING_APP_ID and ENABLE_BANKING_PRIVATE_KEY in Vercel.' },
+      { status: 503 },
+    )
   }
 
   try {
@@ -61,24 +62,19 @@ export async function POST(request: NextRequest) {
     const action = body?.action as string
 
     if (action === 'link') {
+      // institutionId encodes "name|country" from the institutions endpoint.
       const institutionId = String(body.institutionId || '')
-      const institutionName = String(body.institutionName || institutionId)
-      if (!institutionId) return NextResponse.json({ error: 'institutionId required' }, { status: 400 })
+      const [aspspName, aspspCountry] = institutionId.split('|')
+      if (!aspspName || !aspspCountry) {
+        return NextResponse.json({ error: 'Pick a bank first.' }, { status: 400 })
+      }
       const proto = request.headers.get('x-forwarded-proto') || 'https'
       const host = request.headers.get('host') || request.nextUrl.host
-      const redirect = `${proto}://${host}/settings?bank=connected`
-      const reference = crypto.randomUUID()
-      const req = await createRequisition(institutionId, redirect, reference)
-      await insertBankConnection(req.id, institutionId, institutionName)
-      return NextResponse.json({ link: req.link, requisitionId: req.id })
-    }
-
-    if (action === 'refresh') {
-      const conn = await getBankConnection(String(body.id))
-      if (!conn) return NextResponse.json({ error: 'Connection not found' }, { status: 404 })
-      const req = await getRequisition(conn.requisition_id)
-      await updateBankConnectionStatus(conn.id, req.status, req.accounts ?? [])
-      return NextResponse.json({ status: req.status, accountCount: (req.accounts ?? []).length })
+      const redirectUrl = `${proto}://${host}/api/banks/callback`
+      const state = crypto.randomUUID()
+      const auth = await startAuth({ aspspName, aspspCountry, redirectUrl, state })
+      await insertBankConnection(state, aspspCountry, aspspName)
+      return NextResponse.json({ link: auth.url })
     }
 
     if (action === 'map') {
@@ -97,9 +93,9 @@ export async function POST(request: NextRequest) {
       if (!conn.account_id) {
         return NextResponse.json({ error: 'Map this bank to a Flow account first.' }, { status: 400 })
       }
-      const accountIds: string[] = Array.isArray(conn.gc_account_ids) ? conn.gc_account_ids : []
-      if (accountIds.length === 0) {
-        return NextResponse.json({ error: 'No accounts yet — hit Refresh after authorising at your bank.' }, { status: 400 })
+      const accountUids: string[] = Array.isArray(conn.gc_account_ids) ? conn.gc_account_ids : []
+      if (accountUids.length === 0) {
+        return NextResponse.json({ error: 'No accounts yet — reconnect the bank to grant access.' }, { status: 400 })
       }
 
       // FX for non-USD amounts.
@@ -107,7 +103,9 @@ export async function POST(request: NextRequest) {
       try {
         const fx = await getUsdRates()
         rates = { ...rates, ...fx.rates }
-      } catch { /* leave USD-only */ }
+      } catch {
+        /* leave USD-only */
+      }
 
       // Only pull since the last sync (with a small overlap) to keep it light;
       // dedupe handles any repeats.
@@ -116,23 +114,27 @@ export async function POST(request: NextRequest) {
         : undefined
 
       const rows: NewTransaction[] = []
-      for (const acc of accountIds) {
-        const data = await getAccountTransactions(acc, dateFrom)
-        for (const t of data.transactions?.booked ?? []) {
-          const date = t.bookingDate || t.valueDate
+      for (const uid of accountUids) {
+        const txns = await getAccountTransactions(uid, dateFrom)
+        for (const t of txns) {
+          // Skip still-pending entries; they get re-fetched as booked later.
+          if (t.status && t.status !== 'BOOK') continue
+          const date = t.booking_date || t.value_date || t.transaction_date
           if (!date) continue
-          const raw = parseFloat(t.transactionAmount.amount)
+          const raw = parseFloat(t.transaction_amount?.amount ?? '')
           if (isNaN(raw)) continue
-          const currency = t.transactionAmount.currency || 'USD'
+          const currency = t.transaction_amount?.currency || 'USD'
+          const isIncome = t.credit_debit_indicator === 'CRDT'
           const description =
-            t.remittanceInformationUnstructured ||
-            t.remittanceInformationUnstructuredArray?.join(' ') ||
-            t.creditorName || t.debtorName || 'Transaction'
+            (t.remittance_information && t.remittance_information.join(' ')) ||
+            t.creditor?.name ||
+            t.debtor?.name ||
+            'Transaction'
           const magnitude = Math.abs(raw)
           const rate = rates[`${currency}_USD`]
           const amountUsd = currency === 'USD' ? magnitude : rate ? magnitude * rate : null
-          const stable = t.transactionId || t.internalTransactionId || `${date}|${raw}|${description}`
-          const dedupeHash = crypto.createHash('sha256').update(`gc|${acc}|${stable}`).digest('hex')
+          const stable = t.entry_reference || `${date}|${raw}|${description}`
+          const dedupeHash = crypto.createHash('sha256').update(`eb|${uid}|${stable}`).digest('hex')
           rows.push({
             date,
             description,
@@ -141,7 +143,7 @@ export async function POST(request: NextRequest) {
             amountUsd,
             categoryId: null,
             accountId: conn.account_id,
-            type: raw < 0 ? 'expense' : 'income',
+            type: isIncome ? 'income' : 'expense',
             isInternalTransfer: false,
             isBusinessExpense: false,
             dedupeHash,

@@ -818,8 +818,10 @@ export async function upsertForecast(
 
 let budgetsReady = false
 // ---------------------------------------------------------------------------
-// Bank connections (GoCardless open-banking links). One row per linked bank; a
-// requisition points at one or more bank accounts, mapped to a Flow account.
+// Bank connections (Enable Banking open-banking links). One row per linked
+// bank. requisition_id holds the auth `state` (unique, matched on the redirect);
+// session_id is filled once the consent code is exchanged; gc_account_ids holds
+// the granted account uids; account_id maps it to a Flow account.
 // ---------------------------------------------------------------------------
 let bankConnectionsReady = false
 export async function ensureBankConnections() {
@@ -838,18 +840,20 @@ export async function ensureBankConnections() {
         created_at        timestamptz NOT NULL DEFAULT now()
       )
     `)
+    // Enable Banking session id, filled after the consent code is exchanged.
+    await query(`ALTER TABLE bank_connections ADD COLUMN IF NOT EXISTS session_id text`)
     bankConnectionsReady = true
   } catch (error) {
     console.error('ensureBankConnections failed:', error)
   }
 }
 
-export async function insertBankConnection(requisitionId: string, institutionId: string, institutionName: string) {
+export async function insertBankConnection(state: string, institutionCountry: string, institutionName: string) {
   await ensureBankConnections()
   await query(
     `INSERT INTO bank_connections (requisition_id, institution_id, institution_name)
      VALUES ($1, $2, $3) ON CONFLICT (requisition_id) DO NOTHING`,
-    [requisitionId, institutionId, institutionName],
+    [state, institutionCountry, institutionName],
   )
 }
 
@@ -869,11 +873,20 @@ export async function getBankConnection(id: string) {
   return r.rows[0] ?? null
 }
 
-export async function updateBankConnectionStatus(id: string, status: string, accountIds: string[]) {
+// Look a connection up by the auth `state` we generated — used on the redirect
+// callback to tie the returned code to the right pending connection.
+export async function getBankConnectionByState(state: string) {
+  await ensureBankConnections()
+  const r = await query(`SELECT * FROM bank_connections WHERE requisition_id = $1`, [state])
+  return r.rows[0] ?? null
+}
+
+// Store the exchanged session + granted account uids and flip status to linked.
+export async function setBankConnectionSession(id: string, sessionId: string, accountUids: string[]) {
   await ensureBankConnections()
   await query(
-    `UPDATE bank_connections SET status = $1, gc_account_ids = $2::jsonb WHERE id = $3`,
-    [status, JSON.stringify(accountIds), id],
+    `UPDATE bank_connections SET session_id = $1, gc_account_ids = $2::jsonb, status = 'linked' WHERE id = $3`,
+    [sessionId, JSON.stringify(accountUids), id],
   )
 }
 
