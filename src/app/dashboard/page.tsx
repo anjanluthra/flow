@@ -460,9 +460,9 @@ export default function CashFlowPage() {
           </div>
         )}
 
-        {/* Inline-forecast hint. Future months are typed straight into the
-            Total Income / Total Expenses rows below. */}
-        {fcEditable && Object.keys(fcEdits).length > 0 && (
+        {/* Inline-forecast hint. Forecasts only show (and are editable) on the
+            +Forecast basis; on Actuals the future months stay blank. */}
+        {fcEditable && addFc && Object.keys(fcEdits).length > 0 && (
           <p className="mb-6 text-sm italic text-gray-500">
             Future months are editable — type a forecast into the italic cells on the Total Income, Total Expenses and Total Invested rows; it saves automatically and folds into the year totals.
           </p>
@@ -512,15 +512,15 @@ export default function CashFlowPage() {
                     {pnl.income.map((l) => (
                       <LineRow key={`i-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                     ))}
-                    <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} forecast={fcIncome} editable={fcEditable} editValues={fcIncomeStr} onEditChange={(ym, v) => onFcChange(ym, 'income', v)} onEditCommit={commitFc} />
+                    <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} forecast={addFc ? fcIncome : undefined} editable={fcEditable && addFc} editValues={fcIncomeStr} onEditChange={(ym, v) => onFcChange(ym, 'income', v)} onEditCommit={commitFc} />
 
                     <SectionRow label="Expenses" span={months.length} showMonthCols={showMonthCols} tone="expense" />
                     {pnl.expense.map((l) => (
                       <LineRow key={`e-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                     ))}
-                    <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} forecast={fcExpense} editable={fcEditable} editValues={fcExpenseStr} onEditChange={(ym, v) => onFcChange(ym, 'expense', v)} onEditCommit={commitFc} />
+                    <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} forecast={addFc ? fcExpense : undefined} editable={fcEditable && addFc} editValues={fcExpenseStr} onEditChange={(ym, v) => onFcChange(ym, 'expense', v)} onEditCommit={commitFc} />
 
-                    <TotalRow label="Saved" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} forecast={fcSaved} />
+                    <TotalRow label="Saved" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} forecast={addFc ? fcSaved : undefined} />
 
                     {pnl.investing.length > 0 && (
                       <>
@@ -528,7 +528,7 @@ export default function CashFlowPage() {
                         {pnl.investing.map((l) => (
                           <LineRow key={`v-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                         ))}
-                        <TotalRow label="Total Invested" byMonth={t!.investingByMonth} total={t!.investingTotal} months={months} showMonthCols={showMonthCols} tone="investing" currency={currency} fmt={fmt} forecast={fcInvest} editable={fcEditable} editValues={fcInvestStr} onEditChange={(ym, v) => onFcChange(ym, 'investment', v)} onEditCommit={commitFc} />
+                        <TotalRow label="Total Invested" byMonth={t!.investingByMonth} total={t!.investingTotal} months={months} showMonthCols={showMonthCols} tone="investing" currency={currency} fmt={fmt} forecast={addFc ? fcInvest : undefined} editable={fcEditable && addFc} editValues={fcInvestStr} onEditChange={(ym, v) => onFcChange(ym, 'investment', v)} onEditCommit={commitFc} />
                       </>
                     )}
 
