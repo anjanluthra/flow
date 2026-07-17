@@ -45,9 +45,10 @@ const FOUNDING: Array<{
   role: string
   envKey: string
 }> = [
-  { email: 'admin@joinindexed.com', name: 'Anjan', role: 'admin', envKey: 'AUTH_PASSWORD_ANJAN' },
+  // Only the personal admin email remains a founding account. The old
+  // joinindexed.com accounts are retired (deleted in Settings), so they are no
+  // longer valid env logins.
   { email: 'luthraanjan@gmail.com', name: 'Anjan', role: 'admin', envKey: 'AUTH_PASSWORD_ANJAN' },
-  { email: 'kate@joinindexed.com', name: 'Kate', role: 'user', envKey: 'AUTH_PASSWORD_KATE' },
 ]
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSession } from 'next-auth/react'
-import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Image as ImageIcon, Pencil } from 'lucide-react'
+import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Image as ImageIcon, Pencil, Trash2 } from 'lucide-react'
 import { BankConnections } from '@/components/BankConnections'
 import { Select } from '@/components/ui/Select'
 
@@ -520,6 +520,18 @@ export default function SettingsPage() {
     await load()
   }
 
+  async function deleteUser(u: AppUser) {
+    if (!confirm(`Delete ${u.email}? This can't be undone.`)) return
+    const res = await fetch(`/api/users/${u.id}`, { method: 'DELETE' })
+    const data = await res.json().catch(() => ({}))
+    setMessage(
+      res.ok
+        ? { kind: 'ok', text: `Deleted ${u.email}.` }
+        : { kind: 'err', text: data.error || 'Failed to delete user.' },
+    )
+    await load()
+  }
+
   async function resetPassword(u: AppUser) {
     const pw = prompt(`New password for ${u.email} (min 8 characters):`)
     if (!pw) return
@@ -769,16 +781,25 @@ export default function SettingsPage() {
                               <KeyRound className="h-4 w-4" />
                             </button>
                             {u.email.toLowerCase() !== session?.user?.email?.toLowerCase() && (
-                              <button
-                                onClick={() => toggleActive(u)}
-                                className={`rounded-lg border px-2.5 py-1 text-xs font-medium ${
-                                  u.isActive
-                                    ? 'border-red-200 text-red-600 hover:bg-red-50'
-                                    : 'border-green-200 text-green-600 hover:bg-green-50'
-                                }`}
-                              >
-                                {u.isActive ? 'Disable' : 'Enable'}
-                              </button>
+                              <>
+                                <button
+                                  onClick={() => toggleActive(u)}
+                                  className={`rounded-lg border px-2.5 py-1 text-xs font-medium ${
+                                    u.isActive
+                                      ? 'border-red-200 text-red-600 hover:bg-red-50'
+                                      : 'border-green-200 text-green-600 hover:bg-green-50'
+                                  }`}
+                                >
+                                  {u.isActive ? 'Disable' : 'Enable'}
+                                </button>
+                                <button
+                                  onClick={() => deleteUser(u)}
+                                  title="Delete user"
+                                  className="rounded-md p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </>
                             )}
                           </div>
                         </td>

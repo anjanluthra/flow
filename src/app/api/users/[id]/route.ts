@@ -67,3 +67,30 @@ export async function PATCH(
     return NextResponse.json({ error: 'Failed to update user' }, { status: 500 })
   }
 }
+
+// ---------------------------------------------------------------------------
+// DELETE /api/users/[id] — remove a user. Admin only; can't delete yourself.
+// ---------------------------------------------------------------------------
+
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const denied = await requireAdmin()
+  if (denied) return denied
+  try {
+    const { id } = await params
+    const session = await getServerSession(authOptions)
+    const meEmail = session?.user?.email?.toLowerCase()
+    const row = await query(`SELECT email FROM users WHERE id = $1`, [id])
+    if (row.rows.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if (meEmail && row.rows[0].email?.toLowerCase() === meEmail) {
+      return NextResponse.json({ error: "You can't delete your own account." }, { status: 400 })
+    }
+    await query(`DELETE FROM users WHERE id = $1`, [id])
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    console.error('Failed to delete user:', error)
+    return NextResponse.json({ error: 'Failed to delete user' }, { status: 500 })
+  }
+}
