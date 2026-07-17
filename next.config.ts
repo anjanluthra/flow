@@ -3,9 +3,10 @@ import type { NextConfig } from "next";
 // Content-Security-Policy. Deliberately permissive on script/style ('unsafe-inline'
 // / 'unsafe-eval') because Next's App Router hydration and Recharts' inline styles
 // rely on them — tightening those needs nonces and would risk breaking the app.
-// The high-value, non-breaking protections ARE enforced: frame-ancestors 'none'
-// (clickjacking), object-src 'none', base-uri 'self', form-action 'self'. PDF/doc
-// previews render in same-origin data:/blob: iframes, so those are allowed.
+// The high-value, non-breaking protections ARE enforced: frame-ancestors 'self'
+// (clickjacking — third-party framing still blocked), object-src 'none', base-uri
+// 'self', form-action 'self'. The document preview embeds the same-origin
+// /api/documents/{id} PDF endpoint in an iframe, so self-framing must be allowed.
 const csp = [
   "default-src 'self'",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
@@ -20,7 +21,7 @@ const csp = [
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'self'",
-  "frame-ancestors 'none'",
+  "frame-ancestors 'self'",
   "upgrade-insecure-requests",
 ].join("; ");
 
@@ -28,7 +29,7 @@ const securityHeaders = [
   { key: "Content-Security-Policy", value: csp },
   // 2 years, include subdomains, preload — HTTPS only (Vercel is always HTTPS).
   { key: "Strict-Transport-Security", value: "max-age=63072000; includeSubDomains; preload" },
-  { key: "X-Frame-Options", value: "DENY" },
+  { key: "X-Frame-Options", value: "SAMEORIGIN" },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=(), usb=()" },
