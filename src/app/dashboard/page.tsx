@@ -458,7 +458,7 @@ export default function CashFlowPage() {
           <Card
             title="Income"
             value={fmt(showTotal ? cardIncomeTotal : cardIncomeOp)}
-            subtitle={hasCapital ? (showTotal ? `${fmt(cardIncomeOp)} operating` : `${fmt(cardIncomeTotal)} with asset sales`) : addFc ? 'incl. forecast' : 'for the period'}
+            subtitle={hasCapital ? (showTotal ? `${fmt(cardIncomeOp)} operating` : `${fmt(cardIncomeTotal)} with one-off events`) : addFc ? 'incl. forecast' : 'for the period'}
             icon={<DollarSign className="h-5 w-5 text-green-500" />}
           />
           <Card
@@ -470,7 +470,7 @@ export default function CashFlowPage() {
           <Card
             title="Saved"
             value={fmt(showTotal ? cardNetTotal : cardNetOp)}
-            subtitle={`${savedPct}% of income${hasCapital ? (showTotal ? ` · ${fmt(cardNetOp)} operating` : ` · ${fmt(cardNetTotal)} with asset sales`) : addFc ? ' · incl. forecast' : ''}`}
+            subtitle={`${savedPct}% of income${hasCapital ? (showTotal ? ` · ${fmt(cardNetOp)} operating` : ` · ${fmt(cardNetTotal)} with one-off events`) : addFc ? ' · incl. forecast' : ''}`}
             icon={<Wallet className="h-5 w-5 text-blue-500" />}
           />
           <Card title="Invested" value={fmt(cardInvested)} subtitle={addFc && fcInvestTot ? 'incl. forecast' : 'total invested (income & reserves)'} icon={<TrendingUp className="h-5 w-5 text-indigo-500" />} />
