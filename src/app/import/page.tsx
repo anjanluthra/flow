@@ -1473,6 +1473,31 @@ export default function ImportPage() {
       coverage.set(key, cur)
     }
   }
+  // A "missing" month is an empty cell that falls *between* statements you do
+  // have for that account — a real gap to chase — as opposed to months before
+  // the account existed (its leading blanks), which aren't flagged. For the
+  // current year we extend the window to this month so recent gaps show too.
+  const nowY = new Date().getFullYear()
+  const nowM = new Date().getMonth() + 1
+  const activeRange = new Map<string, { min: number; max: number }>()
+  for (const name of new Set(documents.map(docAccount))) {
+    let min = 0, max = 0
+    for (let m = 1; m <= 12; m++) {
+      if (coverage.has(`${name}|${m}`)) {
+        if (!min) min = m
+        max = m
+      }
+    }
+    if (min) activeRange.set(name, { min, max: gridYear === nowY ? Math.max(max, nowM) : max })
+  }
+  const isMissingCell = (name: string, m: number): boolean => {
+    if (coverage.has(`${name}|${m}`)) return false
+    const r = activeRange.get(name)
+    return !!r && m > r.min && m <= r.max
+  }
+  let missingTotal = 0
+  for (const name of new Set(documents.map(docAccount)))
+    for (let m = 1; m <= 12; m++) if (isMissingCell(name, m)) missingTotal++
   // Frozen-layout accessors: which section a doc sits in, its account group and
   // its order — captured at the last structural change so field edits don't
   // reshuffle the list mid-edit. Fall back to live values for brand-new docs.
@@ -2197,7 +2222,10 @@ export default function ImportPage() {
               <p className="mt-0.5 text-sm text-gray-500">
                 {documents.length} statement{documents.length !== 1 ? 's' : ''}
                 {documents.length > 0 && (
-                  <> · <span className="text-emerald-600">{importedTotal} imported</span> · <span className="text-amber-600">{notImportedTotal} to import</span></>
+                  <>
+                    {' '}· <span className="text-emerald-600">{importedTotal} imported</span> · <span className="text-amber-600">{notImportedTotal} to import</span>
+                    {missingTotal > 0 && <> · <span className="font-medium text-rose-600">{missingTotal} missing</span></>}
+                  </>
                 )}
               </p>
             </div>
@@ -2206,7 +2234,7 @@ export default function ImportPage() {
                 <div className="hidden items-center gap-3 text-xs text-gray-500 sm:flex">
                   <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm bg-emerald-500" /> Imported</span>
                   <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm bg-amber-400" /> Uploaded</span>
-                  <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm border border-gray-200 bg-gray-50" /> Missing</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm border border-dashed border-rose-300 bg-rose-50" /> Missing (gap)</span>
                 </div>
                 <Select
                   ariaLabel="Coverage year"
@@ -2281,16 +2309,27 @@ export default function ImportPage() {
                           {MONTHS_SHORT.map((_, i) => {
                             const m = i + 1
                             const cov = coverage.get(`${name}|${m}`)
+                            const missing = !cov && isMissingCell(name, m)
                             const active = !!cellFilter && cellFilter.account === name && cellFilter.month === m
-                            const cls = cov ? (cov.imported ? 'bg-emerald-500' : 'bg-amber-400') : 'border border-gray-200 bg-gray-50'
+                            const cls = cov
+                              ? cov.imported ? 'bg-emerald-500' : 'bg-amber-400'
+                              : missing ? 'border border-dashed border-rose-300 bg-rose-50' : 'border border-gray-200 bg-gray-50'
                             return (
                               <td key={i} className="px-1 py-1.5 text-center">
                                 <button
                                   disabled={!cov}
                                   onClick={() => setCellFilter(active ? null : { account: name, month: m })}
-                                  title={cov ? `${cov.count} statement${cov.count !== 1 ? 's' : ''} — ${cov.imported ? 'imported' : 'uploaded, not imported'}` : `No ${MONTHS_SHORT[i]} ${gridYear} statement`}
-                                  className={`mx-auto block h-6 w-full max-w-[40px] rounded-sm ${cls} ${cov ? 'cursor-pointer hover:opacity-80' : 'cursor-default'} ${active ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
-                                />
+                                  title={
+                                    cov
+                                      ? `${cov.count} statement${cov.count !== 1 ? 's' : ''} — ${cov.imported ? 'imported' : 'uploaded, not imported'}`
+                                      : missing
+                                        ? `Missing — no ${MONTHS_SHORT[i]} ${gridYear} statement (gap between statements you have)`
+                                        : `No ${MONTHS_SHORT[i]} ${gridYear} statement`
+                                  }
+                                  className={`mx-auto flex h-6 w-full max-w-[40px] items-center justify-center rounded-sm text-[10px] font-bold text-rose-400 ${cls} ${cov ? 'cursor-pointer hover:opacity-80' : 'cursor-default'} ${active ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
+                                >
+                                  {missing ? '!' : ''}
+                                </button>
                               </td>
                             )
                           })}
