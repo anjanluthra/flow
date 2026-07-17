@@ -403,6 +403,14 @@ export default function ImportPage() {
   // Multi-select for bulk editing statements (account / period) in one go.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
+  // Frozen list layout (order + section + account group) so editing a row's
+  // account/period doesn't make it jump around mid-edit. Rebuilt only on
+  // structural changes (a doc added/removed, or the year switched) — i.e. once
+  // you're "done", not on every field change.
+  const [layout, setLayout] = useState<Map<string, { ord: number; undated: boolean; account: string }>>(new Map())
+  // Rows manually expanded to a From–To month range. Most statements cover one
+  // month (a single picker); only the few full-period exports need a range.
+  const [rangeRows, setRangeRows] = useState<Set<string>>(new Set())
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -413,6 +421,28 @@ export default function ImportPage() {
       /* ignore */
     }
   }, [])
+
+  // Snapshot the list layout: order (account → month → name), which section a
+  // doc sits in, and its account group. Recomputed only on structural changes.
+  const buildLayout = useCallback((docs: StatementDoc[]) => {
+    const acct = (d: StatementDoc) => d.accountName ?? 'Unassigned'
+    const ordered = [...docs].sort((a, b) => {
+      const aa = acct(a), ba = acct(b)
+      if (aa !== ba) return aa === 'Unassigned' ? 1 : ba === 'Unassigned' ? -1 : aa.localeCompare(ba)
+      const am = coveredMonthsInYear(a, gridYear)[0] ?? 99
+      const bm = coveredMonthsInYear(b, gridYear)[0] ?? 99
+      if (am !== bm) return am - bm
+      return a.fileName.localeCompare(b.fileName)
+    })
+    const map = new Map<string, { ord: number; undated: boolean; account: string }>()
+    ordered.forEach((d, i) => map.set(d.id, { ord: i, undated: !docHasPeriod(d), account: acct(d) }))
+    setLayout(map)
+  }, [gridYear])
+
+  // Rebuild the frozen layout only when the set of docs changes size (add/remove)
+  // or the year switches — never on an in-place field edit, so rows stay put.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { buildLayout(documents) }, [documents.length, gridYear, buildLayout])
 
   // ---- Load real accounts + categories + learned mappings + FX + hints ----
   useEffect(() => {
@@ -1326,9 +1356,18 @@ export default function ImportPage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     })
-  const patchDoc = async (id: string, patch: DocPatch) => {
-    await patchDocRaw(id, patch)
-    await loadDocuments()
+  // Optimistic edit: update the row in place and persist, WITHOUT re-fetching —
+  // so the frozen layout keeps the row where it is instead of re-sorting it out
+  // from under the user mid-edit. `local` mirrors the patch into StatementDoc
+  // fields for the immediate UI update; on failure we resync from the server.
+  const patchDocOptimistic = async (id: string, patch: DocPatch, local: Partial<StatementDoc>) => {
+    setDocuments((prev) => prev.map((d) => (d.id === id ? { ...d, ...local } : d)))
+    try {
+      const r = await patchDocRaw(id, patch)
+      if (!r.ok) throw new Error()
+    } catch {
+      loadDocuments()
+    }
   }
 
   const fmtBytes = (b: number) =>
@@ -1376,17 +1415,22 @@ export default function ImportPage() {
       coverage.set(key, cur)
     }
   }
-  // Docs for the list: any that touch this year, optionally narrowed to a
-  // clicked cell (account + month within the statement's span).
+  // Frozen-layout accessors: which section a doc sits in, its account group and
+  // its order — captured at the last structural change so field edits don't
+  // reshuffle the list mid-edit. Fall back to live values for brand-new docs.
+  const isUndated = (d: StatementDoc): boolean => (layout.has(d.id) ? layout.get(d.id)!.undated : !docHasPeriod(d))
+  const layoutAccount = (d: StatementDoc): string => layout.get(d.id)?.account ?? docAccount(d)
+  const layoutOrd = (d: StatementDoc): number => layout.get(d.id)?.ord ?? 1e9
+  // Docs for the list: dated ones that touch this year, optionally narrowed to a
+  // clicked cell. Order is the frozen ordinal, not the live month.
   const yearDocs = documents
-    .filter((d) => coveredMonthsInYear(d, gridYear).length > 0)
+    .filter((d) => !isUndated(d) && coveredMonthsInYear(d, gridYear).length > 0)
     .filter((d) => !cellFilter || (docAccount(d) === cellFilter.account && coveredMonthsInYear(d, gridYear).includes(cellFilter.month)))
-    // Chronological within the year — earliest month (Jan) first.
-    .sort((a, b) => (coveredMonthsInYear(a, gridYear)[0] ?? 99) - (coveredMonthsInYear(b, gridYear)[0] ?? 99))
-  // Group the year's statements by account so the list reads per-account.
+    .sort((a, b) => layoutOrd(a) - layoutOrd(b))
+  // Group the year's statements by (frozen) account so the list reads per-account.
   const yearDocsByAccount = Array.from(
     yearDocs.reduce((m, d) => {
-      const a = docAccount(d)
+      const a = layoutAccount(d)
       const list = m.get(a) ?? []
       list.push(d)
       m.set(a, list)
@@ -1394,7 +1438,7 @@ export default function ImportPage() {
     }, new Map<string, StatementDoc[]>()),
   ).sort((a, b) => (a[0] === 'Unassigned' ? 1 : b[0] === 'Unassigned' ? -1 : a[0].localeCompare(b[0])))
   // Docs that can't be placed on the grid yet — surfaced so you can date them.
-  const undatedDocs = documents.filter((d) => !docHasPeriod(d))
+  const undatedDocs = documents.filter(isUndated)
   const importedTotal = documents.filter(isImported).length
   const notImportedTotal = documents.length - importedTotal
 
@@ -1428,8 +1472,13 @@ export default function ImportPage() {
   const periodPatchFor = (d: StatementDoc, opts: { year?: number; from?: number; to?: number }): DocPatch => {
     const y = opts.year ?? docYears(d)[0] ?? gridYear
     const cur = coveredMonthsInYear(d, y)
-    const from = opts.from ?? cur[0] ?? 1
-    const to = opts.to ?? cur[cur.length - 1] ?? from
+    let from = opts.from ?? cur[0] ?? 1
+    let to = opts.to ?? cur[cur.length - 1] ?? from
+    // Honor whichever bound was just edited: moving the start past the end (or
+    // the end before the start) pulls the other bound along, rather than
+    // silently swapping them so the edit looks like it didn't take.
+    if (opts.from != null && from > to) to = from
+    if (opts.to != null && to < from) from = to
     const lo = Math.min(from, to)
     const hi = Math.max(from, to)
     const start = `${y}-${String(lo).padStart(2, '0')}-01`
@@ -1437,8 +1486,18 @@ export default function ImportPage() {
     const end = `${y}-${String(hi).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
     return { periodStart: start, periodEnd: end, statementDate: start }
   }
+  const periodLocal = (patch: DocPatch): Partial<StatementDoc> => ({
+    periodStart: patch.periodStart ?? null,
+    periodEnd: patch.periodEnd ?? null,
+    statementDate: patch.statementDate ?? null,
+  })
   const setPeriodRange = (d: StatementDoc, opts: { year?: number; from?: number; to?: number }) => {
-    patchDoc(d.id, periodPatchFor(d, opts))
+    const patch = periodPatchFor(d, opts)
+    patchDocOptimistic(d.id, patch, periodLocal(patch))
+  }
+  const setDocAccount = (d: StatementDoc, accountId: string | null) => {
+    const accountName = accounts.find((a) => a.id === accountId)?.name ?? null
+    patchDocOptimistic(d.id, { accountId }, { accountId, accountName })
   }
   const PERIOD_YEARS = ['2023', '2024', '2025', '2026', '2027']
   const MONTH_OPTS = MONTHS_SHORT.map((m, i) => ({ value: String(i + 1), label: m }))
@@ -1461,20 +1520,32 @@ export default function ImportPage() {
       return next
     })
   const selectedDocs = () => documents.filter((d) => selectedIds.has(d.id))
-  // Run a patch across every selected doc, then reload once.
-  const runBulk = async (patchFor: (d: StatementDoc) => DocPatch) => {
+  // Apply a patch across every selected doc optimistically (update in place,
+  // persist, no re-fetch) so the frozen layout keeps rows put; resync only if a
+  // save fails.
+  const runBulkOptimistic = async (build: (d: StatementDoc) => { patch: DocPatch; local: Partial<StatementDoc> }) => {
     const docs = selectedDocs()
     if (docs.length === 0) return
+    const builds = new Map(docs.map((d) => [d.id, build(d)]))
+    setDocuments((prev) => prev.map((d) => (builds.has(d.id) ? { ...d, ...builds.get(d.id)!.local } : d)))
     setBulkBusy(true)
     try {
-      await Promise.all(docs.map((d) => patchDocRaw(d.id, patchFor(d))))
-      await loadDocuments()
+      const results = await Promise.all([...builds].map(([id, b]) => patchDocRaw(id, b.patch)))
+      if (results.some((r) => !r.ok)) loadDocuments()
     } finally {
       setBulkBusy(false)
     }
   }
-  const bulkSetAccount = (accountId: string | null) => runBulk(() => ({ accountId }))
-  const bulkSetPeriod = (opts: { year?: number; from?: number; to?: number }) => runBulk((d) => periodPatchFor(d, opts))
+  const bulkSetAccount = (accountId: string | null) =>
+    runBulkOptimistic(() => {
+      const accountName = accounts.find((a) => a.id === accountId)?.name ?? null
+      return { patch: { accountId }, local: { accountId, accountName } }
+    })
+  const bulkSetPeriod = (opts: { year?: number; from?: number; to?: number }) =>
+    runBulkOptimistic((d) => {
+      const patch = periodPatchFor(d, opts)
+      return { patch, local: periodLocal(patch) }
+    })
   const bulkDelete = async () => {
     const docs = selectedDocs()
     if (docs.length === 0) return
@@ -1529,7 +1600,7 @@ export default function ImportPage() {
         <Select
           ariaLabel="Account"
           value={acctId}
-          onChange={(v) => patchDoc(d.id, { accountId: v || null })}
+          onChange={(v) => setDocAccount(d, v || null)}
           options={[{ value: '', label: 'Unassigned' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
           buttonClassName="inline-flex h-7 max-w-[150px] min-w-0 shrink-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50"
         />
@@ -1538,13 +1609,47 @@ export default function ImportPage() {
           const cov = coveredMonthsInYear(d, yr)
           const fromM = cov[0]
           const toM = cov[cov.length - 1]
+          const spans = !!(fromM && toM && fromM !== toM)
+          const range = spans || rangeRows.has(d.id)
           const small = 'inline-flex h-7 w-16 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50'
+          const yearSel = (
+            <Select ariaLabel="Year" value={docYears(d)[0] ? String(docYears(d)[0]) : ''} onChange={(v) => setPeriodRange(d, { year: Number(v) })} options={PERIOD_YEARS.map((y) => ({ value: y, label: y }))} placeholder="Year" buttonClassName="inline-flex h-7 w-20 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50" />
+          )
+          const toggleRange = () =>
+            setRangeRows((prev) => {
+              const next = new Set(prev)
+              if (range) {
+                // Collapse to a single month (the current start).
+                next.delete(d.id)
+                if (spans && fromM) setPeriodRange(d, { from: fromM, to: fromM })
+              } else {
+                next.add(d.id)
+              }
+              return next
+            })
+          const rangeBtn = (
+            <button
+              type="button"
+              onClick={toggleRange}
+              title={range ? 'Single month' : 'Set a month range (statement spans several months)'}
+              className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border text-xs ${range ? 'border-blue-200 bg-blue-50 text-blue-600' : 'border-gray-200 bg-white text-gray-400 hover:bg-gray-50'}`}
+            >
+              ⇄
+            </button>
+          )
           return (
-            <div className="flex shrink-0 items-center gap-1" title="Months this statement covers">
-              <Select ariaLabel="Period from" value={fromM ? String(fromM) : ''} onChange={(v) => setPeriodRange(d, { from: Number(v) })} options={MONTH_OPTS} placeholder="From" buttonClassName={small} />
-              <span className="text-gray-300">–</span>
-              <Select ariaLabel="Period to" value={toM ? String(toM) : ''} onChange={(v) => setPeriodRange(d, { to: Number(v) })} options={MONTH_OPTS} placeholder="To" buttonClassName={small} />
-              <Select ariaLabel="Year" value={docYears(d)[0] ? String(docYears(d)[0]) : ''} onChange={(v) => setPeriodRange(d, { year: Number(v) })} options={PERIOD_YEARS.map((y) => ({ value: y, label: y }))} placeholder="Year" buttonClassName="inline-flex h-7 w-20 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50" />
+            <div className="flex shrink-0 items-center gap-1" title="Statement period">
+              {range ? (
+                <>
+                  <Select ariaLabel="Period from" value={fromM ? String(fromM) : ''} onChange={(v) => setPeriodRange(d, { from: Number(v) })} options={MONTH_OPTS} placeholder="From" buttonClassName={small} />
+                  <span className="text-gray-300">–</span>
+                  <Select ariaLabel="Period to" value={toM ? String(toM) : ''} onChange={(v) => setPeriodRange(d, { to: Number(v) })} options={MONTH_OPTS} placeholder="To" buttonClassName={small} />
+                </>
+              ) : (
+                <Select ariaLabel="Month" value={fromM ? String(fromM) : ''} onChange={(v) => setPeriodRange(d, { from: Number(v), to: Number(v) })} options={MONTH_OPTS} placeholder="Month" buttonClassName={small} />
+              )}
+              {yearSel}
+              {rangeBtn}
             </div>
           )
         })()}
@@ -2079,6 +2184,8 @@ export default function ImportPage() {
                     buttonClassName="inline-flex h-7 max-w-[160px] min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50"
                   />
                   <div className="flex items-center gap-1">
+                    <Select ariaLabel="Set month for selected" value="" placeholder="Month" onChange={(v) => bulkSetPeriod({ from: Number(v), to: Number(v) })} options={MONTH_OPTS} buttonClassName="inline-flex h-7 w-16 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50" />
+                    <span className="text-[10px] text-blue-400">or</span>
                     <Select ariaLabel="Set from month for selected" value="" placeholder="From" onChange={(v) => bulkSetPeriod({ from: Number(v) })} options={MONTH_OPTS} buttonClassName="inline-flex h-7 w-16 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50" />
                     <span className="text-gray-300">–</span>
                     <Select ariaLabel="Set to month for selected" value="" placeholder="To" onChange={(v) => bulkSetPeriod({ to: Number(v) })} options={MONTH_OPTS} buttonClassName="inline-flex h-7 w-16 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50" />
