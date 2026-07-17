@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react'
 import { useSession } from 'next-auth/react'
 import { Users, Plus, ShieldCheck, KeyRound, CheckCircle, AlertCircle, Database, Image as ImageIcon, Pencil } from 'lucide-react'
+import { BankConnections } from '@/components/BankConnections'
 import { Select } from '@/components/ui/Select'
 
 // Downscale an image file to a modest JPEG data URL so uploads stay small and
@@ -730,6 +731,13 @@ export default function SettingsPage() {
             </tbody>
           </table>
         </div>
+
+        {/* Bank connections (open banking) */}
+        {isAdmin && (
+          <div className="mt-6">
+            <BankConnections />
+          </div>
+        )}
 
         {/* Categories management card */}
         {isAdmin && (
