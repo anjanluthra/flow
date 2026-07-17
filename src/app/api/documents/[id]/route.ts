@@ -1,6 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { query } from '@/lib/db'
 
+// Total assembled-file cap for chunked uploads (a statement PDF should be well
+// under this). Each individual chunk stays small enough to fit the serverless
+// request-body limit; this guards the sum.
+const MAX_TOTAL_BYTES = 25 * 1024 * 1024
+
+// ---------------------------------------------------------------------------
+// PUT /api/documents/[id] — append a base64 chunk to an existing document's
+// content. Lets the client upload files larger than the serverless request-body
+// limit by creating the row with the first chunk (POST) then appending the rest.
+// ---------------------------------------------------------------------------
+
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  try {
+    const { id } = await params
+    const { appendBase64 } = (await request.json()) as { appendBase64?: string }
+    if (!appendBase64) return NextResponse.json({ error: 'appendBase64 is required' }, { status: 400 })
+
+    const chunk = Buffer.from(appendBase64, 'base64')
+    if (chunk.length === 0) return NextResponse.json({ error: 'Empty chunk' }, { status: 400 })
+
+    const cur = await query(`SELECT size_bytes FROM documents WHERE id = $1`, [id])
+    if (cur.rows.length === 0) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    if ((cur.rows[0].size_bytes ?? 0) + chunk.length > MAX_TOTAL_BYTES) {
+      return NextResponse.json({ error: 'File too large' }, { status: 413 })
+    }
+
+    await query(
+      `UPDATE documents SET content = content || $1, size_bytes = size_bytes + $2 WHERE id = $3`,
+      [chunk, chunk.length, id],
+    )
+    return NextResponse.json({ success: true })
+  } catch (error) {
+    console.error('Failed to append document chunk:', error)
+    return NextResponse.json({ error: 'Failed to append chunk' }, { status: 500 })
+  }
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/documents/[id] — stream the file for inline viewing/download
 // ---------------------------------------------------------------------------
