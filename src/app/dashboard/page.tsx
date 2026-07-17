@@ -12,6 +12,7 @@ import { Select } from '@/components/ui/Select'
 interface Amt {
   usd: number
   gbp: number
+  aed: number
 }
 
 interface Line {
@@ -27,6 +28,7 @@ interface PnL {
   to: string
   months: string[]
   gbpRate: number
+  aedRate: number
   income: Line[]
   expense: Line[]
   expenseCore: Line[]
@@ -71,7 +73,7 @@ const KIND_LABEL: Record<string, string> = {
 }
 
 type Mode = 'year' | 'month' | 'custom'
-type Currency = 'USD' | 'GBP'
+type Currency = 'USD' | 'GBP' | 'AED'
 
 const MONTHS = [
   'January', 'February', 'March', 'April', 'May', 'June',
@@ -80,12 +82,12 @@ const MONTHS = [
 const YEARS = [2024, 2025, 2026, 2027]
 
 function fmtMoney(n: number, currency: Currency): string {
-  const sym = currency === 'GBP' ? '£' : '$'
+  const sym = currency === 'GBP' ? '£' : currency === 'AED' ? 'AED ' : '$'
   const abs = Math.abs(Math.round(n)).toLocaleString('en-US')
   return `${n < 0 ? '-' : ''}${sym}${abs}`
 }
 
-const pick = (a: Amt | undefined, c: Currency): number => (!a ? 0 : c === 'GBP' ? a.gbp : a.usd)
+const pick = (a: Amt | undefined, c: Currency): number => (!a ? 0 : c === 'GBP' ? a.gbp : c === 'AED' ? a.aed : a.usd)
 
 // Lenient numeric parse for the free-text forecast inputs.
 const num = (s: string | undefined): number => {
@@ -219,8 +221,13 @@ export default function CashFlowPage() {
   // The forecast is stored in USD; convert to the selected display currency for
   // the read-only overlays and totals.
   const toDisplay = useCallback(
-    (usd: number) => (currency === 'GBP' ? usd / (pnl?.gbpRate || 1.3231) : usd),
-    [currency, pnl?.gbpRate],
+    (usd: number) =>
+      currency === 'GBP'
+        ? usd / (pnl?.gbpRate || 1.3231)
+        : currency === 'AED'
+          ? usd / (pnl?.aedRate || 0.272294)
+          : usd,
+    [currency, pnl?.gbpRate, pnl?.aedRate],
   )
 
   // Per-month forecast overlays for the Total rows, in display currency, plus
@@ -412,7 +419,7 @@ export default function CashFlowPage() {
 
             {/* Currency toggle */}
             <div className="inline-flex rounded-lg border border-gray-200 bg-white p-0.5 shadow-sm">
-              {(['USD', 'GBP'] as Currency[]).map((c) => (
+              {(['USD', 'GBP', 'AED'] as Currency[]).map((c) => (
                 <button
                   key={c}
                   onClick={() => setCurrency(c)}
@@ -420,7 +427,7 @@ export default function CashFlowPage() {
                     currency === c ? 'bg-gray-900 text-white' : 'text-gray-600 hover:bg-gray-50'
                   }`}
                 >
-                  {c === 'USD' ? '$ USD' : '£ GBP'}
+                  {c === 'USD' ? '$ USD' : c === 'GBP' ? '£ GBP' : 'AED'}
                 </button>
               ))}
             </div>

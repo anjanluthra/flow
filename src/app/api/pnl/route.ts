@@ -13,6 +13,7 @@ import { getUsdRates } from '@/lib/fx'
 interface Amt {
   usd: number
   gbp: number
+  aed: number
 }
 
 interface Line {
@@ -35,7 +36,7 @@ function monthsBetween(from: string, to: string): string[] {
   return months
 }
 
-const zero = (): Amt => ({ usd: 0, gbp: 0 })
+const zero = (): Amt => ({ usd: 0, gbp: 0, aed: 0 })
 
 export async function GET(request: NextRequest) {
   try {
@@ -49,39 +50,42 @@ export async function GET(request: NextRequest) {
     // GBP rate is only used to convert non-GBP transactions; GBP-native rows
     // use their recorded amount and are unaffected.
     let gbpRate = 1.3231
+    let aedRate = 0.272294 // USD per AED (1 / 3.6725)
     try {
       const fx = await getUsdRates()
       if (fx.rates?.GBP_USD && fx.rates.GBP_USD > 0) gbpRate = fx.rates.GBP_USD
+      if (fx.rates?.AED_USD && fx.rates.AED_USD > 0) aedRate = fx.rates.AED_USD
     } catch {
-      // fall back to the default rate
+      // fall back to the default rates
     }
 
     const months = monthsBetween(from, to)
-    const result = await getPnLByRange(from, to, gbpRate)
+    const result = await getPnLByRange(from, to, gbpRate, aedRate)
 
     // Capital events (asset sales / inheritance / gifts) within the range — kept
     // out of the operating rows above and surfaced separately so the user sees
     // both an operating figure and a total-cash-flow figure.
-    const capRes = await getCapitalEventsForRange(from, to, gbpRate)
+    const capRes = await getCapitalEventsForRange(from, to, gbpRate, aedRate)
     const capitalEvents = (capRes.rows as Array<{
       id: string; name: string; kind: string; txn_count: number
       proceeds_usd: string; costs_usd: string; proceeds_gbp: string; costs_gbp: string
+      proceeds_aed: string; costs_aed: string
     }>)
       .map((r) => {
-        const proceeds: Amt = { usd: parseFloat(r.proceeds_usd), gbp: parseFloat(r.proceeds_gbp) }
-        const costs: Amt = { usd: parseFloat(r.costs_usd), gbp: parseFloat(r.costs_gbp) }
+        const proceeds: Amt = { usd: parseFloat(r.proceeds_usd), gbp: parseFloat(r.proceeds_gbp), aed: parseFloat(r.proceeds_aed) }
+        const costs: Amt = { usd: parseFloat(r.costs_usd), gbp: parseFloat(r.costs_gbp), aed: parseFloat(r.costs_aed) }
         return {
           id: r.id, name: r.name, kind: r.kind, txnCount: r.txn_count,
           proceeds, costs,
-          net: { usd: proceeds.usd - costs.usd, gbp: proceeds.gbp - costs.gbp } as Amt,
+          net: { usd: proceeds.usd - costs.usd, gbp: proceeds.gbp - costs.gbp, aed: proceeds.aed - costs.aed } as Amt,
         }
       })
       .filter((e) => e.txnCount > 0)
     const capitalTotal = capitalEvents.reduce(
       (a, e) => ({
-        proceeds: { usd: a.proceeds.usd + e.proceeds.usd, gbp: a.proceeds.gbp + e.proceeds.gbp },
-        costs: { usd: a.costs.usd + e.costs.usd, gbp: a.costs.gbp + e.costs.gbp },
-        net: { usd: a.net.usd + e.net.usd, gbp: a.net.gbp + e.net.gbp },
+        proceeds: { usd: a.proceeds.usd + e.proceeds.usd, gbp: a.proceeds.gbp + e.proceeds.gbp, aed: a.proceeds.aed + e.proceeds.aed },
+        costs: { usd: a.costs.usd + e.costs.usd, gbp: a.costs.gbp + e.costs.gbp, aed: a.costs.aed + e.costs.aed },
+        net: { usd: a.net.usd + e.net.usd, gbp: a.net.gbp + e.net.gbp, aed: a.net.aed + e.net.aed },
       }),
       { proceeds: zero(), costs: zero(), net: zero() },
     )
@@ -103,6 +107,7 @@ export async function GET(request: NextRequest) {
       const name = row.category_name ?? 'Uncategorised'
       const usd = Math.abs(parseFloat(row.total_usd))
       const gbp = Math.abs(parseFloat(row.total_gbp))
+      const aed = Math.abs(parseFloat(row.total_aed))
       if (!bucket.has(name)) {
         bucket.set(name, { category: name, color: row.category_color ?? '#94A3B8', monthly: {}, total: zero(), nonCore: !!row.non_core })
       }
@@ -110,8 +115,10 @@ export async function GET(request: NextRequest) {
       const cell = (line.monthly[row.ym] ??= zero())
       cell.usd += usd
       cell.gbp += gbp
+      cell.aed += aed
       line.total.usd += usd
       line.total.gbp += gbp
+      line.total.aed += aed
     }
 
     const sortLines = (m: Map<string, Line>) =>
@@ -127,11 +134,12 @@ export async function GET(request: NextRequest) {
         for (const ym of months) {
           out[ym].usd += l.monthly[ym]?.usd ?? 0
           out[ym].gbp += l.monthly[ym]?.gbp ?? 0
+          out[ym].aed += l.monthly[ym]?.aed ?? 0
         }
       return out
     }
     const sumTotal = (lines: Line[]) =>
-      lines.reduce((a, l) => ({ usd: a.usd + l.total.usd, gbp: a.gbp + l.total.gbp }), zero())
+      lines.reduce((a, l) => ({ usd: a.usd + l.total.usd, gbp: a.gbp + l.total.gbp, aed: a.aed + l.total.aed }), zero())
 
     // Split expenses into core (operating living costs) and non-core
     // (non-operating but still expenses — reimbursables, refundable deposits…).
@@ -156,11 +164,13 @@ export async function GET(request: NextRequest) {
       netByMonth[ym] = {
         usd: incomeByMonth[ym].usd - expenseByMonth[ym].usd,
         gbp: incomeByMonth[ym].gbp - expenseByMonth[ym].gbp,
+        aed: incomeByMonth[ym].aed - expenseByMonth[ym].aed,
       }
     }
     const net: Amt = {
       usd: incomeTotal.usd - expenseTotal.usd,
       gbp: incomeTotal.gbp - expenseTotal.gbp,
+      aed: incomeTotal.aed - expenseTotal.aed,
     }
 
     // Net cash flow = operating net − cash deployed into investments. This is
@@ -170,11 +180,13 @@ export async function GET(request: NextRequest) {
       netCashByMonth[ym] = {
         usd: netByMonth[ym].usd - investingByMonth[ym].usd,
         gbp: netByMonth[ym].gbp - investingByMonth[ym].gbp,
+        aed: netByMonth[ym].aed - investingByMonth[ym].aed,
       }
     }
     const netCash: Amt = {
       usd: net.usd - investingTotal.usd,
       gbp: net.gbp - investingTotal.gbp,
+      aed: net.aed - investingTotal.aed,
     }
     const savingsRate = incomeTotal.usd > 0 ? (net.usd / incomeTotal.usd) * 100 : 0
 
@@ -183,6 +195,7 @@ export async function GET(request: NextRequest) {
       to,
       months,
       gbpRate,
+      aedRate,
       income: incomeLines,
       expense: expenseLines,
       expenseCore: expenseCoreLines,

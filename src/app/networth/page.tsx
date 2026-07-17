@@ -345,7 +345,7 @@ export default function NetWorthPage() {
   // ---- FX state ----
   const [fxRates, setFxRates] = useState<Record<string, number> | null>(null)
   const [fxSource, setFxSource] = useState<string>('fallback')
-  const [viewCurrency, setViewCurrency] = useState<'USD' | 'GBP'>('USD')
+  const [viewCurrency, setViewCurrency] = useState<'USD' | 'GBP' | 'AED'>('USD')
 
   // ---- Chart drill-down: click a liquidity tier / asset class to list its
   // underlying accounts in a side drawer (like the Cash Flow drill-down). ----
@@ -369,18 +369,20 @@ export default function NetWorthPage() {
       })
   }, [])
 
-  // Display conversion: values are stored in USD; GBP view divides by the
-  // live USD-per-GBP rate.
+  // Display conversion: values are stored in USD; other views divide by the
+  // live USD-per-unit rate for the chosen currency.
   const gbpUsdRate = fxRates?.GBP_USD ?? DEFAULT_FX_RATES.GBP_USD
+  const aedUsdRate = fxRates?.AED_USD ?? DEFAULT_FX_RATES.AED_USD
   const fmtView = useCallback(
     (usd: number): string => {
-      const value = viewCurrency === 'USD' ? usd : usd / gbpUsdRate
+      const value =
+        viewCurrency === 'GBP' ? usd / gbpUsdRate : viewCurrency === 'AED' ? usd / aedUsdRate : usd
       const rounded = Math.round(value)
-      const symbol = viewCurrency === 'USD' ? '$' : '£'
+      const symbol = viewCurrency === 'GBP' ? '£' : viewCurrency === 'AED' ? 'AED ' : '$'
       if (rounded < 0) return `-${symbol}${Math.abs(rounded).toLocaleString('en-US')}`
       return `${symbol}${rounded.toLocaleString('en-US')}`
     },
-    [viewCurrency, gbpUsdRate],
+    [viewCurrency, gbpUsdRate, aedUsdRate],
   )
 
   // ---- Fetch available snapshot dates on mount ----
@@ -996,7 +998,7 @@ export default function NetWorthPage() {
         <div className="mb-8 flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-white px-4 py-3 shadow-sm">
           {/* Currency view toggle */}
           <div className="flex overflow-hidden rounded-lg border border-gray-200">
-            {(['USD', 'GBP'] as const).map((c) => (
+            {(['USD', 'GBP', 'AED'] as const).map((c) => (
               <button
                 key={c}
                 onClick={() => setViewCurrency(c)}
@@ -1006,7 +1008,7 @@ export default function NetWorthPage() {
                     : 'bg-white text-gray-500 hover:bg-gray-50'
                 }`}
               >
-                {c === 'USD' ? '$ USD' : '£ GBP'}
+                {c === 'USD' ? '$ USD' : c === 'GBP' ? '£ GBP' : 'AED'}
               </button>
             ))}
           </div>
