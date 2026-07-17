@@ -783,6 +783,81 @@ export async function upsertForecast(
 // ---------------------------------------------------------------------------
 
 let budgetsReady = false
+// ---------------------------------------------------------------------------
+// Bank connections (GoCardless open-banking links). One row per linked bank; a
+// requisition points at one or more bank accounts, mapped to a Flow account.
+// ---------------------------------------------------------------------------
+let bankConnectionsReady = false
+export async function ensureBankConnections() {
+  if (bankConnectionsReady) return
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS bank_connections (
+        id                uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+        requisition_id    text        UNIQUE NOT NULL,
+        institution_id    text,
+        institution_name  text,
+        status            text        NOT NULL DEFAULT 'created',
+        gc_account_ids    jsonb       NOT NULL DEFAULT '[]',
+        account_id        uuid        REFERENCES accounts ON DELETE SET NULL,
+        last_synced_at    timestamptz,
+        created_at        timestamptz NOT NULL DEFAULT now()
+      )
+    `)
+    bankConnectionsReady = true
+  } catch (error) {
+    console.error('ensureBankConnections failed:', error)
+  }
+}
+
+export async function insertBankConnection(requisitionId: string, institutionId: string, institutionName: string) {
+  await ensureBankConnections()
+  await query(
+    `INSERT INTO bank_connections (requisition_id, institution_id, institution_name)
+     VALUES ($1, $2, $3) ON CONFLICT (requisition_id) DO NOTHING`,
+    [requisitionId, institutionId, institutionName],
+  )
+}
+
+export async function listBankConnections() {
+  await ensureBankConnections()
+  return query(
+    `SELECT c.*, a.name AS mapped_account_name
+     FROM bank_connections c
+     LEFT JOIN accounts a ON c.account_id = a.id
+     ORDER BY c.created_at DESC`,
+  )
+}
+
+export async function getBankConnection(id: string) {
+  await ensureBankConnections()
+  const r = await query(`SELECT * FROM bank_connections WHERE id = $1`, [id])
+  return r.rows[0] ?? null
+}
+
+export async function updateBankConnectionStatus(id: string, status: string, accountIds: string[]) {
+  await ensureBankConnections()
+  await query(
+    `UPDATE bank_connections SET status = $1, gc_account_ids = $2::jsonb WHERE id = $3`,
+    [status, JSON.stringify(accountIds), id],
+  )
+}
+
+export async function setBankConnectionAccount(id: string, accountId: string | null) {
+  await ensureBankConnections()
+  await query(`UPDATE bank_connections SET account_id = $1 WHERE id = $2`, [accountId, id])
+}
+
+export async function markBankConnectionSynced(id: string) {
+  await ensureBankConnections()
+  await query(`UPDATE bank_connections SET last_synced_at = now() WHERE id = $1`, [id])
+}
+
+export async function deleteBankConnection(id: string) {
+  await ensureBankConnections()
+  await query(`DELETE FROM bank_connections WHERE id = $1`, [id])
+}
+
 // Invite-link columns on the users table: a hashed one-time token + expiry, so
 // a new user can set their own password instead of the admin choosing one.
 let userInviteColsReady = false
