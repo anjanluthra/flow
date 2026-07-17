@@ -42,6 +42,24 @@ export function BankConnections() {
     load()
   }, [load])
 
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+
+  // Landing back from the bank's consent screen: the callback route stores the
+  // session and redirects here with ?bank=connected|error. Show a note, then
+  // strip the param and refresh the list.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const bank = params.get('bank')
+    if (!bank) return
+    if (bank === 'connected') setMsg('Bank connected. Map it to a Flow account below, then hit Sync.')
+    else if (bank === 'error') setMsg('Could not finish connecting. Please try again.')
+    params.delete('bank')
+    const qs = params.toString()
+    window.history.replaceState({}, '', window.location.pathname + (qs ? `?${qs}` : ''))
+    load()
+  }, [load])
+
   const loadInstitutions = useCallback(async () => {
     if (institutions.length) return
     try {
@@ -82,7 +100,7 @@ export function BankConnections() {
     const d = await act('link', { institutionId: pickInst, institutionName: inst?.name })
     if (d?.link) {
       window.open(d.link, '_blank', 'noopener')
-      setMsg('Authorise at your bank in the new tab, then come back and hit Refresh on the connection.')
+      setMsg('Authorise at your bank in the new tab — it returns here automatically. Then map the connection to a Flow account and hit Sync.')
       setPickInst('')
       await load()
     }
@@ -101,12 +119,13 @@ export function BankConnections() {
       {!configured ? (
         <div className="px-6 py-5 text-sm text-gray-500">
           <p>
-            Connect UK bank accounts to auto-import transactions (via GoCardless Bank Account Data — free). To enable, add{' '}
-            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">GOCARDLESS_SECRET_ID</code> and{' '}
-            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">GOCARDLESS_SECRET_KEY</code> in Vercel → Project → Settings → Environment Variables, then redeploy.
+            Connect UK/EU bank accounts to auto-import transactions (via Enable Banking — free for your own accounts). To enable, add{' '}
+            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">ENABLE_BANKING_APP_ID</code> and{' '}
+            <code className="rounded bg-gray-100 px-1 py-0.5 text-xs">ENABLE_BANKING_PRIVATE_KEY</code> in Vercel → Project → Settings → Environment Variables, then redeploy.
           </p>
           <p className="mt-2 text-xs text-gray-400">
-            Get the keys free at bankaccountdata.gocardless.com → Developers → User secrets. (UAE banks aren&rsquo;t supported — keep using statement import for those.)
+            Sign up free at enablebanking.com → Control Panel: register an application, generate a key pair (the private key downloads as a .pem — paste its contents into <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px]">ENABLE_BANKING_PRIVATE_KEY</code>), and add this redirect URL to the app:{' '}
+            <code className="rounded bg-gray-100 px-1 py-0.5 text-[11px]">{origin}/api/banks/callback</code>. (UAE banks aren&rsquo;t supported — keep using statement import for those.)
           </p>
         </div>
       ) : (
@@ -161,14 +180,6 @@ export function BankConnections() {
                     options={[{ value: '', label: 'Unmapped' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
                     buttonClassName="inline-flex h-8 min-w-[150px] items-center justify-between gap-1 rounded-md border border-gray-200 bg-white px-2 text-xs text-gray-600 hover:bg-gray-50"
                   />
-                  <button
-                    onClick={() => act('refresh', { id: c.id }).then(load)}
-                    disabled={busy}
-                    className="rounded-md px-2 py-1 text-xs font-medium text-gray-600 hover:bg-gray-100"
-                    title="Pull the account list after authorising"
-                  >
-                    Refresh
-                  </button>
                   <button
                     onClick={() => act('sync', { id: c.id }).then((d) => { if (d) setMsg(`Imported ${d.inserted} new transaction${d.inserted !== 1 ? 's' : ''} (${d.skipped} already had).`); load() })}
                     disabled={busy}
