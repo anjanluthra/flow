@@ -131,6 +131,44 @@ function parseFilePeriod(name: string): { start: string; end: string } | null {
   return start <= end ? { start, end } : { start: end, end: start }
 }
 
+function bytesToBase64(u8: Uint8Array): string {
+  let bin = ''
+  const step = 0x8000
+  for (let i = 0; i < u8.length; i += step) bin += String.fromCharCode(...u8.subarray(i, i + step))
+  return btoa(bin)
+}
+
+// Split a PDF into base64 page-chunks each small enough to POST within Vercel's
+// ~4.5 MB serverless request-body limit. A 5 MB+ statement base64-encodes to
+// ~7 MB, which the platform rejects before the parser even runs — so we page it
+// up in the browser and parse the chunks separately, then merge. Falls back to
+// one whole-file chunk if the PDF can't be split (encrypted/odd encoding, or a
+// single page). ~3 MB of source PDF per chunk keeps base64 comfortably < 4.5 MB.
+async function splitPdfBase64Chunks(file: File, maxChunkBytes = 3 * 1024 * 1024): Promise<string[]> {
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  if (bytes.length <= maxChunkBytes) return [bytesToBase64(bytes)]
+  try {
+    const { PDFDocument } = await import('pdf-lib')
+    const src = await PDFDocument.load(bytes, { ignoreEncryption: true })
+    const total = src.getPageCount()
+    if (total <= 1) return [bytesToBase64(bytes)]
+    // Pages per chunk from the average page size, so each chunk lands near the
+    // budget without an expensive grow-and-measure loop.
+    const pagesPerChunk = Math.max(1, Math.floor(maxChunkBytes / (bytes.length / total)))
+    const chunks: string[] = []
+    for (let start = 0; start < total; start += pagesPerChunk) {
+      const out = await PDFDocument.create()
+      const idx = Array.from({ length: Math.min(pagesPerChunk, total - start) }, (_, k) => start + k)
+      const pages = await out.copyPages(src, idx)
+      pages.forEach((p) => out.addPage(p))
+      chunks.push(bytesToBase64(await out.save()))
+    }
+    return chunks
+  } catch {
+    return [bytesToBase64(bytes)]
+  }
+}
+
 // Months (1-12) of `year` that a statement covers — from its stored period, a
 // range parsed from the filename, or its single representative month.
 function coveredMonthsInYear(d: StatementDoc, year: number): number[] {
@@ -792,26 +830,46 @@ export default function ImportPage() {
         setIsProcessing(true)
         try {
           const base64 = await readBase64()
-          const res = await fetch('/api/parse-pdf', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contentBase64: base64 }),
-          })
-          // A timed-out/edge response can be an HTML error page, not JSON — read
-          // defensively so it surfaces a clear message instead of throwing.
-          let data: { error?: string; transactions?: { date: string; description: string; amount: number }[]; bankHint?: string; statementDate?: string | null } = {}
-          try {
-            data = await res.json()
-          } catch {
-            data = {}
+          // Page the PDF up so each request stays under the serverless body
+          // limit, parse the chunks, and merge — big statements would otherwise
+          // be rejected whole (base64 ~4/3 the file size).
+          const chunks = await splitPdfBase64Chunks(selectedFile)
+          const data: { transactions: { date: string; description: string; amount: number }[]; bankHint: string; statementDate: string | null } = {
+            transactions: [],
+            bankHint: '',
+            statementDate: null,
           }
-          if (!res.ok) {
-            setParseError(
-              data.error ||
+          let anyOk = false
+          let errMsg = ''
+          for (const chunkB64 of chunks) {
+            const res = await fetch('/api/parse-pdf', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ contentBase64: chunkB64 }),
+            })
+            // A timed-out/edge response can be an HTML error page, not JSON — read
+            // defensively so it surfaces a clear message instead of throwing.
+            let d: { error?: string; transactions?: { date: string; description: string; amount: number }[]; bankHint?: string; statementDate?: string | null } = {}
+            try {
+              d = await res.json()
+            } catch {
+              d = {}
+            }
+            if (res.ok && Array.isArray(d.transactions)) {
+              anyOk = true
+              data.transactions.push(...d.transactions)
+              if (!data.bankHint && d.bankHint) data.bankHint = d.bankHint
+              if (!data.statementDate && d.statementDate) data.statementDate = d.statementDate
+            } else if (!errMsg) {
+              errMsg =
+                d.error ||
                 (res.status === 504 || res.status === 408
                   ? 'That statement took too long to read — please try Extract again.'
-                  : 'Could not read that PDF.'),
-            )
+                  : 'Could not read that PDF.')
+            }
+          }
+          if (!anyOk) {
+            setParseError(errMsg || 'Could not read that PDF.')
             return
           }
           const rows: { date: string; description: string; amount: number }[] = data.transactions || []
