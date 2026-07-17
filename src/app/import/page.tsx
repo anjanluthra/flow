@@ -1305,6 +1305,10 @@ export default function ImportPage() {
       // Archive the statement. If we're re-importing one that's already saved
       // (extracted from the archive), update that row in place so it flips to
       // "imported" instead of creating a duplicate; otherwise file a fresh copy.
+      // NB: do NOT touch the period/date here — the user sets the month in the
+      // grid, and the transaction span can cross calendar months (e.g. a credit
+      // card statement dated the 22nd), so recomputing it would wrongly widen a
+      // single month back into a range.
       if (originDocId) {
         try {
           const patchRes = await fetch(`/api/documents/${originDocId}`, {
@@ -1316,8 +1320,6 @@ export default function ImportPage() {
               importedCount: data.inserted,
               dataRows: recon?.dataRows ?? null,
               formatSignature: pdfDoc ? pdfDoc.format : rawText ? headerSignature(rawText) : null,
-              ...(stmtDate ? { statementDate: stmtDate } : {}),
-              ...(periodStart ? { periodStart, periodEnd } : {}),
             }),
           })
           if (!patchRes.ok) {
