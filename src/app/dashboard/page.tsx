@@ -464,7 +464,7 @@ export default function CashFlowPage() {
           <Card
             title="Expenses"
             value={fmt(showTotal ? cardExpenseTotal : cardExpenseOp)}
-            subtitle={hasCapital ? (showTotal ? `${fmt(cardExpenseOp)} operating` : `${fmt(cardExpenseTotal)} with sale costs`) : addFc ? 'incl. forecast' : 'for the period'}
+            subtitle={hasCapital ? (showTotal ? `${fmt(cardExpenseOp)} operating` : `${fmt(cardExpenseTotal)} with one-off events`) : addFc ? 'incl. forecast' : 'for the period'}
             icon={<TrendingDown className="h-5 w-5 text-red-500" />}
           />
           <Card
