@@ -29,30 +29,23 @@ function safeEqual(a: string, b: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Hardcoded users
+// Founding-account bootstrap
+//
+// Auth is DB-first: everyone signs in against their bcrypt password in the
+// users table. These env-var passwords are only a BOOTSTRAP — they let a
+// founding account sign in *until it has set a DB password*, at which point the
+// env path is never taken again (see authorize()). Once both accounts have DB
+// passwords you can delete AUTH_PASSWORD_* from the environment entirely.
 // ---------------------------------------------------------------------------
 
-const USERS: Array<{
-  id: string
+const FOUNDING: Array<{
   email: string
   name: string
   role: string
   envKey: string
 }> = [
-  {
-    id: '1',
-    email: 'admin@joinindexed.com',
-    name: 'Anjan',
-    role: 'admin',
-    envKey: 'AUTH_PASSWORD_ANJAN',
-  },
-  {
-    id: '2',
-    email: 'kate@joinindexed.com',
-    name: 'Kate',
-    role: 'user',
-    envKey: 'AUTH_PASSWORD_KATE',
-  },
+  { email: 'admin@joinindexed.com', name: 'Anjan', role: 'admin', envKey: 'AUTH_PASSWORD_ANJAN' },
+  { email: 'kate@joinindexed.com', name: 'Kate', role: 'user', envKey: 'AUTH_PASSWORD_KATE' },
 ]
 
 // ---------------------------------------------------------------------------
@@ -71,49 +64,46 @@ export const authOptions: AuthOptions = {
         if (!credentials?.email || !credentials?.password) {
           return null
         }
+        const email = credentials.email.toLowerCase()
 
-        // 1. Founding users authenticate against env-var passwords (unchanged).
-        const user = USERS.find(
-          (u) => u.email.toLowerCase() === credentials.email.toLowerCase(),
-        )
-
-        if (user) {
-          const expectedPassword = process.env[user.envKey]
-          if (!expectedPassword || !safeEqual(credentials.password, expectedPassword)) {
-            return null
-          }
-          return {
-            id: user.id,
-            email: user.email,
-            name: user.name,
-            role: user.role,
-          } as User
-        }
-
-        // 2. Users added via Settings authenticate against the DB (bcrypt).
+        // 1. DB-first: everyone signs in against their bcrypt password hash.
+        let dbUser: { id: string; email: string; full_name: string | null; role: string; password_hash: string | null } | null = null
         try {
           const result = await query(
             `SELECT id, email, full_name, role, password_hash
              FROM users
              WHERE lower(email) = lower($1) AND is_active = true`,
-            [credentials.email],
+            [email],
           )
-          const dbUser = result.rows[0]
-          // Always run a bcrypt compare (real hash or dummy) so an unknown email
-          // costs the same as a known one — no timing-based enumeration.
-          const ok = await bcrypt.compare(credentials.password, dbUser?.password_hash ?? DUMMY_HASH)
-          if (!dbUser?.password_hash || !ok) return null
-
-          return {
-            id: String(dbUser.id),
-            email: dbUser.email,
-            name: dbUser.full_name ?? dbUser.email,
-            role: dbUser.role,
-          } as User
+          dbUser = result.rows[0] ?? null
         } catch {
-          // DB unavailable — only env users can log in.
+          // DB unavailable — fall through to the bootstrap path below.
+        }
+
+        if (dbUser?.password_hash) {
+          // Once a user has a DB password, that is the ONLY way they sign in —
+          // the env bootstrap is never consulted for them again.
+          const ok = await bcrypt.compare(credentials.password, dbUser.password_hash)
+          return ok
+            ? ({ id: String(dbUser.id), email: dbUser.email, name: dbUser.full_name ?? dbUser.email, role: dbUser.role } as User)
+            : null
+        }
+
+        // 2. Bootstrap: a founding account with NO DB password yet may sign in
+        //    with its env-var password, just long enough to set a DB password.
+        const founder = FOUNDING.find((u) => u.email === email)
+        if (founder) {
+          const expected = process.env[founder.envKey]
+          if (expected && safeEqual(credentials.password, expected)) {
+            return { id: dbUser ? String(dbUser.id) : founder.email, email: founder.email, name: founder.name, role: founder.role } as User
+          }
           return null
         }
+
+        // 3. Unknown email — a dummy bcrypt compare so timing doesn't reveal
+        //    whether the account exists.
+        await bcrypt.compare(credentials.password, DUMMY_HASH)
+        return null
       },
     }),
   ],
