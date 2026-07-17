@@ -400,6 +400,9 @@ export default function ImportPage() {
   // list below is narrowed to.
   const [gridYear, setGridYear] = useState<number>(new Date().getFullYear())
   const [cellFilter, setCellFilter] = useState<{ account: string; month: number } | null>(null)
+  // Multi-select for bulk editing statements (account / period) in one go.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   const loadDocuments = useCallback(async () => {
     try {
@@ -1316,12 +1319,15 @@ export default function ImportPage() {
   const handleBulkFiles = useCallback((files: File[]) => startReviewQueue(files), [startReviewQueue])
 
   // Reassign an archived statement's account or year.
-  const patchDoc = async (id: string, patch: { accountId?: string | null; statementDate?: string | null; periodStart?: string | null; periodEnd?: string | null }) => {
-    await fetch(`/api/documents/${id}`, {
+  type DocPatch = { accountId?: string | null; statementDate?: string | null; periodStart?: string | null; periodEnd?: string | null }
+  const patchDocRaw = (id: string, patch: DocPatch) =>
+    fetch(`/api/documents/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     })
+  const patchDoc = async (id: string, patch: DocPatch) => {
+    await patchDocRaw(id, patch)
     await loadDocuments()
   }
 
@@ -1417,7 +1423,9 @@ export default function ImportPage() {
 
   // Set a saved statement's covered period (from/to month within a year). Also
   // stamps statement_date to the first month for back-compat.
-  const setPeriodRange = (d: StatementDoc, opts: { year?: number; from?: number; to?: number }) => {
+  // Build the period patch for one doc, merging the given field(s) with its
+  // current span so partial edits (just From, just Year…) keep the rest.
+  const periodPatchFor = (d: StatementDoc, opts: { year?: number; from?: number; to?: number }): DocPatch => {
     const y = opts.year ?? docYears(d)[0] ?? gridYear
     const cur = coveredMonthsInYear(d, y)
     const from = opts.from ?? cur[0] ?? 1
@@ -1427,10 +1435,59 @@ export default function ImportPage() {
     const start = `${y}-${String(lo).padStart(2, '0')}-01`
     const lastDay = new Date(Date.UTC(y, hi, 0)).getUTCDate()
     const end = `${y}-${String(hi).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`
-    patchDoc(d.id, { periodStart: start, periodEnd: end, statementDate: start })
+    return { periodStart: start, periodEnd: end, statementDate: start }
+  }
+  const setPeriodRange = (d: StatementDoc, opts: { year?: number; from?: number; to?: number }) => {
+    patchDoc(d.id, periodPatchFor(d, opts))
   }
   const PERIOD_YEARS = ['2023', '2024', '2025', '2026', '2027']
   const MONTH_OPTS = MONTHS_SHORT.map((m, i) => ({ value: String(i + 1), label: m }))
+
+  // ---- Multi-select + bulk edits -----------------------------------------
+  const toggleSelect = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const clearSelection = () => setSelectedIds(new Set())
+  const allSelected = (ids: string[]) => ids.length > 0 && ids.every((id) => selectedIds.has(id))
+  const toggleSelectMany = (ids: string[]) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      const all = ids.every((id) => next.has(id))
+      ids.forEach((id) => (all ? next.delete(id) : next.add(id)))
+      return next
+    })
+  const selectedDocs = () => documents.filter((d) => selectedIds.has(d.id))
+  // Run a patch across every selected doc, then reload once.
+  const runBulk = async (patchFor: (d: StatementDoc) => DocPatch) => {
+    const docs = selectedDocs()
+    if (docs.length === 0) return
+    setBulkBusy(true)
+    try {
+      await Promise.all(docs.map((d) => patchDocRaw(d.id, patchFor(d))))
+      await loadDocuments()
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+  const bulkSetAccount = (accountId: string | null) => runBulk(() => ({ accountId }))
+  const bulkSetPeriod = (opts: { year?: number; from?: number; to?: number }) => runBulk((d) => periodPatchFor(d, opts))
+  const bulkDelete = async () => {
+    const docs = selectedDocs()
+    if (docs.length === 0) return
+    if (!confirm(`Delete ${docs.length} document${docs.length !== 1 ? 's' : ''}? This can't be undone.`)) return
+    setBulkBusy(true)
+    try {
+      await Promise.all(docs.map((d) => fetch(`/api/documents/${d.id}`, { method: 'DELETE' })))
+      clearSelection()
+      await loadDocuments()
+    } finally {
+      setBulkBusy(false)
+    }
+  }
 
   // One compact row in the statements list.
   const renderStatementRow = (d: StatementDoc) => {
@@ -1438,7 +1495,14 @@ export default function ImportPage() {
     const isPdf = d.fileName.toLowerCase().endsWith('.pdf')
     const acctId = accounts.find((a) => a.name === d.accountName)?.id ?? ''
     return (
-      <div key={d.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-gray-100 px-4 py-2.5 last:border-0 hover:bg-gray-50/50">
+      <div key={d.id} className={`flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-gray-100 px-4 py-2.5 last:border-0 ${selectedIds.has(d.id) ? 'bg-blue-50/60' : 'hover:bg-gray-50/50'}`}>
+        <input
+          type="checkbox"
+          checked={selectedIds.has(d.id)}
+          onChange={() => toggleSelect(d.id)}
+          className="h-4 w-4 shrink-0 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          aria-label={`Select ${d.fileName}`}
+        />
         <FileText className="h-4 w-4 shrink-0 text-gray-300" />
         <button
           onClick={() => setViewer({ url: `/api/documents/${d.id}`, downloadUrl: `/api/documents/${d.id}?download=1`, fileName: d.fileName })}
@@ -2000,6 +2064,40 @@ export default function ImportPage() {
             </div>
           ) : (
             <>
+              {/* Bulk-edit bar — appears once one or more statements are ticked.
+                  Each control applies to every selected row at once. */}
+              {selectedIds.size > 0 && (
+                <div className="sticky top-2 z-30 mb-4 flex flex-wrap items-center gap-2 rounded-xl border border-blue-200 bg-blue-50 px-4 py-2.5 shadow-sm">
+                  <span className="text-sm font-semibold text-blue-800">{selectedIds.size} selected</span>
+                  <span className="ml-1 text-xs font-medium text-blue-600">Set for all:</span>
+                  <Select
+                    ariaLabel="Set account for selected"
+                    value=""
+                    placeholder="Account"
+                    onChange={(v) => bulkSetAccount(v || null)}
+                    options={[{ value: '', label: 'Unassigned' }, ...accounts.map((a) => ({ value: a.id, label: a.name }))]}
+                    buttonClassName="inline-flex h-7 max-w-[160px] min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50"
+                  />
+                  <div className="flex items-center gap-1">
+                    <Select ariaLabel="Set from month for selected" value="" placeholder="From" onChange={(v) => bulkSetPeriod({ from: Number(v) })} options={MONTH_OPTS} buttonClassName="inline-flex h-7 w-16 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50" />
+                    <span className="text-gray-300">–</span>
+                    <Select ariaLabel="Set to month for selected" value="" placeholder="To" onChange={(v) => bulkSetPeriod({ to: Number(v) })} options={MONTH_OPTS} buttonClassName="inline-flex h-7 w-16 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50" />
+                    <Select ariaLabel="Set year for selected" value="" placeholder="Year" onChange={(v) => bulkSetPeriod({ year: Number(v) })} options={PERIOD_YEARS.map((y) => ({ value: y, label: y }))} buttonClassName="inline-flex h-7 w-20 min-w-0 items-center justify-between gap-1 rounded-md border border-gray-300 bg-white px-2 text-xs text-gray-700 hover:bg-gray-50" />
+                  </div>
+                  <button
+                    onClick={bulkDelete}
+                    disabled={bulkBusy}
+                    className="inline-flex items-center gap-1 rounded-md border border-rose-200 bg-white px-2 py-1 text-xs font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Delete
+                  </button>
+                  {bulkBusy && <span className="text-xs text-blue-500">Saving…</span>}
+                  <button onClick={clearSelection} className="ml-auto text-xs font-medium text-gray-500 hover:text-gray-700 hover:underline">
+                    Clear
+                  </button>
+                </div>
+              )}
+
               {gridAccountNames.length > 0 && (
                 <div className="mb-6 overflow-x-auto rounded-xl border border-gray-200 bg-white shadow-sm">
                   <table className="w-full border-separate border-spacing-0 text-sm">
@@ -2048,7 +2146,16 @@ export default function ImportPage() {
               )}
 
               <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-                <div className="border-b border-gray-200 bg-gray-50/60 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                <div className="flex items-center gap-2 border-b border-gray-200 bg-gray-50/60 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  {yearDocs.length > 0 && (
+                    <input
+                      type="checkbox"
+                      checked={allSelected(yearDocs.map((d) => d.id))}
+                      onChange={() => toggleSelectMany(yearDocs.map((d) => d.id))}
+                      className="h-3.5 w-3.5 cursor-pointer rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      aria-label="Select all statements this year"
+                    />
+                  )}
                   {gridYear} · {yearDocs.length} statement{yearDocs.length !== 1 ? 's' : ''}
                 </div>
                 {yearDocs.length === 0 ? (
@@ -2070,7 +2177,14 @@ export default function ImportPage() {
 
               {undatedDocs.length > 0 && (
                 <div className="mt-6 overflow-hidden rounded-xl border border-amber-200 bg-white shadow-sm">
-                  <div className="border-b border-amber-200 bg-amber-50/60 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-amber-700">
+                  <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50/60 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-amber-700">
+                    <input
+                      type="checkbox"
+                      checked={allSelected(undatedDocs.map((d) => d.id))}
+                      onChange={() => toggleSelectMany(undatedDocs.map((d) => d.id))}
+                      className="h-3.5 w-3.5 cursor-pointer rounded border-amber-300 text-blue-600 focus:ring-blue-500"
+                      aria-label="Select all undated statements"
+                    />
                     Needs a date · {undatedDocs.length} — set a month so they appear on the grid
                   </div>
                   {undatedDocs.map((d) => renderStatementRow(d))}
