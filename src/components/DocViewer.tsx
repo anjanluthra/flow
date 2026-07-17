@@ -29,6 +29,23 @@ function sanitizeHtml(html: string): string {
   })
 }
 
+// Shown when the file couldn't be fetched for inline preview (e.g. the request
+// was blocked or the document is missing) — offer a direct download instead.
+function DocLoadError({ downloadUrl }: { downloadUrl: string }) {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+      <FileText className="h-10 w-10 text-gray-300" />
+      <p className="text-sm text-gray-500">Couldn’t load a preview of this file.</p>
+      <a
+        href={downloadUrl}
+        className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+      >
+        <Download className="h-4 w-4" /> Download to view
+      </a>
+    </div>
+  )
+}
+
 function kind(fileName: string, mimeType?: string): 'pdf' | 'image' | 'text' | 'richtext' | 'other' {
   const f = fileName.toLowerCase()
   const m = (mimeType || '').toLowerCase()
@@ -43,6 +60,14 @@ export function DocViewer({ target, onClose }: { target: DocViewerTarget | null;
   const [text, setText] = useState<string | null>(null)
   const [html, setHtml] = useState<string | null>(null)
   const [loadingText, setLoadingText] = useState(false)
+  // PDFs/images are fetched into a blob: URL rather than pointing the iframe/img
+  // straight at /api/documents/{id}. A blob: URL is local to this document, so
+  // it's immune to X-Frame-Options / frame-ancestors — and because the fetch
+  // carries the session cookie it also sails past Vercel's preview auth wall,
+  // which would otherwise return an un-frameable interstitial ("refused to
+  // connect").
+  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  const [blobError, setBlobError] = useState(false)
 
   useEffect(() => {
     setText(null)
@@ -73,6 +98,35 @@ export function DocViewer({ target, onClose }: { target: DocViewerTarget | null;
       .then((t) => setText(t))
       .catch(() => setText(''))
       .finally(() => setLoadingText(false))
+  }, [target])
+
+  // Fetch PDFs/images into a blob: URL (see note on the state above).
+  useEffect(() => {
+    setBlobUrl(null)
+    setBlobError(false)
+    if (!target) return
+    const k = kind(target.fileName, target.mimeType)
+    if (k !== 'pdf' && k !== 'image') return
+
+    let cancelled = false
+    let objUrl: string | null = null
+    fetch(target.url)
+      .then((r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        return r.blob()
+      })
+      .then((b) => {
+        if (cancelled) return
+        objUrl = URL.createObjectURL(b)
+        setBlobUrl(objUrl)
+      })
+      .catch(() => {
+        if (!cancelled) setBlobError(true)
+      })
+    return () => {
+      cancelled = true
+      if (objUrl) URL.revokeObjectURL(objUrl)
+    }
   }, [target])
 
   useEffect(() => {
@@ -115,11 +169,26 @@ export function DocViewer({ target, onClose }: { target: DocViewerTarget | null;
 
         {/* Body */}
         <div className="min-h-0 flex-1 overflow-auto bg-gray-50">
-          {k === 'pdf' && <iframe src={target.url} title={target.fileName} className="h-full w-full" />}
+          {k === 'pdf' &&
+            (blobError ? (
+              <DocLoadError downloadUrl={target.downloadUrl} />
+            ) : blobUrl ? (
+              <iframe src={blobUrl} title={target.fileName} className="h-full w-full" />
+            ) : (
+              <div className="flex h-full items-center justify-center">
+                <p className="text-sm text-gray-400">Loading…</p>
+              </div>
+            ))}
           {k === 'image' && (
             <div className="flex h-full items-center justify-center p-4">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={target.url} alt={target.fileName} className="max-h-full max-w-full object-contain" />
+              {blobError ? (
+                <DocLoadError downloadUrl={target.downloadUrl} />
+              ) : blobUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={blobUrl} alt={target.fileName} className="max-h-full max-w-full object-contain" />
+              ) : (
+                <p className="text-sm text-gray-400">Loading…</p>
+              )}
             </div>
           )}
           {(k === 'text' || (k === 'richtext' && (target.textUrl || target.htmlUrl))) && (
