@@ -1285,12 +1285,11 @@ export default function ImportPage() {
           setSaveResult((prev) => `${prev ?? ''} (but updating the saved statement failed)`)
         }
       } else {
-        const archiveBody = pdfDoc
+        const archiveMeta: ArchiveMeta | null = pdfDoc
           ? {
               accountId: account.id,
               fileName: pdfDoc.fileName,
               mimeType: 'application/pdf',
-              contentBase64: pdfDoc.base64,
               source: 'import',
               formatSignature: pdfDoc.format,
               importedCount: data.inserted,
@@ -1304,7 +1303,6 @@ export default function ImportPage() {
                 accountId: account.id,
                 fileName: rawFileName || 'statement.csv',
                 mimeType: 'text/csv',
-                contentBase64: btoa(unescape(encodeURIComponent(rawText))),
                 source: 'import',
                 formatSignature: headerSignature(rawText),
                 importedCount: data.inserted,
@@ -1314,15 +1312,12 @@ export default function ImportPage() {
                 periodEnd,
               }
             : null
+        const archiveB64 = pdfDoc ? pdfDoc.base64 : rawText ? btoa(unescape(encodeURIComponent(rawText))) : ''
 
-        if (archiveBody) {
+        if (archiveMeta) {
           try {
-            const archRes = await fetch('/api/documents', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(archiveBody),
-            })
-            if (!archRes.ok) {
+            const ok = await archiveDocument(archiveMeta, archiveB64)
+            if (!ok) {
               setSaveResult((prev) => `${prev ?? ''} (but filing the statement to the archive failed)`)
             }
             await loadDocuments()
@@ -1398,6 +1393,55 @@ export default function ImportPage() {
     if (!confirm(`Delete ${name}? This cannot be undone.`)) return
     await fetch(`/api/documents/${id}`, { method: 'DELETE' })
     await loadDocuments()
+  }
+
+  // Archive a document to the statement store. Small files POST whole; larger
+  // ones (whose base64 would blow the serverless request-body limit) send a
+  // first chunk to create the row, then append the rest — so a big statement
+  // still gets filed, not silently dropped.
+  type ArchiveMeta = {
+    accountId: string | null
+    fileName: string
+    mimeType: string
+    source?: string
+    formatSignature?: string | null
+    importedCount?: number | null
+    dataRows?: number | null
+    statementDate?: string | null
+    periodStart?: string | null
+    periodEnd?: string | null
+  }
+  const ARCHIVE_CHUNK_CHARS = 3_000_000 // multiple of 4 → each slice decodes cleanly
+  const archiveDocument = async (meta: ArchiveMeta, base64: string): Promise<boolean> => {
+    if (base64.length <= 4_000_000) {
+      const r = await fetch('/api/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...meta, contentBase64: base64 }),
+      })
+      return r.ok
+    }
+    const createRes = await fetch('/api/documents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...meta, contentBase64: base64.slice(0, ARCHIVE_CHUNK_CHARS) }),
+    })
+    if (!createRes.ok) return false
+    let id: string
+    try {
+      id = (await createRes.json()).id
+    } catch {
+      return false
+    }
+    for (let i = ARCHIVE_CHUNK_CHARS; i < base64.length; i += ARCHIVE_CHUNK_CHARS) {
+      const r = await fetch(`/api/documents/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ appendBase64: base64.slice(i, i + ARCHIVE_CHUNK_CHARS) }),
+      })
+      if (!r.ok) return false
+    }
+    return true
   }
 
   // Bulk archive: file many statements at once, auto-filing each by account
