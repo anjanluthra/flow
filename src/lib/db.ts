@@ -958,6 +958,47 @@ export async function upsertBudget(year: number, expenseBudgetUsd: number) {
 }
 
 // ---------------------------------------------------------------------------
+// Statement skips — months a user has marked as "no statement expected" (no
+// activity, or the account didn't exist), so the coverage grid doesn't flag
+// them as missing gaps.
+// ---------------------------------------------------------------------------
+let statementSkipsReady = false
+export async function ensureStatementSkips() {
+  if (statementSkipsReady) return
+  try {
+    await query(`
+      CREATE TABLE IF NOT EXISTS statement_skips (
+        account_id uuid NOT NULL REFERENCES accounts ON DELETE CASCADE,
+        year       int  NOT NULL,
+        month      int  NOT NULL,
+        PRIMARY KEY (account_id, year, month)
+      )
+    `)
+    statementSkipsReady = true
+  } catch (error) {
+    console.error('ensureStatementSkips failed:', error)
+  }
+}
+
+export async function listStatementSkips(year: number) {
+  await ensureStatementSkips()
+  return query(`SELECT account_id, month FROM statement_skips WHERE year = $1`, [year])
+}
+
+export async function setStatementSkip(accountId: string, year: number, month: number, skip: boolean) {
+  await ensureStatementSkips()
+  if (skip) {
+    await query(
+      `INSERT INTO statement_skips (account_id, year, month) VALUES ($1, $2, $3)
+       ON CONFLICT (account_id, year, month) DO NOTHING`,
+      [accountId, year, month],
+    )
+  } else {
+    await query(`DELETE FROM statement_skips WHERE account_id = $1 AND year = $2 AND month = $3`, [accountId, year, month])
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Account import hints (learned fingerprints for auto-detection)
 // ---------------------------------------------------------------------------
 

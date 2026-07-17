@@ -438,6 +438,10 @@ export default function ImportPage() {
   // list below is narrowed to.
   const [gridYear, setGridYear] = useState<number>(new Date().getFullYear())
   const [cellFilter, setCellFilter] = useState<{ account: string; month: number } | null>(null)
+  // Months marked "no statement expected" (no activity / account didn't exist),
+  // keyed `${accountId}|${month}` for the year in view — so legit gaps aren't
+  // flagged as missing.
+  const [skips, setSkips] = useState<Set<string>>(new Set())
   // Multi-select for bulk editing statements (account / period) in one go.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -459,6 +463,40 @@ export default function ImportPage() {
       /* ignore */
     }
   }, [])
+
+  // Load the "no statement expected" marks for the year in view.
+  const loadSkips = useCallback(async (year: number) => {
+    try {
+      const res = await fetch(`/api/statement-skips?year=${year}`)
+      if (!res.ok) throw new Error()
+      const d = await res.json()
+      setSkips(new Set((d.skips || []).map((s: { accountId: string; month: number }) => `${s.accountId}|${s.month}`)))
+    } catch {
+      setSkips(new Set())
+    }
+  }, [])
+  useEffect(() => { loadSkips(gridYear) }, [gridYear, loadSkips])
+
+  // Toggle a month as "no statement expected" for an account (optimistic).
+  const toggleSkip = useCallback(async (accountId: string, month: number) => {
+    const key = `${accountId}|${month}`
+    const next = !skips.has(key)
+    setSkips((prev) => {
+      const s = new Set(prev)
+      if (next) s.add(key)
+      else s.delete(key)
+      return s
+    })
+    try {
+      await fetch('/api/statement-skips', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId, year: gridYear, month, skip: next }),
+      })
+    } catch {
+      loadSkips(gridYear)
+    }
+  }, [skips, gridYear, loadSkips])
 
   // Snapshot the list layout: order (account → month → name), which section a
   // doc sits in, and its account group. Recomputed only on structural changes.
@@ -1534,8 +1572,15 @@ export default function ImportPage() {
     }
     if (min) activeRange.set(name, { min, max: gridYear === nowY ? Math.max(max, nowM) : max })
   }
+  // Map a grid row's account name to its id, so skips (keyed by id) line up.
+  const accountIdByName = new Map(accounts.map((a) => [a.name, a.id]))
+  const isSkipped = (name: string, m: number): boolean => {
+    const id = accountIdByName.get(name)
+    return !!id && skips.has(`${id}|${m}`)
+  }
   const isMissingCell = (name: string, m: number): boolean => {
     if (coverage.has(`${name}|${m}`)) return false
+    if (isSkipped(name, m)) return false // user marked this as legitimately empty
     const r = activeRange.get(name)
     return !!r && m > r.min && m <= r.max
   }
@@ -2279,6 +2324,7 @@ export default function ImportPage() {
                   <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm bg-emerald-500" /> Imported</span>
                   <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm bg-amber-400" /> Uploaded</span>
                   <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm border border-dashed border-rose-300 bg-rose-50" /> Missing (gap)</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-flex h-3 w-3 items-center justify-center rounded-sm border border-gray-200 bg-gray-100 text-[8px] font-bold text-gray-400">–</span> No statement expected</span>
                 </div>
                 <Select
                   ariaLabel="Coverage year"
@@ -2353,26 +2399,41 @@ export default function ImportPage() {
                           {MONTHS_SHORT.map((_, i) => {
                             const m = i + 1
                             const cov = coverage.get(`${name}|${m}`)
-                            const missing = !cov && isMissingCell(name, m)
+                            const acctId = accountIdByName.get(name)
+                            const skipped = !cov && isSkipped(name, m)
+                            const missing = !cov && !skipped && isMissingCell(name, m)
                             const active = !!cellFilter && cellFilter.account === name && cellFilter.month === m
                             const cls = cov
                               ? cov.imported ? 'bg-emerald-500' : 'bg-amber-400'
-                              : missing ? 'border border-dashed border-rose-300 bg-rose-50' : 'border border-gray-200 bg-gray-50'
+                              : skipped ? 'border border-gray-200 bg-gray-100 text-gray-400'
+                                : missing ? 'border border-dashed border-rose-300 bg-rose-50 text-rose-400'
+                                  : 'border border-gray-200 bg-gray-50 text-gray-300'
                             return (
                               <td key={i} className="px-1 py-1.5 text-center">
                                 <button
-                                  disabled={!cov}
-                                  onClick={() => setCellFilter(active ? null : { account: name, month: m })}
+                                  // Empty cells (no statement) are clickable only when the
+                                  // row maps to a real account — toggling "no statement
+                                  // expected". Filled cells filter the list below.
+                                  disabled={!cov && !acctId}
+                                  onClick={() =>
+                                    cov
+                                      ? setCellFilter(active ? null : { account: name, month: m })
+                                      : acctId && toggleSkip(acctId, m)
+                                  }
                                   title={
                                     cov
                                       ? `${cov.count} statement${cov.count !== 1 ? 's' : ''} — ${cov.imported ? 'imported' : 'uploaded, not imported'}`
-                                      : missing
-                                        ? `Missing — no ${MONTHS_SHORT[i]} ${gridYear} statement (gap between statements you have)`
-                                        : `No ${MONTHS_SHORT[i]} ${gridYear} statement`
+                                      : skipped
+                                        ? `No statement expected for ${MONTHS_SHORT[i]} ${gridYear} (click to unmark)`
+                                        : missing
+                                          ? `Missing — no ${MONTHS_SHORT[i]} ${gridYear} statement. Click to mark "no statement expected".`
+                                          : acctId
+                                            ? `No ${MONTHS_SHORT[i]} ${gridYear} statement — click to mark "no statement expected"`
+                                            : `No ${MONTHS_SHORT[i]} ${gridYear} statement`
                                   }
-                                  className={`mx-auto flex h-6 w-full max-w-[40px] items-center justify-center rounded-sm text-[10px] font-bold text-rose-400 ${cls} ${cov ? 'cursor-pointer hover:opacity-80' : 'cursor-default'} ${active ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
+                                  className={`mx-auto flex h-6 w-full max-w-[40px] items-center justify-center rounded-sm text-[10px] font-bold ${cls} ${cov || acctId ? 'cursor-pointer hover:opacity-80' : 'cursor-default'} ${active ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
                                 >
-                                  {missing ? '!' : ''}
+                                  {skipped ? '–' : missing ? '!' : ''}
                                 </button>
                               </td>
                             )
