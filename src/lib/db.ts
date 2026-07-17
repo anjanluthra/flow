@@ -258,9 +258,41 @@ export async function assistantBreakdown(
 }
 
 export async function getCategories() {
+  await ensureCategoryNonCore()
   // Alphabetical by name so every category dropdown/filter is easy to scan.
   // Pages still group by type client-side; ordering within each group is A→Z.
   return query('SELECT * FROM categories ORDER BY name ASC')
+}
+
+// Expense categories can be tagged "non-core" (non-operating but still an
+// expense — e.g. reimbursable business spend, refundable deposits). They stay
+// in the operating P&L but are subtotalled separately from core living costs.
+// Initial non-core seed — applied only when the column is first created, so it
+// never clobbers the user's later toggles on a redeploy/cold start.
+const NON_CORE_SEED = ['Velvet & Valor', 'Refund', 'Business Expenses', 'Refundable Deposit']
+let categoryNonCoreReady = false
+export async function ensureCategoryNonCore() {
+  if (categoryNonCoreReady) return
+  try {
+    const col = await query(
+      `SELECT 1 FROM information_schema.columns WHERE table_name = 'categories' AND column_name = 'non_core'`,
+    )
+    if (col.rows.length === 0) {
+      await query(`ALTER TABLE categories ADD COLUMN non_core boolean NOT NULL DEFAULT false`)
+      await query(
+        `UPDATE categories SET non_core = true WHERE type = 'expense' AND name = ANY($1)`,
+        [NON_CORE_SEED],
+      )
+    }
+    categoryNonCoreReady = true
+  } catch (error) {
+    console.error('Failed to ensure categories.non_core:', error)
+  }
+}
+
+export async function setCategoryNonCore(id: string, nonCore: boolean) {
+  await ensureCategoryNonCore()
+  return query(`UPDATE categories SET non_core = $2 WHERE id = $1`, [id, nonCore])
 }
 
 export async function getAccounts() {
@@ -579,12 +611,14 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
   await ensureInvestmentType()
   await ensureTransactionTypesMatchCategory()
   await ensureCapitalEvents()
+  await ensureCategoryNonCore()
   const rate = gbpRate > 0 ? gbpRate : 1.3231
   return query(
     `SELECT
         t.type,
         c.name       AS category_name,
         c.color_hex  AS category_color,
+        COALESCE(c.non_core, false) AS non_core,
         to_char(date_trunc('month', t.date), 'YYYY-MM') AS ym,
         SUM(COALESCE(t.amount_usd, 0)) AS total_usd,
         SUM(
@@ -605,7 +639,7 @@ export async function getPnLByRange(from: string, to: string, gbpRate: number) {
          -- separate section rather than dropped like transfers / card payments.
          OR t.type = 'investment'
        )
-     GROUP BY t.type, c.name, c.color_hex, ym
+     GROUP BY t.type, c.name, c.color_hex, c.non_core, ym
      ORDER BY ym`,
     [from, to, rate],
   )

@@ -19,6 +19,7 @@ interface Line {
   color: string
   monthly: Record<string, Amt>
   total: Amt
+  nonCore?: boolean
 }
 
 interface PnL {
@@ -28,16 +29,22 @@ interface PnL {
   gbpRate: number
   income: Line[]
   expense: Line[]
+  expenseCore: Line[]
+  expenseNonCore: Line[]
   investing: Line[]
   capitalEvents: CapitalEvent[]
   totals: {
     incomeByMonth: Record<string, Amt>
     expenseByMonth: Record<string, Amt>
+    expenseCoreByMonth: Record<string, Amt>
+    expenseNonCoreByMonth: Record<string, Amt>
     investingByMonth: Record<string, Amt>
     netByMonth: Record<string, Amt>
     netCashByMonth: Record<string, Amt>
     incomeTotal: Amt
     expenseTotal: Amt
+    expenseCoreTotal: Amt
+    expenseNonCoreTotal: Amt
     investingTotal: Amt
     net: Amt
     netCash: Amt
@@ -146,6 +153,13 @@ export default function CashFlowPage() {
   const months = pnl?.months ?? []
   const showMonthCols = months.length > 1
   const t = pnl?.totals
+
+  // Expenses split into core vs non-core (non-operating). When nothing is
+  // tagged non-core we fall back to the flat expense list and skip the extra
+  // subtotals, so the statement looks exactly as before.
+  const coreExpenseLines = pnl?.expenseCore ?? pnl?.expense ?? []
+  const nonCoreExpenseLines = pnl?.expenseNonCore ?? []
+  const hasNonCore = nonCoreExpenseLines.length > 0
 
   // Operating figures come straight from the P&L; the "total" figures fold the
   // non-operating capital events (asset sales & their costs) back in.
@@ -515,9 +529,22 @@ export default function CashFlowPage() {
                     <TotalRow label="Total Income" byMonth={t!.incomeByMonth} total={t!.incomeTotal} months={months} showMonthCols={showMonthCols} tone="income" currency={currency} fmt={fmt} forecast={addFc ? fcIncome : undefined} editable={fcEditable && addFc} editValues={fcIncomeStr} onEditChange={(ym, v) => onFcChange(ym, 'income', v)} onEditCommit={commitFc} />
 
                     <SectionRow label="Expenses" span={months.length} showMonthCols={showMonthCols} tone="expense" />
-                    {pnl.expense.map((l) => (
+                    {coreExpenseLines.map((l) => (
                       <LineRow key={`e-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
                     ))}
+                    {/* Core subtotal — only when there are non-core lines to set it apart. */}
+                    {hasNonCore && (
+                      <TotalRow label="Core expenses" byMonth={t!.expenseCoreByMonth} total={t!.expenseCoreTotal} months={months} showMonthCols={showMonthCols} tone="subtotal" currency={currency} fmt={fmt} />
+                    )}
+                    {hasNonCore && (
+                      <>
+                        <SectionRow label="Non-core / non-operating" span={months.length} showMonthCols={showMonthCols} tone="expense" />
+                        {nonCoreExpenseLines.map((l) => (
+                          <LineRow key={`nc-${l.category}`} line={l} months={months} showMonthCols={showMonthCols} currency={currency} fmt={fmt} onDrill={openDrill} />
+                        ))}
+                        <TotalRow label="Non-core expenses" byMonth={t!.expenseNonCoreByMonth} total={t!.expenseNonCoreTotal} months={months} showMonthCols={showMonthCols} tone="subtotal" currency={currency} fmt={fmt} />
+                      </>
+                    )}
                     <TotalRow label="Total Expenses" byMonth={t!.expenseByMonth} total={t!.expenseTotal} months={months} showMonthCols={showMonthCols} tone="expense" currency={currency} fmt={fmt} forecast={addFc ? fcExpense : undefined} editable={fcEditable && addFc} editValues={fcExpenseStr} onEditChange={(ym, v) => onFcChange(ym, 'expense', v)} onEditCommit={commitFc} />
 
                     <TotalRow label="Saved" byMonth={t!.netByMonth} total={t!.net} months={months} showMonthCols={showMonthCols} tone="net" currency={currency} fmt={fmt} forecast={addFc ? fcSaved : undefined} />
@@ -590,6 +617,7 @@ interface DrillCat {
   name: string
   type: 'income' | 'expense' | 'transfer' | 'investment'
   color?: string
+  nonCore?: boolean
 }
 
 function DrillDrawer({
@@ -673,6 +701,32 @@ function DrillDrawer({
   const incomeCats = cats.filter((c) => c.type === 'income')
   const transferCats = cats.filter((c) => c.type === 'transfer')
   const investmentCats = cats.filter((c) => c.type === 'investment')
+
+  // The category behind a (non-event) category drill, so we can offer a
+  // core / non-core toggle right here where the user is already looking.
+  const drillCat = drill && !drill.eventId ? cats.find((c) => c.name === drill.category) : undefined
+  const [nonCoreSaving, setNonCoreSaving] = useState(false)
+  async function toggleNonCore() {
+    if (!drillCat) return
+    const next = !drillCat.nonCore
+    setNonCoreSaving(true)
+    // Optimistic local update so the switch flips instantly.
+    setCats((prev) => prev.map((c) => (c.id === drillCat.id ? { ...c, nonCore: next } : c)))
+    try {
+      const r = await fetch('/api/categories', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: drillCat.id, nonCore: next }),
+      })
+      if (!r.ok) throw new Error()
+      onChanged() // reload the P&L so the row jumps to the right subtotal group
+    } catch {
+      // Revert on failure.
+      setCats((prev) => prev.map((c) => (c.id === drillCat.id ? { ...c, nonCore: !next } : c)))
+    } finally {
+      setNonCoreSaving(false)
+    }
+  }
 
   // Assign (or clear, with null) the capital event a transaction belongs to.
   async function assignEvent(tx: DrillTxn, eventId: string | null) {
@@ -897,6 +951,28 @@ function DrillDrawer({
           <span className="text-xs font-medium uppercase tracking-wider text-gray-400">{drill.eventId ? 'Net total' : 'Total'}</span>
           <span className={`text-lg font-bold ${total < 0 ? 'text-rose-600' : 'text-gray-900'}`}>{fmtMoney(total, currency)}</span>
         </div>
+
+        {/* Core / non-core toggle for expense categories — flips the row between
+            the Core and Non-core subtotal groups in the P&L. */}
+        {drillCat?.type === 'expense' && (
+          <label className="flex items-center justify-between gap-3 border-b border-gray-100 px-5 py-2.5">
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-gray-700">Non-core / non-operating</span>
+              <span className="block text-xs text-gray-400">Keeps it in expenses but subtotals it apart from core living costs.</span>
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={!!drillCat.nonCore}
+              onClick={toggleNonCore}
+              disabled={nonCoreSaving}
+              className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${drillCat.nonCore ? 'bg-rose-500' : 'bg-gray-300'}`}
+              title="Tag this category as non-core"
+            >
+              <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${drillCat.nonCore ? 'translate-x-4' : 'translate-x-0.5'}`} />
+            </button>
+          </label>
+        )}
 
         {/* Bulk event assignment — the fast path. In a category drill, group the
             whole line into an event; in an event drill, send it all back to
@@ -1131,7 +1207,7 @@ function TotalRow({
   total: Amt
   months: string[]
   showMonthCols: boolean
-  tone: 'income' | 'expense' | 'net' | 'investing' | 'netcash'
+  tone: 'income' | 'expense' | 'net' | 'investing' | 'netcash' | 'subtotal'
   currency: Currency
   fmt: (n: number) => string
   // Optional per-month forecast (display currency) shown in italics where a
@@ -1151,12 +1227,25 @@ function TotalRow({
   const color =
     tone === 'net' || tone === 'netcash'
       ? totalVal >= 0 ? 'text-emerald-700' : 'text-rose-700'
-      : tone === 'income' ? 'text-emerald-700' : tone === 'investing' ? 'text-indigo-700' : 'text-rose-700'
-  const bg = tone === 'net' || tone === 'netcash' ? 'bg-blue-50/70 border-t-2 border-gray-300' : 'bg-gray-50/70'
+      : tone === 'income' ? 'text-emerald-700' : tone === 'investing' ? 'text-indigo-700' : tone === 'subtotal' ? 'text-rose-500' : 'text-rose-700'
+  // Subtotals sit lighter than the grand total (no fill, thin dashed rule);
+  // net rows get the heavy blue band; everything else the standard gray band.
+  const bg =
+    tone === 'net' || tone === 'netcash'
+      ? 'bg-blue-50/70 border-t-2 border-gray-300'
+      : tone === 'subtotal'
+        ? 'bg-transparent border-t border-dashed border-gray-200'
+        : 'bg-gray-50/70'
   // Solid background for the frozen first cell so scrolled numbers can't show through.
-  const stickyBg = tone === 'net' || tone === 'netcash' ? 'bg-blue-50 border-t-2 border-gray-300' : 'bg-gray-50'
+  const stickyBg =
+    tone === 'net' || tone === 'netcash'
+      ? 'bg-blue-50 border-t-2 border-gray-300'
+      : tone === 'subtotal'
+        ? 'bg-white border-t border-dashed border-gray-200'
+        : 'bg-gray-50'
+  const weight = tone === 'subtotal' ? 'font-medium' : 'font-semibold'
   return (
-    <tr className={`font-semibold ${bg}`}>
+    <tr className={`${weight} ${bg}`}>
       <td className={`sticky left-0 z-10 px-2.5 py-2 ${stickyBg} ${color}`}>{label}</td>
       {showMonthCols &&
         months.map((ym) => {
