@@ -169,6 +169,33 @@ async function splitPdfBase64Chunks(file: File, maxChunkBytes = 3 * 1024 * 1024)
   }
 }
 
+// Parse CSV text into rows of fields, honouring quoted fields (commas/quotes
+// inside quotes). Used to render the source preview as a readable table.
+function parseCsvRows(text: string, maxRows = 2000): string[][] {
+  const rows: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let inQuotes = false
+  for (let i = 0; i < text.length && rows.length < maxRows; i++) {
+    const c = text[i]
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++ } else inQuotes = false
+      } else field += c
+    } else if (c === '"') {
+      inQuotes = true
+    } else if (c === ',') {
+      row.push(field); field = ''
+    } else if (c === '\n') {
+      row.push(field); rows.push(row); row = []; field = ''
+    } else if (c !== '\r') {
+      field += c
+    }
+  }
+  if ((field.length || row.length) && rows.length < maxRows) { row.push(field); rows.push(row) }
+  return rows
+}
+
 // Months (1-12) of `year` that a statement covers — from its stored period, a
 // range parsed from the filename, or its single representative month.
 function coveredMonthsInYear(d: StatementDoc, year: number): number[] {
@@ -1616,9 +1643,41 @@ export default function ImportPage() {
       className="h-[78vh] w-full rounded-lg border border-gray-200 bg-white"
     />
   ) : rawText ? (
-    <pre className="h-[78vh] overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs leading-relaxed text-gray-700">
-      {rawText}
-    </pre>
+    (() => {
+      const rows = parseCsvRows(rawText)
+      if (rows.length === 0) {
+        return (
+          <pre className="h-[78vh] overflow-auto rounded-lg border border-gray-200 bg-gray-50 p-3 text-xs leading-relaxed text-gray-700">{rawText}</pre>
+        )
+      }
+      const [header, ...body] = rows
+      return (
+        <div className="h-[78vh] overflow-auto rounded-lg border border-gray-200 bg-white">
+          <table className="w-full border-separate border-spacing-0 text-xs">
+            <thead>
+              <tr>
+                {header.map((h, i) => (
+                  <th key={i} className="sticky top-0 z-10 whitespace-nowrap border-b border-gray-200 bg-gray-50 px-2 py-1.5 text-left font-semibold text-gray-600">
+                    {h || <span className="text-gray-300">—</span>}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {body.map((r, ri) => (
+                <tr key={ri} className="odd:bg-white even:bg-gray-50/50">
+                  {header.map((_, ci) => (
+                    <td key={ci} className="whitespace-nowrap border-b border-gray-100 px-2 py-1 text-gray-700">
+                      {r[ci] ?? ''}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )
+    })()
   ) : null
 
   const splitReview = statementPreview !== null && parsedTransactions.length > 0
