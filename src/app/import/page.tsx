@@ -1748,11 +1748,11 @@ export default function ImportPage() {
         >
           {imported ? (
             <>
-              <CheckCircle className="h-3 w-3" /> Imported{d.importedCount != null ? ` · ${d.importedCount}` : ''}
+              <CheckCircle className="h-3 w-3" /> Reconciled{d.importedCount != null ? ` · ${d.importedCount}` : ''}
             </>
           ) : (
             <>
-              <AlertCircle className="h-3 w-3" /> Not imported
+              <AlertCircle className="h-3 w-3" /> Uploaded
             </>
           )}
         </span>
@@ -2298,7 +2298,7 @@ export default function ImportPage() {
               <p className="mt-0.5 text-sm text-gray-500">
                 {yearTotal} statement{yearTotal !== 1 ? 's' : ''} in {gridYear}
                 {yearTotal > 0 && (
-                  <> · <span className="text-emerald-600">{importedTotal} imported</span> · <span className="text-amber-600">{notImportedTotal} to import</span></>
+                  <> · <span className="text-emerald-600">{importedTotal} reconciled</span> · <span className="text-amber-600">{notImportedTotal} uploaded</span></>
                 )}
                 {documents.length !== yearTotal && <span className="text-gray-400"> · {documents.length} all-time</span>}
               </p>
@@ -2306,9 +2306,9 @@ export default function ImportPage() {
             {documents.length > 0 && (
               <div className="flex items-center gap-4">
                 <div className="hidden items-center gap-3 text-xs text-gray-500 sm:flex">
-                  <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm bg-emerald-500" /> Imported</span>
                   <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm bg-amber-400" /> Uploaded</span>
-                  <span className="flex items-center gap-1.5"><span className="inline-flex h-3 w-3 items-center justify-center rounded-sm border border-gray-200 bg-gray-100 text-[8px] font-bold text-gray-400">–</span> No statement expected</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-block h-3 w-3 rounded-sm bg-emerald-500" /> Reconciled</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-flex h-3 w-3 items-center justify-center rounded-sm border border-gray-200 bg-gray-100 text-[8px] font-bold text-gray-400">–</span> No statement</span>
                 </div>
                 <Select
                   ariaLabel="Coverage year"
@@ -2404,11 +2404,11 @@ export default function ImportPage() {
                                   }
                                   title={
                                     cov
-                                      ? `${cov.count} statement${cov.count !== 1 ? 's' : ''} — ${cov.imported ? 'imported' : 'uploaded, not imported'}`
+                                      ? `${cov.count} statement${cov.count !== 1 ? 's' : ''} — ${cov.imported ? 'reconciled' : 'uploaded'}`
                                       : skipped
-                                        ? `No statement expected for ${MONTHS_SHORT[i]} ${gridYear} (click to unmark)`
+                                        ? `No statement for ${MONTHS_SHORT[i]} ${gridYear} (click to unmark)`
                                         : acctId
-                                          ? `No ${MONTHS_SHORT[i]} ${gridYear} statement — click to mark "no statement expected"`
+                                          ? `No ${MONTHS_SHORT[i]} ${gridYear} statement — click to mark "no statement"`
                                           : `No ${MONTHS_SHORT[i]} ${gridYear} statement`
                                   }
                                   className={`mx-auto flex h-6 w-full max-w-[40px] items-center justify-center rounded-sm text-[10px] font-bold ${cls} ${cov || acctId ? 'cursor-pointer hover:opacity-80' : 'cursor-default'} ${active ? 'ring-2 ring-blue-500 ring-offset-1' : ''}`}
