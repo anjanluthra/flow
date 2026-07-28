@@ -110,7 +110,8 @@ const FALLBACK_ACCOUNTS: Account[] = [
   { accountId: '', account: 'UAE Car', holder: 'Anjan', country: 'AE', assetClass: 'Car', liquidity: 'T3', currency: 'AED', localBalance: 114500, usdValue: 31178, yield: 0, annualCashFlow: 0, isCorporate: false },
   { accountId: '', account: 'Upvolt Debt', holder: 'Anjan', country: 'GB', assetClass: 'Private Debt', liquidity: 'T3', currency: 'USD', localBalance: 50000, usdValue: 50000, yield: 11.0, annualCashFlow: 5500, isCorporate: false },
   { accountId: '', account: 'Trump Meme Coin', holder: 'Anjan', country: 'US', assetClass: 'Crypto', liquidity: 'T2', currency: 'USD', localBalance: 500, usdValue: 500, yield: 0, annualCashFlow: 0, isCorporate: false },
-  { accountId: '', account: 'Corporate Cash Balance', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T2', currency: 'USD', localBalance: 437000, usdValue: 437000, yield: 0, annualCashFlow: 0, isCorporate: true },
+  // Indexed FP&A consolidated end-of-2026 closing cash forecast (Dec 2026 close), pulled 2026-07-28.
+  { accountId: '', account: 'Corporate Cash Balance', holder: 'Joint', country: 'AE', assetClass: 'Cash', liquidity: 'T2', currency: 'USD', localBalance: 482248, usdValue: 482248, yield: 0, annualCashFlow: 0, isCorporate: true },
 ]
 
 const FALLBACK_HISTORY: NetWorthSnapshot[] = [

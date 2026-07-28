@@ -54,7 +54,9 @@ const CURRENT: Row[] = [
   { name: 'UAE Car', institution: '—', country: 'AE', currency: 'AED', holder: 'anjan', assetClass: 'car', liquidity: 't3_locked_years', isCorporate: false, local: 114500, usd: 31178, yieldPct: 0, annualCashflow: 0 },
   { name: 'Upvolt Debt', institution: 'Upvolt', country: 'GB', currency: 'USD', holder: 'anjan', assetClass: 'private_debt', liquidity: 't3_locked_years', isCorporate: false, local: 50000, usd: 50000, yieldPct: 11.0, annualCashflow: 5500 },
   { name: 'Trump Meme Coin', institution: '—', country: 'US', currency: 'USD', holder: 'anjan', assetClass: 'crypto', liquidity: 't2_days', isCorporate: false, local: 500, usd: 500, yieldPct: 0, annualCashflow: 0 },
-  { name: 'Corporate Cash Balance', institution: 'Indexed', country: 'AE', currency: 'USD', holder: 'joint', assetClass: 'cash', liquidity: 't2_days', isCorporate: true, local: 437000, usd: 437000, yieldPct: 0, annualCashflow: 0 },
+  // Corporate cash = Indexed FP&A consolidated *end-of-2026 closing cash forecast*
+  // (Dec 2026 close), pulled from the Indexed FP&A dashboard on 2026-07-28.
+  { name: 'Corporate Cash Balance', institution: 'Indexed', country: 'AE', currency: 'USD', holder: 'joint', assetClass: 'cash', liquidity: 't2_days', isCorporate: true, local: 482248, usd: 482248, yieldPct: 0, annualCashflow: 0 },
 ]
 
 // Transaction accounts to ensure exist (so their statements are filable) but
