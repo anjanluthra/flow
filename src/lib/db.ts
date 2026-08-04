@@ -47,9 +47,23 @@ export async function ensureInvestmentType() {
   try {
     await query(`ALTER TYPE transaction_type ADD VALUE IF NOT EXISTS 'investment'`)
     await query(`ALTER TYPE category_type ADD VALUE IF NOT EXISTS 'investment'`)
+    // Capital deployed INTO investments becomes its own type (surfaced as
+    // investing activity, kept out of the operating P&L). But income EARNED from
+    // investments — interest, dividends, yield — is ordinary P&L income, not
+    // capital deployment, so exclude those names from the flip.
     await query(
       `UPDATE categories SET type = 'investment'
-       WHERE LOWER(name) LIKE '%investment%' AND type <> 'investment'`,
+       WHERE LOWER(name) LIKE '%investment%'
+         AND LOWER(name) !~ '(interest|dividend|yield|income)'
+         AND type <> 'investment'`,
+    )
+    // Repair categories the earlier, over-broad rule mis-flipped: an investment
+    // income category (e.g. "Investment Interest") belongs in income.
+    await query(
+      `UPDATE categories SET type = 'income'
+       WHERE LOWER(name) LIKE '%investment%'
+         AND LOWER(name) ~ '(interest|dividend|yield|income)'
+         AND type = 'investment'`,
     )
     await query(
       `UPDATE transactions t SET type = 'investment'
