@@ -177,6 +177,10 @@ class ChunkError extends Error {
   }
 }
 
+// The PDF is encrypted with a real user password we don't have (not the common
+// empty-password owner lock), so we can't decrypt it to read the text.
+class PdfPasswordError extends Error {}
+
 // Turn the collected chunk failures into a user-facing message + HTTP status.
 // Every chunk failing usually means one systemic cause, so key off the first
 // failure's status and (for 4xx) the detail Anthropic returned.
@@ -211,12 +215,12 @@ function describeFailure(failures: ChunkError[]): { message: string; status: num
   }
 }
 
-// One model call over a single (whole or chunked) PDF, returned as a parsed
-// statement. `context` appends period/currency hints for continuation chunks
-// whose pages don't repeat the statement header. Throws ChunkError on a non-OK
+// One model call, returned as a parsed statement. `content` is the user-message
+// content blocks — either a PDF document (native reading) or extracted text (for
+// encrypted PDFs we decrypt ourselves, see below). Throws ChunkError on a non-OK
 // response so the caller can drop just that chunk rather than fail the whole
 // statement, while still learning why it failed.
-async function extractChunk(base64: string, apiKey: string, context: string): Promise<StatementExtract | null> {
+async function callClaude(content: unknown[], apiKey: string): Promise<StatementExtract | null> {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
@@ -224,15 +228,7 @@ async function extractChunk(base64: string, apiKey: string, context: string): Pr
       model: MODEL,
       max_tokens: 16000,
       thinking: { type: 'disabled' },
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
-            { type: 'text', text: INSTRUCTION + context },
-          ],
-        },
-      ],
+      messages: [{ role: 'user', content }],
     }),
   })
   if (!res.ok) {
@@ -247,16 +243,67 @@ async function extractChunk(base64: string, apiKey: string, context: string): Pr
   return parseStatement(raw, data?.stop_reason === 'max_tokens')
 }
 
-// Split a PDF into base64 chunks of at most CHUNK_PAGES pages each.
-//
-// Every chunk — including a short statement that fits in one chunk — is rebuilt
-// by copying its pages into a fresh document and re-saving. That normalises the
-// bytes and, crucially, drops any encryption/permissions layer: bank e-statements
-// are frequently password- or owner-locked, and Anthropic's PDF reader rejects an
-// encrypted document outright. Re-saving the pages unencrypted lets those through.
+// Read a (whole or chunked) PDF via Claude's native PDF support. `context`
+// appends period/currency hints for continuation chunks whose pages don't
+// repeat the statement header.
+function extractChunk(base64: string, apiKey: string, context: string): Promise<StatementExtract | null> {
+  return callClaude(
+    [
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
+      { type: 'text', text: INSTRUCTION + context },
+    ],
+    apiKey,
+  )
+}
+
+// Read a chunk of statement TEXT (extracted from an encrypted PDF we decrypted
+// locally) via Claude. Anthropic's PDF reader rejects encrypted documents, so
+// for those we extract the text ourselves and send it here instead.
+function extractTextChunk(text: string, apiKey: string, context: string): Promise<StatementExtract | null> {
+  return callClaude(
+    [{ type: 'text', text: `${INSTRUCTION}${context}\n\n--- Statement text extracted from the PDF ---\n${text}` }],
+    apiKey,
+  )
+}
+
+// Decrypt a password-protected PDF (empty user password — the common case for
+// bank e-statements, which are owner/permission-locked with AES) and return the
+// text of each page. pdf-lib can't decrypt AES, so we use pdf.js, which fully
+// supports it. Throws ChunkError(401) when the file needs a real open password
+// we don't have.
+async function extractEncryptedPageTexts(bytes: Uint8Array): Promise<string[]> {
+  // Loaded lazily and kept out of the server bundle (see serverExternalPackages).
+  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+  let doc
+  try {
+    // Copy the bytes — pdf.js may detach the underlying buffer.
+    doc = await pdfjs.getDocument({ data: new Uint8Array(bytes), password: '', isEvalSupported: false, useSystemFonts: false }).promise
+  } catch (e) {
+    // PasswordException => the empty password didn't open it (a real user password).
+    if (e && typeof e === 'object' && (e as { name?: string }).name === 'PasswordException') {
+      throw new PdfPasswordError()
+    }
+    throw e
+  }
+  const pages: string[] = []
+  for (let p = 1; p <= doc.numPages; p++) {
+    const page = await doc.getPage(p)
+    const content = await page.getTextContent()
+    pages.push(content.items.map((i) => ('str' in i ? i.str : '')).join(' '))
+    page.cleanup()
+  }
+  await doc.destroy()
+  return pages
+}
+
+// Split a PDF into base64 chunks of at most CHUNK_PAGES pages each. A statement
+// that already fits in one chunk is sent as its original bytes — re-saving it
+// through pdf-lib can subtly re-encode fonts/content and is pointless work.
+// (Encrypted PDFs never reach here; they're decrypted to text upstream.)
 async function splitIntoChunks(bytes: Uint8Array): Promise<string[]> {
   const src = await PDFDocument.load(bytes, { ignoreEncryption: true })
   const total = src.getPageCount()
+  if (total <= CHUNK_PAGES) return [Buffer.from(bytes).toString('base64')]
   const chunks: string[] = []
   for (let start = 0; start < total; start += CHUNK_PAGES) {
     const out = await PDFDocument.create()
@@ -308,24 +355,52 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'That file is not a valid PDF.' }, { status: 400 })
     }
 
-    // Split into page-chunks. If the PDF can't be parsed for splitting (e.g.
-    // unusual encoding) fall back to reading the whole document in one call.
-    let chunks: string[]
+    // Decide how to feed the statement to Claude. Anthropic's PDF reader can't
+    // open an encrypted document, so if the PDF is encrypted we decrypt it here
+    // (empty user password — the norm for bank e-statements) and send the
+    // extracted text per page-chunk. Otherwise we let Claude read the PDF
+    // natively (which also handles scanned/image statements), splitting large
+    // files into page-chunks so no single call is too big. Each caller takes the
+    // shared period/currency context and returns a parsed statement.
+    type ChunkCaller = (context: string) => Promise<StatementExtract | null>
+    const failures: ChunkError[] = []
+    let callers: ChunkCaller[]
     try {
-      chunks = await splitIntoChunks(pdfBuf)
-      // A PDF that reports no pages yields no chunks — send the raw document
-      // rather than nothing so Claude still gets a shot at it.
-      if (chunks.length === 0) chunks = [contentBase64]
-    } catch {
-      chunks = [contentBase64]
+      const doc = await PDFDocument.load(pdfBuf, { ignoreEncryption: true })
+      if (doc.isEncrypted) {
+        const pageTexts = await extractEncryptedPageTexts(pdfBuf)
+        const groups: string[] = []
+        for (let i = 0; i < pageTexts.length; i += CHUNK_PAGES) {
+          const text = pageTexts.slice(i, i + CHUNK_PAGES).join('\n\n').trim()
+          if (text) groups.push(text)
+        }
+        if (groups.length === 0) {
+          return NextResponse.json(
+            { error: "That PDF is password-protected and has no readable text layer (it looks scanned). Try a CSV export instead." },
+            { status: 422 },
+          )
+        }
+        callers = groups.map((text) => (context: string) => extractTextChunk(text, apiKey, context))
+      } else {
+        const chunks = await splitIntoChunks(pdfBuf)
+        const list = chunks.length ? chunks : [contentBase64]
+        callers = list.map((b64) => (context: string) => extractChunk(b64, apiKey, context))
+      }
+    } catch (e) {
+      if (e instanceof PdfPasswordError) {
+        return NextResponse.json(
+          { error: 'That PDF needs a password to open. Remove the password (or use a CSV export) and try again.' },
+          { status: 422 },
+        )
+      }
+      // Couldn't parse the PDF for splitting/encryption (unusual encoding): fall
+      // back to letting Claude read the whole document in one native call.
+      callers = [(context: string) => extractChunk(contentBase64, apiKey, context)]
     }
 
-    // Remember why chunks failed so an all-chunks-failed result can name the
-    // actual cause instead of a generic dead-end.
-    const failures: ChunkError[] = []
-    const runChunk = async (b64: string, context: string): Promise<StatementExtract | null> => {
+    const runCaller = async (caller: ChunkCaller, context: string): Promise<StatementExtract | null> => {
       try {
-        return await extractChunk(b64, apiKey, context)
+        return await caller(context)
       } catch (e) {
         if (e instanceof ChunkError) failures.push(e)
         return null
@@ -335,14 +410,14 @@ export async function POST(request: NextRequest) {
     // Read the first chunk on its own to capture the statement period/currency,
     // then hand that to the remaining chunks (whose pages may not repeat the
     // header) so dates without a year are attributed to the right period.
-    const first = await runChunk(chunks[0], '')
+    const first = await runCaller(callers[0], '')
 
     const rest: StatementExtract[] = []
-    if (chunks.length > 1) {
+    if (callers.length > 1) {
       const period = first?.statementDate ? ` dated around ${first.statementDate}` : ''
       const ccy = first?.currency ? ` in ${first.currency}` : ''
       const context = `\n\nContext: these are continuation pages of one bank statement${period}${ccy}. If a transaction row shows a day and month but no year, use the statement period's year. Return the same JSON shape.`
-      const results = await mapLimit(chunks.slice(1), MAX_CONCURRENCY, (b64) => runChunk(b64, context))
+      const results = await mapLimit(callers.slice(1), MAX_CONCURRENCY, (caller) => runCaller(caller, context))
       for (const r of results) if (r) rest.push(r)
     }
 
