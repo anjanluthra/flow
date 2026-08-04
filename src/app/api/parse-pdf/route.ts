@@ -35,7 +35,8 @@ Return ONLY a JSON object (no prose, no markdown fences) of the form:
 
 Rules:
 - Include EVERY posted transaction line. Do not summarise or skip any.
-- "amount" is a signed number: money OUT (purchases, payments, fees, debits) is NEGATIVE; money IN (credits, refunds, salary, interest) is POSITIVE.
+- "amount" is a signed JSON number (not a string): money OUT (purchases, payments, fees, debits) is NEGATIVE; money IN (credits, refunds, salary, interest) is POSITIVE. Return the bare number only — no currency symbol, thousands separators, or CR/DR text.
+- Some statements (e.g. UK cards) print an amount with a trailing "CR" (credit → money IN → POSITIVE) or "DR" (debit → money OUT → NEGATIVE); read that marker to set the sign. Card payments, cashback and reward credits are transactions — include them.
 - Some statements (e.g. current accounts) list debits and credits in separate columns with no +/- sign, and wrap a single transaction's description across several lines. Treat each dated row as one transaction: join its wrapped description onto one line, and use which column the amount sits in — or the direction the running balance moves — to set the sign.
 - Use the transaction date (not the posting date if both are shown). Format every date as YYYY-MM-DD; infer the year from the statement period.
 - Keep the description concise but recognisable (the merchant name).
@@ -83,6 +84,32 @@ interface StatementExtract {
   truncated: boolean
 }
 
+// Coerce a model-provided amount into a signed number. The prompt asks for a
+// JSON number, but on statements that print amounts with a currency symbol or a
+// trailing CR/DR marker (common on UK cards — e.g. "£47.07CR") the model often
+// returns a string like "£47.07CR", "(8.99)" or "-25.99" to preserve the
+// notation. Parse those instead of dropping the transaction, which is what a
+// strict typeof-number check did — silently losing every row on such a
+// statement and reporting "No transactions found".
+function toAmount(v: unknown): number | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null
+  if (typeof v !== 'string') return null
+  const raw = v.trim()
+  if (!raw) return null
+  // Money-out markers: a leading minus, parentheses, or a trailing DR.
+  const negative = raw.includes('-') || /^\(.*\)$/.test(raw) || /dr\b|dr$/i.test(raw)
+  // Money-in marker: a trailing CR (credit) — used when no explicit sign.
+  const credit = /cr\b|cr$/i.test(raw)
+  const digits = raw.replace(/[^0-9.]/g, '')
+  if (!digits || digits === '.') return null
+  const n = Number(digits)
+  if (!Number.isFinite(n)) return null
+  const magnitude = Math.abs(n)
+  if (negative) return -magnitude
+  if (credit) return magnitude
+  return magnitude
+}
+
 // Turn Claude's raw text into a statement, tolerating truncated JSON. On a large
 // chunk the response can hit max_tokens mid-array; rather than failing the whole
 // file we salvage every complete transaction object that did come back.
@@ -95,7 +122,7 @@ function parseStatement(raw: string, truncated: boolean): StatementExtract | nul
     return m ? m[1].replace(/\\"/g, '"') : null
   }
 
-  let rows: Array<{ date?: string; description?: string; amount?: number }> = []
+  let rows: Array<{ date?: string; description?: string; amount?: unknown }> = []
   let bankHint = readField('bankHint') ?? ''
   let statementDate = readField('statementDate')
   let currency = readField('currency')
@@ -128,11 +155,14 @@ function parseStatement(raw: string, truncated: boolean): StatementExtract | nul
   }
 
   const transactions = rows
-    .filter((t) => t && t.date && typeof t.amount === 'number')
-    .map((t) => ({
+    .map((t) => ({ t, amount: toAmount(t?.amount) }))
+    .filter((r): r is { t: { date?: string; description?: string }; amount: number } =>
+      !!r.t && !!r.t.date && r.amount !== null,
+    )
+    .map(({ t, amount }) => ({
       date: t.date as string,
       description: (t.description ?? '').trim() || '(no description)',
-      amount: t.amount as number,
+      amount,
     }))
 
   return { bankHint, statementDate, currency, transactions, truncated }
