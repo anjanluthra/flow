@@ -227,6 +227,15 @@ function describeFailure(failures: ChunkError[]): { message: string; status: num
   }
   // A 400 on the document itself: almost always an encrypted/password-protected
   // or corrupted file that Claude's PDF reader can't open.
+  // An exhausted balance comes back as a plain 400, which used to land in the
+  // catch-all below and read as though the statement were corrupt.
+  if (lower.includes('credit balance') || lower.includes('billing') || lower.includes('quota')) {
+    return {
+      message: 'Your Anthropic API credit balance is too low to read statements. Top up in the Anthropic Console, then try Extract again.',
+      status: 402,
+      detail,
+    }
+  }
   if (lower.includes('password') || lower.includes('encrypt')) {
     return {
       message: 'That PDF is password-protected. Remove the password (open it and re-save/print to PDF) or use a CSV export, then try again.',
