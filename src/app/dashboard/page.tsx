@@ -192,20 +192,35 @@ export default function CashFlowPage() {
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => {
         const rows: Array<{ month: number; hasActuals: boolean; actualIncome: number; actualExpense: number; actualInvestment?: number; forecastIncome: number | null; forecastExpense: number | null; forecastInvestment?: number | null }> = d.months || []
-        const actual = rows.filter((r) => r.hasActuals)
-        const avg = (sel: (r: typeof rows[number]) => number) =>
-          actual.length ? Math.round(actual.reduce((s, r) => s + sel(r), 0) / actual.length) : 0
+        // Average each line over the months that actually recorded it, so a
+        // month carrying only (say) one interest credit doesn't drag the income
+        // average down with a zero.
+        const avg = (sel: (r: typeof rows[number]) => number) => {
+          const vals = rows.map(sel).filter((v) => v > 0)
+          return vals.length ? Math.round(vals.reduce((a, b) => a + b, 0) / vals.length) : 0
+        }
         const avgI = avg((r) => r.actualIncome)
         const avgE = avg((r) => r.actualExpense)
         const avgV = avg((r) => r.actualInvestment ?? 0)
+        // The month in progress is still forecastable. It's only days old, so a
+        // single transaction landing in it — one interest credit was enough —
+        // must not retire the whole month from the forecast the way a closed
+        // month does.
+        const now = new Date()
+        const currentMonth = year === now.getFullYear() ? now.getMonth() + 1 : 0
         const seeded: Record<string, { income: string; expense: string; investment: string }> = {}
         for (const r of rows) {
-          if (!r.hasActuals) {
-            seeded[`${year}-${String(r.month).padStart(2, '0')}`] = {
-              income: String(r.forecastIncome ?? avgI),
-              expense: String(r.forecastExpense ?? avgE),
-              investment: String(r.forecastInvestment ?? avgV),
-            }
+          if (r.hasActuals && r.month !== currentMonth) continue
+          // Per line, not per month: forecast only what this month hasn't
+          // recorded yet, so a line with real numbers is never double-counted by
+          // a forecast sitting on top of it. '' means "no forecast here".
+          const seed = {
+            income: r.actualIncome > 0 ? '' : String(r.forecastIncome ?? avgI),
+            expense: r.actualExpense > 0 ? '' : String(r.forecastExpense ?? avgE),
+            investment: (r.actualInvestment ?? 0) > 0 ? '' : String(r.forecastInvestment ?? avgV),
+          }
+          if (seed.income || seed.expense || seed.investment) {
+            seeded[`${year}-${String(r.month).padStart(2, '0')}`] = seed
           }
         }
         if (!cancelled) setFcEdits(seeded)
@@ -232,10 +247,10 @@ export default function CashFlowPage() {
 
   // Per-month forecast overlays for the Total rows, in display currency, plus
   // the raw edit strings the income/expense inputs bind to.
-  const fcIncome = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.income))])), [fcEdits, toDisplay])
-  const fcExpense = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.expense))])), [fcEdits, toDisplay])
+  const fcIncome = useMemo(() => Object.fromEntries(Object.entries(fcEdits).filter(([, v]) => v.income !== '').map(([ym, v]) => [ym, toDisplay(num(v.income))])), [fcEdits, toDisplay])
+  const fcExpense = useMemo(() => Object.fromEntries(Object.entries(fcEdits).filter(([, v]) => v.expense !== '').map(([ym, v]) => [ym, toDisplay(num(v.expense))])), [fcEdits, toDisplay])
   const fcSaved = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.income) - num(v.expense))])), [fcEdits, toDisplay])
-  const fcInvest = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, toDisplay(num(v.investment))])), [fcEdits, toDisplay])
+  const fcInvest = useMemo(() => Object.fromEntries(Object.entries(fcEdits).filter(([, v]) => v.investment !== '').map(([ym, v]) => [ym, toDisplay(num(v.investment))])), [fcEdits, toDisplay])
   const fcIncomeStr = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, v.income])), [fcEdits])
   const fcExpenseStr = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, v.expense])), [fcEdits])
   const fcInvestStr = useMemo(() => Object.fromEntries(Object.entries(fcEdits).map(([ym, v]) => [ym, v.investment])), [fcEdits])
@@ -485,7 +500,7 @@ export default function CashFlowPage() {
             +Forecast basis; on Actuals the future months stay blank. */}
         {fcEditable && addFc && Object.keys(fcEdits).length > 0 && (
           <p className="mb-6 text-sm italic text-gray-500">
-            Future months are editable — type a forecast into the italic cells on the Total Income, Total Expenses and Total Invested rows; it saves automatically and folds into the year totals.
+            This month and the ones ahead are editable — type a forecast into the italic cells on the Total Income, Total Expenses and Total Invested rows; it saves automatically and folds into the year totals.
           </p>
         )}
 
