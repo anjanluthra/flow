@@ -39,7 +39,7 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   // mammoth (docx → HTML preview) pulls in Node-only deps; keep it external so
   // Next doesn't try to bundle it into the server build.
-  serverExternalPackages: ["mammoth"],
+  serverExternalPackages: ["mammoth", "pdfjs-dist"],
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },

@@ -131,6 +131,47 @@ function parseFilePeriod(name: string): { start: string; end: string } | null {
   return start <= end ? { start, end } : { start: end, end: start }
 }
 
+const MONTH_TOKENS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec']
+
+/** The month of a YYYY-MM-DD date string, or null if it isn't one. */
+function monthFromDateString(s: string | null | undefined): { year: number; month: number } | null {
+  const m = String(s ?? '').match(/^(\d{4})-(\d{2})/)
+  if (!m) return null
+  const month = parseInt(m[2], 10)
+  if (month < 1 || month > 12) return null
+  return { year: parseInt(m[1], 10), month }
+}
+
+/**
+ * Best-effort statement month from a filename — the only clue left when a
+ * statement carries no transactions to date it by (a month with no activity).
+ * Handles "…22-JAN-26…", "…Jan 2026…", "…2026-01…" and "…01-2026…".
+ */
+function monthFromFileName(name: string): { year: number; month: number } | null {
+  const range = parseFilePeriod(name)
+  if (range) return monthFromDateString(range.start)
+
+  const toYear = (raw: string): number | null => {
+    const n = parseInt(raw, 10)
+    if (raw.length === 4) return n >= 1990 && n <= 2100 ? n : null
+    return n >= 15 && n <= 45 ? 2000 + n : null // two-digit year
+  }
+  const named = name.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*[-_. ]?(\d{4}|\d{2})\b/i)
+  if (named) {
+    const year = toYear(named[2])
+    if (year) return { year, month: MONTH_TOKENS.indexOf(named[1].toLowerCase()) + 1 }
+  }
+  // Underscores are word characters, so these use explicit non-digit edges
+  // rather than \b — "statement_03-2025" must still resolve.
+  const compact = name.match(/(?:^|[^0-9])(20\d{2})(0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?![0-9])/)
+  if (compact) return { year: parseInt(compact[1], 10), month: parseInt(compact[2], 10) }
+  const iso = name.match(/(?:^|[^0-9])(20\d{2})[-_.]?(0[1-9]|1[0-2])(?![0-9])/)
+  if (iso) return { year: parseInt(iso[1], 10), month: parseInt(iso[2], 10) }
+  const monthYear = name.match(/(?:^|[^0-9])(0?[1-9]|1[0-2])[-_.](20\d{2})(?![0-9])/)
+  if (monthYear) return { year: parseInt(monthYear[2], 10), month: parseInt(monthYear[1], 10) }
+  return null
+}
+
 function bytesToBase64(u8: Uint8Array): string {
   let bin = ''
   const step = 0x8000
@@ -238,6 +279,17 @@ interface ParsedTransaction {
   status: 'categorised' | 'needs-review'
   alreadyImported?: boolean // already in Flow (matched on re-import)
   aiSuggested?: boolean // category proposed by Claude (review before saving)
+}
+
+/**
+ * A statement Flow could read but has nothing to import from — either a period
+ * with no activity ('empty') or a file it couldn't parse ('unreadable'). Both
+ * are still filed so the coverage grid reflects that the statement exists; only
+ * an empty one counts as reconciled (there was genuinely nothing to import).
+ */
+interface EmptyStatement {
+  kind: 'empty' | 'unreadable'
+  reason: string
 }
 
 interface ColumnMapping {
@@ -437,6 +489,10 @@ export default function ImportPage() {
   const [saveResult, setSaveResult] = useState<string | null>(null)
   const [mappings, setMappings] = useState<MerchantMapping[]>([])
   const [recon, setRecon] = useState<Reconciliation | null>(null)
+  // A statement with nothing to import (no transactions, or unreadable) — kept
+  // so it can still be filed against a month instead of being thrown away.
+  const [emptyStatement, setEmptyStatement] = useState<EmptyStatement | null>(null)
+  const [emptyPeriod, setEmptyPeriod] = useState<{ year: number; month: number } | null>(null)
   const [fxRates, setFxRates] = useState<Record<string, number> | null>(null)
   // Optional statement balances for the reconciliation check (local currency).
   const [openingBalance, setOpeningBalance] = useState('')
@@ -700,12 +756,36 @@ export default function ImportPage() {
     }
   }, [parsedTransactions, account, categories])
 
+  // The file being reviewed and the statement date Claude read off it (PDFs),
+  // held in refs so the "nothing to import" path can date the statement without
+  // threading them through every parse callback.
+  const fileNameRef = useRef<string>('')
+  const statementDateHintRef = useRef<string | null>(null)
+  // Whether the month below was chosen by hand — re-parsing (e.g. after picking
+  // the account) must not overwrite it with the guess.
+  const emptyPeriodTouchedRef = useRef(false)
+
+  // Flag the current statement as having nothing to import, and pre-fill the
+  // month it covers from the statement date Claude read (PDFs) or the filename —
+  // the transactions that would normally date it don't exist.
+  const markEmptyStatement = useCallback((kind: EmptyStatement['kind'], reason: string) => {
+    setParseError(null)
+    setParsedTransactions([])
+    setEmptyStatement({ kind, reason })
+    if (!emptyPeriodTouchedRef.current) {
+      setEmptyPeriod(
+        monthFromDateString(statementDateHintRef.current) ?? monthFromFileName(fileNameRef.current),
+      )
+    }
+  }, [])
+
   // Parse a statement's text against a chosen account. When `forced` is passed
   // (a manual override) detection is skipped; otherwise the account is detected
   // from the filename + header.
   const processStatement = useCallback(
     (text: string, fileName: string, forced?: AccountOption) => {
       setParseError(null)
+      setEmptyStatement(null)
 
       const detected = forced ? null : detectAccount(fileName, text.slice(0, 4000), accounts, hints)
       const activeAccount = forced ?? detected?.account
@@ -725,14 +805,32 @@ export default function ImportPage() {
       setChangingAccount(false)
 
       const rows = parseCSV(text)
+      if (rows.length === 0 || text.trim() === '') {
+        setParseError('That file is empty — there is nothing to read or save.')
+        return
+      }
+      // A header row with no data rows is a real statement for a month with no
+      // activity, not a broken file: keep it so it can still be filed.
       if (rows.length < 2) {
-        setParseError('The CSV file appears to be empty or has insufficient data.')
+        setRecon({
+          fileLines: rows.length,
+          dataRows: 0,
+          parsed: 0,
+          skipped: [],
+          sumCredits: 0,
+          sumDebits: 0,
+          imported: null,
+          duplicates: null,
+        })
+        markEmptyStatement('empty', 'This statement lists no transactions.')
         return
       }
       const mapping = detectColumns(rows[0])
       if (!mapping) {
-        setParseError(
-          'Could not auto-detect columns. Ensure your CSV has date, description, and amount/debit/credit headers.',
+        setRecon(null)
+        markEmptyStatement(
+          'unreadable',
+          'Could not auto-detect columns — the CSV needs date, description, and amount/debit/credit headers.',
         )
         return
       }
@@ -828,8 +926,16 @@ export default function ImportPage() {
         imported: null,
         duplicates: null,
       })
+      // Every row was a non-transaction (reverted, declined, blank…): there's
+      // nothing to import, but the statement itself still counts.
+      if (transactions.length === 0) {
+        markEmptyStatement(
+          'empty',
+          `No transactions to import — all ${dataRows} row${dataRows !== 1 ? 's' : ''} on this statement were skipped.`,
+        )
+      }
     },
-    [accounts, mappings, fxRates, hints],
+    [accounts, mappings, fxRates, hints, markEmptyStatement],
   )
 
   // Build the review list from already-extracted rows (used by the PDF path,
@@ -866,12 +972,22 @@ export default function ImportPage() {
         imported: null,
         duplicates: null,
       })
+      if (transactions.length === 0) {
+        markEmptyStatement('empty', 'Claude read the statement and it lists no transactions.')
+      } else {
+        setEmptyStatement(null)
+      }
     },
-    [mappings, fxRates],
+    [mappings, fxRates, markEmptyStatement],
   )
 
   const handleFileSelect = useCallback(
-    async (selectedFile: File, originDocId?: string | null, preferredAccountId?: string | null) => {
+    async (
+      selectedFile: File,
+      originDocId?: string | null,
+      preferredAccountId?: string | null,
+      knownStatementDate?: string | null,
+    ) => {
       setFile(selectedFile)
       setParseError(null)
       setSaveResult(null)
@@ -879,6 +995,13 @@ export default function ImportPage() {
       setPendingPdfRows(null)
       setPdfDoc(null)
       setOriginDocId(originDocId ?? null)
+      setEmptyStatement(null)
+      setEmptyPeriod(null)
+      fileNameRef.current = selectedFile.name
+      // A statement already filed under a month keeps that month if it turns out
+      // to have nothing to import.
+      statementDateHintRef.current = knownStatementDate ?? null
+      emptyPeriodTouchedRef.current = false
 
       const isPdf = selectedFile.name.toLowerCase().endsWith('.pdf')
       const isCsv = selectedFile.name.toLowerCase().endsWith('.csv')
@@ -937,18 +1060,22 @@ export default function ImportPage() {
                   : 'Could not read that PDF.')
             }
           }
-          if (!anyOk) {
-            setParseError(errMsg || 'Could not read that PDF.')
-            return
-          }
           const rows: { date: string; description: string; amount: number }[] = data.transactions || []
-          if (rows.length === 0) {
-            setParseError('No transactions found in that PDF.')
+          const format = `PDF · ${data.bankHint || 'statement'}`
+          statementDateHintRef.current = statementDateHintRef.current ?? data.statementDate
+          // Keep the PDF around either way: even one we couldn't read is still a
+          // statement worth filing, rather than being dropped on the floor.
+          setPdfDoc({ base64, fileName: selectedFile.name, format: anyOk ? format : 'PDF', originDocId: originDocId ?? null })
+          setPendingPdfRows(anyOk ? rows : null)
+          if (!anyOk) {
+            const known = preferredAccountId ? accounts.find((a) => a.id === preferredAccountId) : null
+            const failAccount = known ?? detectAccount(selectedFile.name, '', accounts, hints)?.account ?? null
+            setAutoDetected(!known && !!failAccount)
+            setSelectedAccountId(failAccount?.id ?? '')
+            setChangingAccount(!failAccount)
+            markEmptyStatement('unreadable', errMsg || 'Could not read that PDF.')
             return
           }
-          const format = `PDF · ${data.bankHint || 'statement'}`
-          setPendingPdfRows(rows)
-          setPdfDoc({ base64, fileName: selectedFile.name, format, originDocId: originDocId ?? null })
 
           // If we're extracting a statement already filed under an account (e.g.
           // "Extract & categorise" from the archive), use that account — don't
@@ -964,7 +1091,11 @@ export default function ImportPage() {
           } else {
             setSelectedAccountId('')
             setChangingAccount(true)
-            setParseError("Read the statement — now choose which account it's for below.")
+            if (rows.length === 0) {
+              markEmptyStatement('empty', 'Claude read the statement and it lists no transactions.')
+            } else {
+              setParseError("Read the statement — now choose which account it's for below.")
+            }
           }
         } catch {
           setParseError('Failed to read that PDF. Try a CSV export instead.')
@@ -1015,7 +1146,7 @@ export default function ImportPage() {
         setIsProcessing(false)
       }
     },
-    [processStatement, loadDocuments, accounts, hints, buildPdfTransactions],
+    [processStatement, loadDocuments, accounts, hints, buildPdfTransactions, markEmptyStatement],
   )
 
   // Extract & categorise a statement that's already saved in the archive: pull
@@ -1037,8 +1168,9 @@ export default function ImportPage() {
           : blob.type || 'application/octet-stream'
         const file = new File([blob], doc.fileName, { type })
         if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
-        // The saved doc already knows its account — use it so we don't ask again.
-        await handleFileSelect(file, doc.id, doc.accountId)
+        // The saved doc already knows its account (and month) — use them so we
+        // don't ask again.
+        await handleFileSelect(file, doc.id, doc.accountId, doc.periodStart ?? doc.statementDate)
       } catch {
         setParseError('Could not open that saved statement to extract it. Please try again.')
       } finally {
@@ -1060,7 +1192,7 @@ export default function ImportPage() {
       // PDF: rebuild from the rows Claude extracted; learn the filename + format.
       if (pendingPdfRows) {
         setParseError(null)
-        buildPdfTransactions(pendingPdfRows, acc)
+        if (pendingPdfRows.length > 0) buildPdfTransactions(pendingPdfRows, acc)
         fetch('/api/account-hints', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1241,6 +1373,9 @@ export default function ImportPage() {
   const resetReview = useCallback(() => {
     setParsedTransactions([])
     setRecon(null)
+    setEmptyStatement(null)
+    setEmptyPeriod(null)
+    emptyPeriodTouchedRef.current = false
     setRawText(null)
     setPdfDoc(null)
     setOriginDocId(null)
@@ -1447,10 +1582,89 @@ export default function ImportPage() {
     }
   }
 
+  // File a statement that had nothing to import. It still belongs in the archive
+  // — and on the coverage grid, so a quiet month reads as covered rather than
+  // missing. An empty statement is filed as reconciled (there was genuinely
+  // nothing to import, so the month is done); one Flow couldn't read is filed as
+  // uploaded, so it still shows as needing attention.
+  const handleSaveEmptyStatement = async () => {
+    if (!emptyStatement || !account || !emptyPeriod) return
+    const { year, month } = emptyPeriod
+    const mm = String(month).padStart(2, '0')
+    const lastDay = String(new Date(Date.UTC(year, month, 0)).getUTCDate()).padStart(2, '0')
+    const period = {
+      statementDate: `${year}-${mm}-01`,
+      periodStart: `${year}-${mm}-01`,
+      periodEnd: `${year}-${mm}-${lastDay}`,
+    }
+    const reconciled = emptyStatement.kind === 'empty'
+    const fileName = pdfDoc?.fileName || rawFileName || file?.name || 'statement'
+    const formatSignature = pdfDoc ? pdfDoc.format : rawText ? headerSignature(rawText) : null
+
+    setIsSaving(true)
+    setSaveResult(null)
+    setParseError(null)
+    try {
+      let ok = false
+      if (originDocId) {
+        // Already in the archive (extracted from there) — update it in place.
+        const res = await fetch(`/api/documents/${originDocId}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId: account.id,
+            source: reconciled ? 'import' : 'upload',
+            importedCount: reconciled ? 0 : null,
+            dataRows: recon?.dataRows ?? 0,
+            formatSignature,
+            ...period,
+          }),
+        })
+        ok = res.ok
+      } else {
+        const base64 = pdfDoc ? pdfDoc.base64 : rawText ? btoa(unescape(encodeURIComponent(rawText))) : ''
+        ok =
+          !!base64 &&
+          (await archiveDocument(
+            {
+              accountId: account.id,
+              fileName,
+              mimeType: pdfDoc ? 'application/pdf' : 'text/csv',
+              source: reconciled ? 'import' : 'upload',
+              formatSignature,
+              importedCount: reconciled ? 0 : null,
+              dataRows: recon?.dataRows ?? 0,
+              ...period,
+            },
+            base64,
+          ))
+      }
+      if (!ok) {
+        setParseError('Could not file that statement — please try again.')
+        return
+      }
+      setSaveResult(
+        reconciled
+          ? `Filed ${fileName} — no transactions to import. ${MONTHS_SHORT[month - 1]} ${year} is now covered for ${account.name}.`
+          : `Filed ${fileName} under ${account.name} for ${MONTHS_SHORT[month - 1]} ${year}. It's marked uploaded — extract it below once you have a readable copy.`,
+      )
+      await loadDocuments()
+      resetReview()
+      advanceQueue()
+    } catch {
+      setParseError('Could not file that statement — please try again.')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
   const handleCancel = () => {
     setFile(null)
     setParsedTransactions([])
     setParseError(null)
+    setEmptyStatement(null)
+    setEmptyPeriod(null)
+    emptyPeriodTouchedRef.current = false
     setSaveResult(null)
     setRecon(null)
     setOpeningBalance('')
@@ -1807,7 +2021,8 @@ export default function ImportPage() {
         >
           {imported ? (
             <>
-              <CheckCircle className="h-3 w-3" /> Reconciled{d.importedCount != null ? ` · ${d.importedCount}` : ''}
+              <CheckCircle className="h-3 w-3" /> Reconciled
+              {d.importedCount === 0 ? ' · no transactions' : d.importedCount != null ? ` · ${d.importedCount}` : ''}
             </>
           ) : (
             <>
@@ -2033,6 +2248,85 @@ export default function ImportPage() {
           <div className="mb-8 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
             <AlertCircle className="h-4 w-4 shrink-0 text-red-500" />
             <p className="text-sm text-red-700">{parseError}</p>
+          </div>
+        )}
+
+        {/* Nothing to import — file the statement anyway so the month is covered */}
+        {emptyStatement && (
+          <div className="mb-8 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4">
+            <div className="flex items-start gap-3">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-amber-900">
+                  {emptyStatement.kind === 'empty'
+                    ? 'No transactions on this statement'
+                    : "Couldn't read this statement"}
+                </p>
+                <p className="mt-0.5 text-sm text-amber-800">
+                  {emptyStatement.reason}{' '}
+                  {emptyStatement.kind === 'empty'
+                    ? 'Save it anyway — the statement is filed and its month counts as reconciled on the grid below, so a quiet month is not mistaken for a missing one.'
+                    : 'Save it anyway so it is filed against its month — it stays marked "uploaded" so you can extract it later.'}
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium uppercase tracking-wider text-amber-700">
+                    Statement month
+                  </span>
+                  <Select
+                    ariaLabel="Statement month"
+                    value={emptyPeriod ? String(emptyPeriod.month) : ''}
+                    onChange={(v) => {
+                      emptyPeriodTouchedRef.current = true
+                      setEmptyPeriod((prev) => ({ year: prev?.year ?? gridYear, month: Number(v) }))
+                    }}
+                    options={MONTH_OPTS}
+                    placeholder="Month"
+                    buttonClassName="inline-flex h-8 w-20 min-w-0 items-center justify-between gap-1 rounded-md border border-amber-300 bg-white px-2 text-sm text-gray-700 hover:bg-amber-50"
+                  />
+                  <Select
+                    ariaLabel="Statement year"
+                    value={emptyPeriod ? String(emptyPeriod.year) : ''}
+                    onChange={(v) => {
+                      emptyPeriodTouchedRef.current = true
+                      setEmptyPeriod((prev) => ({ year: Number(v), month: prev?.month ?? new Date().getMonth() + 1 }))
+                    }}
+                    options={Array.from(new Set([...PERIOD_YEARS, ...(emptyPeriod ? [String(emptyPeriod.year)] : [])]))
+                      .sort()
+                      .map((y) => ({ value: y, label: y }))}
+                    placeholder="Year"
+                    buttonClassName="inline-flex h-8 w-24 min-w-0 items-center justify-between gap-1 rounded-md border border-amber-300 bg-white px-2 text-sm text-gray-700 hover:bg-amber-50"
+                  />
+                  <button
+                    onClick={handleSaveEmptyStatement}
+                    disabled={isSaving || !account || !emptyPeriod}
+                    title={
+                      !account
+                        ? 'Choose the account this statement belongs to first'
+                        : !emptyPeriod
+                          ? 'Choose the month this statement covers'
+                          : undefined
+                    }
+                    className="inline-flex items-center gap-2 rounded-lg bg-amber-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-amber-700 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Upload className="h-4 w-4" />
+                    {isSaving ? 'Saving…' : 'Save statement'}
+                  </button>
+                  <button
+                    onClick={handleCancel}
+                    className="rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-medium text-amber-800 shadow-sm transition-colors hover:bg-amber-100"
+                  >
+                    Discard
+                  </button>
+                </div>
+                {(!account || !emptyPeriod) && (
+                  <p className="mt-2 text-xs text-amber-700">
+                    {!account
+                      ? 'Pick the account above, then save.'
+                      : "Flow couldn't work out which month this covers — pick it so the grid can show it."}
+                  </p>
+                )}
+              </div>
+            </div>
           </div>
         )}
 

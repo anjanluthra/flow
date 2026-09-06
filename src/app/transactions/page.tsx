@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react'
-import { Search } from 'lucide-react'
+import { Copy, Search } from 'lucide-react'
 import { format, parseISO } from 'date-fns'
 import { DataTable } from '@/components/ui/DataTable'
 import { Select, MultiSelect } from '@/components/ui/Select'
@@ -54,6 +54,16 @@ const CURRENCY_ROW_CLASS: Record<string, string> = {
   USD: '',
 }
 
+// A blank manual-entry form, dated today.
+const emptyAddForm = () => ({
+  date: new Date().toISOString().slice(0, 10),
+  description: '',
+  amount: '',
+  currency: 'USD',
+  accountId: '',
+  categoryId: '',
+})
+
 // ────────────────────────────────────────────────
 // Page component
 // ────────────────────────────────────────────────
@@ -69,15 +79,10 @@ export default function TransactionsPage() {
   // Manual "add transaction" form.
   const [showAdd, setShowAdd] = useState(false)
   const [adding, setAdding] = useState(false)
-  const todayIso = new Date().toISOString().slice(0, 10)
-  const [addForm, setAddForm] = useState({
-    date: todayIso,
-    description: '',
-    amount: '',
-    currency: 'USD',
-    accountId: '',
-    categoryId: '',
-  })
+  const [addForm, setAddForm] = useState(emptyAddForm)
+  // The transaction the form was copied from, so the form can say what it's a
+  // duplicate of (recurring entries are far quicker to copy than to retype).
+  const [duplicatedFrom, setDuplicatedFrom] = useState<string | null>(null)
 
   // Filter state
   const [search, setSearch] = useState('')
@@ -193,6 +198,28 @@ export default function TransactionsPage() {
     [categories, transactions],
   )
 
+  // Copy an existing transaction into the manual add form. Nothing is saved
+  // until "Add transaction" — every field stays editable first.
+  const startDuplicate = useCallback((tx: Transaction) => {
+    setAddForm({
+      date: tx.date.slice(0, 10),
+      description: tx.description,
+      amount: String(Math.abs(tx.amountLocal)),
+      currency: tx.currency,
+      accountId: tx.accountId ?? '',
+      categoryId: tx.categoryId ?? '',
+    })
+    setDuplicatedFrom(tx.description || 'an existing transaction')
+    setShowAdd(true)
+    if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
+  }, [])
+
+  const closeAddForm = useCallback(() => {
+    setShowAdd(false)
+    setAddForm(emptyAddForm())
+    setDuplicatedFrom(null)
+  }, [])
+
   const saveDescription = useCallback(async (id: string, value: string) => {
     const v = value.trim()
     setEditingDesc(null)
@@ -245,6 +272,22 @@ export default function TransactionsPage() {
     [expenseCategories, incomeCategories, investmentCategories, transferCategories],
   )
   const acctOptions = useMemo(() => accountNames.map((a) => ({ value: a, label: a })), [accountNames])
+
+  // Recent transactions offered as templates in the manual-entry form. Capped so
+  // the dropdown stays quick — it's searchable, and older ones can be duplicated
+  // from their row in the table.
+  const duplicateOptions = useMemo(
+    () =>
+      [...transactions]
+        .sort((a, b) => b.date.localeCompare(a.date))
+        .slice(0, 300)
+        .map((t) => ({
+          value: t.id,
+          label: `${format(parseISO(t.date), 'd MMM yy')} · ${t.description} · ${formatCurrency(Math.abs(t.amountLocal), t.currency)}`,
+          group: t.accountName ?? 'No account',
+        })),
+    [transactions],
+  )
 
   // Options for the inline per-row category dropdown (value = category id).
   const categorySelectOptions = useMemo(
@@ -386,8 +429,23 @@ export default function TransactionsPage() {
           )
         },
       },
+      {
+        key: 'duplicate',
+        header: '',
+        className: 'w-[44px]',
+        render: (tx: Transaction) => (
+          <button
+            onClick={() => startDuplicate(tx)}
+            title="Duplicate — copies this into the add form to edit before saving"
+            aria-label={`Duplicate ${tx.description}`}
+            className="rounded-md p-1.5 text-gray-300 transition-colors hover:bg-blue-50 hover:text-blue-600"
+          >
+            <Copy className="h-4 w-4" />
+          </button>
+        ),
+      },
     ],
-    [categorySelectOptions, handleCategoryChange, editingDesc, descDraft, saveDescription],
+    [categorySelectOptions, handleCategoryChange, editingDesc, descDraft, saveDescription, startDuplicate],
   )
 
   const getRowClassName = (tx: Transaction) =>
@@ -418,8 +476,7 @@ export default function TransactionsPage() {
         }),
       })
       if (res.ok) {
-        setShowAdd(false)
-        setAddForm({ date: todayIso, description: '', amount: '', currency: 'USD', accountId: '', categoryId: '' })
+        closeAddForm()
         await load()
       }
     } finally {
@@ -436,7 +493,7 @@ export default function TransactionsPage() {
           <p className="mt-1 text-sm text-gray-500">Transaction Explorer</p>
         </div>
         <button
-          onClick={() => setShowAdd((v) => !v)}
+          onClick={() => (showAdd ? closeAddForm() : setShowAdd(true))}
           className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700"
         >
           + Add transaction
@@ -447,6 +504,30 @@ export default function TransactionsPage() {
           personal expense on a business card). Counts in the P&L like any other. */}
       {showAdd && (
         <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50/50 p-4">
+          {/* Start from a previous transaction — recurring entries (rent, a
+              monthly transfer) are quicker to copy and tweak than to retype. */}
+          <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-blue-100 pb-3">
+            <Copy className="h-4 w-4 shrink-0 text-blue-400" />
+            <span className="text-xs font-medium text-gray-600">Copy a previous transaction</span>
+            <Select
+              value=""
+              onChange={(id) => {
+                const tx = transactions.find((t) => t.id === id)
+                if (tx) startDuplicate(tx)
+              }}
+              searchable
+              placeholder="Search a transaction to duplicate…"
+              ariaLabel="Copy a previous transaction"
+              options={duplicateOptions}
+              panelWidth={420}
+              buttonClassName="inline-flex h-[34px] w-full max-w-md min-w-0 items-center justify-between gap-2 rounded-lg border border-gray-300 bg-white px-3 text-sm text-gray-700 hover:bg-gray-50"
+            />
+            {duplicatedFrom && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-1 text-xs font-medium text-blue-700">
+                Copied from “{duplicatedFrom}” — edit anything below, nothing is saved yet
+              </span>
+            )}
+          </div>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <div>
               <label className="mb-1 block text-xs font-medium text-gray-600">Date</label>
@@ -511,7 +592,7 @@ export default function TransactionsPage() {
             </div>
           </div>
           <div className="mt-3 flex items-center justify-end gap-2">
-            <button onClick={() => setShowAdd(false)} className="rounded-lg px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100">
+            <button onClick={closeAddForm} className="rounded-lg px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100">
               Cancel
             </button>
             <button

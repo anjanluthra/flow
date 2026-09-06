@@ -333,6 +333,9 @@ export default function NetWorthPage() {
   // ---- Edit state ----
   const [isEditing, setIsEditing] = useState(false)
   const [editValues, setEditValues] = useState<Record<string, string>>({})
+  // Yield % and annual cash flow edits, keyed by row index (same as editValues).
+  const [yieldValues, setYieldValues] = useState<Record<string, string>>({})
+  const [cashflowValues, setCashflowValues] = useState<Record<string, string>>({})
   const [saveDate, setSaveDate] = useState(todayStr())
   const [isSaving, setIsSaving] = useState(false)
   const [isDeleting, setIsDeleting] = useState(false)
@@ -752,10 +755,16 @@ export default function NetWorthPage() {
     }
     setAccounts(merged)
     const vals: Record<string, string> = {}
+    const yields: Record<string, string> = {}
+    const cashflows: Record<string, string> = {}
     merged.forEach((a, i) => {
       vals[i] = a.localBalance.toString()
+      yields[i] = a.yield ? a.yield.toString() : ''
+      cashflows[i] = a.annualCashFlow ? a.annualCashFlow.toString() : ''
     })
     setEditValues(vals)
+    setYieldValues(yields)
+    setCashflowValues(cashflows)
     setSaveDate(todayStr())
     setIsEditing(true)
   }
@@ -763,7 +772,22 @@ export default function NetWorthPage() {
   function cancelEditing() {
     setIsEditing(false)
     setEditValues({})
+    setYieldValues({})
+    setCashflowValues({})
     if (preEditAccountsRef.current) setAccounts(preEditAccountsRef.current)
+  }
+
+  // Derive the annual cash flow from a row's balance and yield %, so entering
+  // a rate auto-fills the cash flow column (the user can still override it).
+  function recalcCashflow(i: number, a: Account, yieldStr: string, localStr: string) {
+    const y = parseFloat(yieldStr)
+    if (isNaN(y)) return
+    const local = parseFloat(localStr)
+    const usd = isNaN(local)
+      ? a.usdValue
+      : Math.round(convertToUSD(local, a.currency, fxRates ?? undefined))
+    const cf = Math.round((usd * y) / 100)
+    setCashflowValues((prev) => ({ ...prev, [i]: cf ? cf.toString() : '' }))
   }
 
   async function saveSnapshot() {
@@ -776,14 +800,21 @@ export default function NetWorthPage() {
     try {
       const updatedAccounts = accounts.map((a, i) => {
         const raw = editValues[i]
-        if (raw === undefined) return a
-        const parsed = parseFloat(raw)
-        if (isNaN(parsed)) return a
-        return {
-          ...a,
-          localBalance: parsed,
-          usdValue: Math.round(convertToUSD(parsed, a.currency, fxRates ?? undefined)),
-        }
+        const parsed = raw === undefined ? NaN : parseFloat(raw)
+        const localBalance = isNaN(parsed) ? a.localBalance : parsed
+        const usdValue = isNaN(parsed)
+          ? a.usdValue
+          : Math.round(convertToUSD(parsed, a.currency, fxRates ?? undefined))
+
+        const rawYield = yieldValues[i]
+        const parsedYield = rawYield === undefined ? NaN : parseFloat(rawYield)
+        const yieldPct = rawYield === '' ? 0 : isNaN(parsedYield) ? a.yield : parsedYield
+
+        const rawCf = cashflowValues[i]
+        const parsedCf = rawCf === undefined ? NaN : parseFloat(rawCf)
+        const annualCashFlow = rawCf === '' ? 0 : isNaN(parsedCf) ? a.annualCashFlow : parsedCf
+
+        return { ...a, localBalance, usdValue, yield: yieldPct, annualCashFlow }
       })
 
       // Only save accounts that were already on the sheet or that you gave a
@@ -810,6 +841,8 @@ export default function NetWorthPage() {
       setAccounts(updatedAccounts)
       setIsEditing(false)
       setEditValues({})
+      setYieldValues({})
+      setCashflowValues({})
       await fetchSnapshotDates()
       setSelectedDate(saveDate)
     } catch (err) {
@@ -824,18 +857,27 @@ export default function NetWorthPage() {
     setAccounts((prev) =>
       prev.map((a, i) => {
         const raw = editValues[i]
-        if (raw === undefined) return a
-        const parsed = parseFloat(raw)
-        if (isNaN(parsed)) return a
-        return {
-          ...a,
-          localBalance: parsed,
-          usdValue: Math.round(convertToUSD(parsed, a.currency, fxRates ?? undefined)),
-        }
+        const parsed = raw === undefined ? NaN : parseFloat(raw)
+        const localBalance = isNaN(parsed) ? a.localBalance : parsed
+        const usdValue = isNaN(parsed)
+          ? a.usdValue
+          : Math.round(convertToUSD(parsed, a.currency, fxRates ?? undefined))
+
+        const rawYield = yieldValues[i]
+        const parsedYield = rawYield === undefined ? NaN : parseFloat(rawYield)
+        const yieldPct = rawYield === '' ? 0 : isNaN(parsedYield) ? a.yield : parsedYield
+
+        const rawCf = cashflowValues[i]
+        const parsedCf = rawCf === undefined ? NaN : parseFloat(rawCf)
+        const annualCashFlow = rawCf === '' ? 0 : isNaN(parsedCf) ? a.annualCashFlow : parsedCf
+
+        return { ...a, localBalance, usdValue, yield: yieldPct, annualCashFlow }
       })
     )
     setIsEditing(false)
     setEditValues({})
+    setYieldValues({})
+    setCashflowValues({})
   }
 
   // ---- Index lists for the table ----
@@ -949,7 +991,11 @@ export default function NetWorthPage() {
             <input
               type="text"
               value={editValues[i] ?? a.localBalance.toString()}
-              onChange={(e) => setEditValues((prev) => ({ ...prev, [i]: e.target.value }))}
+              onChange={(e) => {
+                const v = e.target.value
+                setEditValues((prev) => ({ ...prev, [i]: v }))
+                recalcCashflow(i, a, yieldValues[i] ?? '', v)
+              }}
               className="w-28 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
             />
           ) : (
@@ -966,12 +1012,41 @@ export default function NetWorthPage() {
 
         {/* Yield */}
         <td className="px-4 py-3 text-right tabular-nums text-gray-600">
-          {a.yield > 0 ? `${a.yield.toFixed(2)}%` : '—'}
+          {isEditing ? (
+            <div className="inline-flex items-center gap-1">
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="0"
+                value={yieldValues[i] ?? ''}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setYieldValues((prev) => ({ ...prev, [i]: v }))
+                  recalcCashflow(i, a, v, editValues[i] ?? a.localBalance.toString())
+                }}
+                className="w-16 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+              <span className="text-gray-400">%</span>
+            </div>
+          ) : (
+            a.yield > 0 ? `${a.yield.toFixed(2)}%` : '—'
+          )}
         </td>
 
         {/* Annual cash flow */}
         <td className="px-4 py-3 text-right tabular-nums text-gray-600">
-          {a.annualCashFlow > 0 ? fmtView(a.annualCashFlow) : '—'}
+          {isEditing ? (
+            <input
+              type="text"
+              inputMode="decimal"
+              placeholder="0"
+              value={cashflowValues[i] ?? ''}
+              onChange={(e) => setCashflowValues((prev) => ({ ...prev, [i]: e.target.value }))}
+              className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          ) : (
+            a.annualCashFlow > 0 ? fmtView(a.annualCashFlow) : '—'
+          )}
         </td>
       </tr>
     )
