@@ -290,6 +290,8 @@ interface ParsedTransaction {
 interface EmptyStatement {
   kind: 'empty' | 'unreadable'
   reason: string
+  /** The underlying cause from /api/parse-pdf, shown so a failure is diagnosable. */
+  detail?: string
 }
 
 interface ColumnMapping {
@@ -768,10 +770,10 @@ export default function ImportPage() {
   // Flag the current statement as having nothing to import, and pre-fill the
   // month it covers from the statement date Claude read (PDFs) or the filename —
   // the transactions that would normally date it don't exist.
-  const markEmptyStatement = useCallback((kind: EmptyStatement['kind'], reason: string) => {
+  const markEmptyStatement = useCallback((kind: EmptyStatement['kind'], reason: string, detail?: string) => {
     setParseError(null)
     setParsedTransactions([])
-    setEmptyStatement({ kind, reason })
+    setEmptyStatement({ kind, reason, detail })
     if (!emptyPeriodTouchedRef.current) {
       setEmptyPeriod(
         monthFromDateString(statementDateHintRef.current) ?? monthFromFileName(fileNameRef.current),
@@ -1033,6 +1035,7 @@ export default function ImportPage() {
           }
           let anyOk = false
           let errMsg = ''
+          let errDetail = ''
           for (const chunkB64 of chunks) {
             const res = await fetch('/api/parse-pdf', {
               method: 'POST',
@@ -1041,7 +1044,7 @@ export default function ImportPage() {
             })
             // A timed-out/edge response can be an HTML error page, not JSON — read
             // defensively so it surfaces a clear message instead of throwing.
-            let d: { error?: string; transactions?: { date: string; description: string; amount: number }[]; bankHint?: string; statementDate?: string | null } = {}
+            let d: { error?: string; detail?: string; transactions?: { date: string; description: string; amount: number }[]; bankHint?: string; statementDate?: string | null } = {}
             try {
               d = await res.json()
             } catch {
@@ -1058,6 +1061,7 @@ export default function ImportPage() {
                 (res.status === 504 || res.status === 408
                   ? 'That statement took too long to read — please try Extract again.'
                   : 'Could not read that PDF.')
+              errDetail = d.detail ?? ''
             }
           }
           const rows: { date: string; description: string; amount: number }[] = data.transactions || []
@@ -1073,7 +1077,7 @@ export default function ImportPage() {
             setAutoDetected(!known && !!failAccount)
             setSelectedAccountId(failAccount?.id ?? '')
             setChangingAccount(!failAccount)
-            markEmptyStatement('unreadable', errMsg || 'Could not read that PDF.')
+            markEmptyStatement('unreadable', errMsg || 'Could not read that PDF.', errDetail)
             return
           }
 
@@ -2268,6 +2272,11 @@ export default function ImportPage() {
                     ? 'Save it anyway — the statement is filed and its month counts as reconciled on the grid below, so a quiet month is not mistaken for a missing one.'
                     : 'Save it anyway so it is filed against its month — it stays marked "uploaded" so you can extract it later.'}
                 </p>
+                {emptyStatement.detail && (
+                  <p className="mt-2 break-words rounded-md bg-amber-100/70 px-2 py-1 font-mono text-[11px] leading-relaxed text-amber-900">
+                    {emptyStatement.detail}
+                  </p>
+                )}
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span className="text-xs font-medium uppercase tracking-wider text-amber-700">
                     Statement month

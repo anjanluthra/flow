@@ -85,11 +85,28 @@ export async function ensureInvestmentType() {
 let typesAlignedReady = false
 export async function ensureTransactionTypesMatchCategory() {
   if (typesAlignedReady) return
+  // The 'investment' value must exist on BOTH enums before the cast below can
+  // produce it.
+  await ensureInvestmentType()
   try {
+    // transactions.type and categories.type are two DISTINCT Postgres enums
+    // (transaction_type and category_type, see 001_initial_schema.sql). There is
+    // no implicit cast or comparison operator between distinct enums, so the
+    // plain `SET type = c.type ... WHERE t.type IS DISTINCT FROM c.type` this
+    // once used threw on every call — silently, into the catch below — leaving
+    // every mis-typed row untouched. Interest earned on investments was the
+    // visible casualty: ensureInvestmentType repairs the CATEGORY to income and
+    // has a statement that pushes transactions INTO 'investment', but this is
+    // the only one that pulls them back out, so those rows stayed 'investment'
+    // and the P&L filed them under investing instead of income. Compare and
+    // assign through text, and skip any category type the transaction enum
+    // doesn't have (the cast would throw for the whole statement).
     await query(
-      `UPDATE transactions t SET type = c.type
+      `UPDATE transactions t SET type = c.type::text::transaction_type
        FROM categories c
-       WHERE t.category_id = c.id AND t.type IS DISTINCT FROM c.type`,
+       WHERE t.category_id = c.id
+         AND t.type::text IS DISTINCT FROM c.type::text
+         AND c.type::text = ANY (ENUM_RANGE(NULL::transaction_type)::text[])`,
     )
     typesAlignedReady = true
   } catch (error) {

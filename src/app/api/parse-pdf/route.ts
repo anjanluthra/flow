@@ -190,46 +190,54 @@ class PdfPasswordError extends Error {}
 // Turn the collected chunk failures into a user-facing message + HTTP status.
 // Every chunk failing usually means one systemic cause, so key off the first
 // failure's status and (for 4xx) the detail Anthropic returned.
-function describeFailure(failures: ChunkError[]): { message: string; status: number } {
+function describeFailure(failures: ChunkError[]): { message: string; status: number; detail?: string } {
   const f = failures[0]
   if (!f) return { message: 'Claude could not read that PDF. Try a CSV export instead.', status: 502 }
+  // The underlying cause, carried back to the client. Without it every distinct
+  // failure looks like the same vague sentence, which is how one statement can
+  // fail for weeks without anyone learning why.
+  const detail = `${f.status === NO_JSON ? 'no-json' : f.status === TRANSPORT ? 'transport' : `HTTP ${f.status}`}: ${f.detail.slice(0, 300)}`
 
-  const detail = f.detail.toLowerCase()
+  const lower = f.detail.toLowerCase()
   if (f.status === NO_JSON) {
     return {
       message: 'Claude read that PDF but returned nothing usable — please try Extract again.',
       status: 502,
+      detail,
     }
   }
   if (f.status === TRANSPORT) {
     return {
       message: 'Could not reach Claude to read that PDF — please try Extract again.',
       status: 503,
+      detail,
     }
   }
   if (f.status === 401 || f.status === 403) {
-    return { message: "PDF parsing isn't configured correctly — the Anthropic API key was rejected.", status: 502 }
+    return { message: "PDF parsing isn't configured correctly — the Anthropic API key was rejected.", status: 502, detail }
   }
   if (f.status === 429) {
-    return { message: 'Too many statements at once — please wait a moment and try again.', status: 503 }
+    return { message: 'Too many statements at once — please wait a moment and try again.', status: 503, detail }
   }
-  if (f.status === 404 || detail.includes('model')) {
-    return { message: "PDF parsing isn't configured correctly — the configured Claude model is unavailable.", status: 502 }
+  if (f.status === 404 || lower.includes('model')) {
+    return { message: "PDF parsing isn't configured correctly — the configured Claude model is unavailable.", status: 502, detail }
   }
   if (f.status >= 500) {
-    return { message: 'Claude was temporarily unavailable while reading that PDF — please try Extract again.', status: 503 }
+    return { message: 'Claude was temporarily unavailable while reading that PDF — please try Extract again.', status: 503, detail }
   }
   // A 400 on the document itself: almost always an encrypted/password-protected
   // or corrupted file that Claude's PDF reader can't open.
-  if (detail.includes('password') || detail.includes('encrypt')) {
+  if (lower.includes('password') || lower.includes('encrypt')) {
     return {
       message: 'That PDF is password-protected. Remove the password (open it and re-save/print to PDF) or use a CSV export, then try again.',
       status: 422,
+      detail,
     }
   }
   return {
     message: 'Claude could not read that PDF — it may be encrypted, scanned at low quality, or corrupted. Try re-saving it or use a CSV export.',
     status: 502,
+    detail,
   }
 }
 
@@ -415,7 +423,24 @@ export async function POST(request: NextRequest) {
     try {
       const doc = await PDFDocument.load(pdfBuf, { ignoreEncryption: true })
       if (doc.isEncrypted) {
-        const groups = groupPageTexts(await extractPageTexts(pdfBuf))
+        let pageTexts: string[]
+        try {
+          pageTexts = await extractPageTexts(pdfBuf)
+        } catch (e) {
+          if (e instanceof PdfPasswordError) throw e
+          // Don't fall through to a native read: Anthropic's PDF reader rejects
+          // encrypted documents outright, so that call is guaranteed to fail and
+          // its generic 400 would hide what actually went wrong here.
+          console.error('Encrypted PDF text extraction failed:', e)
+          return NextResponse.json(
+            {
+              error: "That PDF is encrypted and Flow couldn't decrypt it to read the text. Try re-saving it (open it and print to PDF) or use a CSV export.",
+              detail: `decrypt: ${String(e).slice(0, 300)}`,
+            },
+            { status: 422 },
+          )
+        }
+        const groups = groupPageTexts(pageTexts)
         if (groups.length === 0) {
           return NextResponse.json(
             { error: "That PDF is password-protected and has no readable text layer (it looks scanned). Try a CSV export instead." },
@@ -495,8 +520,8 @@ export async function POST(request: NextRequest) {
     }
 
     if (all.length === 0) {
-      const { message, status } = describeFailure(failures)
-      return NextResponse.json({ error: message }, { status })
+      const { message, status, detail } = describeFailure(failures)
+      return NextResponse.json({ error: message, detail }, { status })
     }
 
     // An empty list here means both paths read the document and it genuinely
