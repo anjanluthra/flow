@@ -40,6 +40,14 @@ const nextConfig: NextConfig = {
   // mammoth (docx → HTML preview) pulls in Node-only deps; keep it external so
   // Next doesn't try to bundle it into the server build.
   serverExternalPackages: ["mammoth", "pdfjs-dist"],
+  // pdf.js loads its worker through a path it computes at runtime, which file
+  // tracing can't see — so pdf.worker.mjs was left out of the deployment and
+  // every encrypted statement died on "Setting up fake worker failed: Cannot
+  // find module .../pdf.worker.mjs". It only ever worked locally, where the
+  // whole package is on disk. Ship the build directory with the route.
+  outputFileTracingIncludes: {
+    "/api/parse-pdf": ["./node_modules/pdfjs-dist/legacy/build/**/*"],
+  },
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];
   },
