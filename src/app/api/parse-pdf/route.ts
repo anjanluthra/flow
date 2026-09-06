@@ -170,7 +170,13 @@ function parseStatement(raw: string, truncated: boolean): StatementExtract | nul
 
 // A failed model call, carrying the HTTP status so the caller can turn "every
 // chunk failed" into a message that names the actual cause (bad key, bad model,
-// an unreadable/encrypted PDF) rather than a generic dead-end.
+// an unreadable/encrypted PDF) rather than a generic dead-end. Two statuses are
+// ours, not Anthropic's: NO_JSON when the call succeeded but the reply held no
+// JSON to parse, and TRANSPORT when the request never completed. Both used to
+// surface as an unexplained null, which is how a readable statement could come
+// back as "Claude could not read that PDF" with nothing logged.
+const NO_JSON = 0
+const TRANSPORT = -1
 class ChunkError extends Error {
   constructor(readonly status: number, readonly detail: string) {
     super(`anthropic ${status}`)
@@ -189,6 +195,18 @@ function describeFailure(failures: ChunkError[]): { message: string; status: num
   if (!f) return { message: 'Claude could not read that PDF. Try a CSV export instead.', status: 502 }
 
   const detail = f.detail.toLowerCase()
+  if (f.status === NO_JSON) {
+    return {
+      message: 'Claude read that PDF but returned nothing usable — please try Extract again.',
+      status: 502,
+    }
+  }
+  if (f.status === TRANSPORT) {
+    return {
+      message: 'Could not reach Claude to read that PDF — please try Extract again.',
+      status: 503,
+    }
+  }
   if (f.status === 401 || f.status === 403) {
     return { message: "PDF parsing isn't configured correctly — the Anthropic API key was rejected.", status: 502 }
   }
@@ -221,16 +239,22 @@ function describeFailure(failures: ChunkError[]): { message: string; status: num
 // response so the caller can drop just that chunk rather than fail the whole
 // statement, while still learning why it failed.
 async function callClaude(content: unknown[], apiKey: string): Promise<StatementExtract | null> {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 16000,
-      thinking: { type: 'disabled' },
-      messages: [{ role: 'user', content }],
-    }),
-  })
+  let res: Response
+  try {
+    res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 16000,
+        thinking: { type: 'disabled' },
+        messages: [{ role: 'user', content }],
+      }),
+    })
+  } catch (e) {
+    console.error('Anthropic PDF parse request failed:', e)
+    throw new ChunkError(TRANSPORT, String(e).slice(0, 300))
+  }
   if (!res.ok) {
     const detail = await res.text()
     console.error('Anthropic PDF parse error:', res.status, detail.slice(0, 300))
@@ -240,7 +264,16 @@ async function callClaude(content: unknown[], apiKey: string): Promise<Statement
   const raw: string = Array.isArray(data?.content)
     ? data.content.filter((b: { type: string }) => b.type === 'text').map((b: { text: string }) => b.text).join('')
     : ''
-  return parseStatement(raw, data?.stop_reason === 'max_tokens')
+  const parsed = parseStatement(raw, data?.stop_reason === 'max_tokens')
+  if (!parsed) {
+    // The call succeeded but the reply carried no JSON object (an empty reply,
+    // a refusal, prose only). Raise it so it's logged and classified instead of
+    // vanishing into a null the caller can't explain.
+    const detail = `stop_reason=${data?.stop_reason ?? 'none'} reply=${raw.slice(0, 200) || '(empty)'}`
+    console.error('Anthropic PDF parse returned no JSON:', detail)
+    throw new ChunkError(NO_JSON, detail)
+  }
+  return parsed
 }
 
 // Read a (whole or chunked) PDF via Claude's native PDF support. `context`
@@ -266,12 +299,13 @@ function extractTextChunk(text: string, apiKey: string, context: string): Promis
   )
 }
 
-// Decrypt a password-protected PDF (empty user password — the common case for
-// bank e-statements, which are owner/permission-locked with AES) and return the
-// text of each page. pdf-lib can't decrypt AES, so we use pdf.js, which fully
-// supports it. Throws ChunkError(401) when the file needs a real open password
-// we don't have.
-async function extractEncryptedPageTexts(bytes: Uint8Array): Promise<string[]> {
+// The text of each page, read with pdf.js. Used for two things: decrypting a
+// password-protected PDF (empty user password — the common case for bank
+// e-statements, which are owner/permission-locked with AES; pdf-lib can't
+// decrypt AES, pdf.js can), and as the fallback path for any PDF whose native
+// read came back empty. Throws PdfPasswordError when the file needs a real open
+// password we don't have.
+async function extractPageTexts(bytes: Uint8Array): Promise<string[]> {
   // Loaded lazily and kept out of the server bundle (see serverExternalPackages).
   const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
   let doc
@@ -313,6 +347,16 @@ async function splitIntoChunks(bytes: Uint8Array): Promise<string[]> {
     chunks.push(Buffer.from(await out.save()).toString('base64'))
   }
   return chunks
+}
+
+// Page texts joined into CHUNK_PAGES-sized groups, dropping blank pages.
+function groupPageTexts(pageTexts: string[]): string[] {
+  const groups: string[] = []
+  for (let i = 0; i < pageTexts.length; i += CHUNK_PAGES) {
+    const text = pageTexts.slice(i, i + CHUNK_PAGES).join('\n\n').trim()
+    if (text) groups.push(text)
+  }
+  return groups
 }
 
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
@@ -365,15 +409,13 @@ export async function POST(request: NextRequest) {
     type ChunkCaller = (context: string) => Promise<StatementExtract | null>
     const failures: ChunkError[] = []
     let callers: ChunkCaller[]
+    // Whether we're already reading the text layer (encrypted statements), so
+    // the fallback below doesn't repeat the same call.
+    let usedTextLayer = false
     try {
       const doc = await PDFDocument.load(pdfBuf, { ignoreEncryption: true })
       if (doc.isEncrypted) {
-        const pageTexts = await extractEncryptedPageTexts(pdfBuf)
-        const groups: string[] = []
-        for (let i = 0; i < pageTexts.length; i += CHUNK_PAGES) {
-          const text = pageTexts.slice(i, i + CHUNK_PAGES).join('\n\n').trim()
-          if (text) groups.push(text)
-        }
+        const groups = groupPageTexts(await extractPageTexts(pdfBuf))
         if (groups.length === 0) {
           return NextResponse.json(
             { error: "That PDF is password-protected and has no readable text layer (it looks scanned). Try a CSV export instead." },
@@ -381,6 +423,7 @@ export async function POST(request: NextRequest) {
           )
         }
         callers = groups.map((text) => (context: string) => extractTextChunk(text, apiKey, context))
+        usedTextLayer = true
       } else {
         const chunks = await splitIntoChunks(pdfBuf)
         const list = chunks.length ? chunks : [contentBase64]
@@ -403,6 +446,7 @@ export async function POST(request: NextRequest) {
         return await caller(context)
       } catch (e) {
         if (e instanceof ChunkError) failures.push(e)
+        else console.error('PDF chunk failed:', e)
         return null
       }
     }
@@ -410,27 +454,55 @@ export async function POST(request: NextRequest) {
     // Read the first chunk on its own to capture the statement period/currency,
     // then hand that to the remaining chunks (whose pages may not repeat the
     // header) so dates without a year are attributed to the right period.
-    const first = await runCaller(callers[0], '')
-
-    const rest: StatementExtract[] = []
-    if (callers.length > 1) {
-      const period = first?.statementDate ? ` dated around ${first.statementDate}` : ''
-      const ccy = first?.currency ? ` in ${first.currency}` : ''
-      const context = `\n\nContext: these are continuation pages of one bank statement${period}${ccy}. If a transaction row shows a day and month but no year, use the statement period's year. Return the same JSON shape.`
-      const results = await mapLimit(callers.slice(1), MAX_CONCURRENCY, (caller) => runCaller(caller, context))
-      for (const r of results) if (r) rest.push(r)
+    const runAll = async (list: ChunkCaller[]): Promise<StatementExtract[]> => {
+      const first = await runCaller(list[0], '')
+      const rest: StatementExtract[] = []
+      if (list.length > 1) {
+        const period = first?.statementDate ? ` dated around ${first.statementDate}` : ''
+        const ccy = first?.currency ? ` in ${first.currency}` : ''
+        const context = `\n\nContext: these are continuation pages of one bank statement${period}${ccy}. If a transaction row shows a day and month but no year, use the statement period's year. Return the same JSON shape.`
+        const results = await mapLimit(list.slice(1), MAX_CONCURRENCY, (caller) => runCaller(caller, context))
+        for (const r of results) if (r) rest.push(r)
+      }
+      return [first, ...rest].filter((r): r is StatementExtract => r !== null)
     }
 
-    const all = [first, ...rest].filter((r): r is StatementExtract => r !== null)
+    let all = await runAll(callers)
+
+    // Second, independent path. Reading the PDF natively is one mechanism with
+    // one failure mode — an empty or non-JSON reply used to end the import right
+    // here, even for a statement whose text is plainly readable. So whenever the
+    // native read yields no transactions, re-ask Claude using the PDF's own text
+    // layer (the same route encrypted statements already take). Only runs when
+    // the first path came back empty, so a normal import costs nothing extra.
+    // A rejected key, a bad model or a rate limit will fail the same way twice —
+    // don't spend a second round of calls on those.
+    const systemic = failures.some((f) => [401, 403, 404, 429].includes(f.status))
+    if (!usedTextLayer && !systemic && all.every((r) => r.transactions.length === 0)) {
+      try {
+        const groups = groupPageTexts(await extractPageTexts(pdfBuf))
+        if (groups.length) {
+          console.warn(`PDF native read found no transactions; retrying via the text layer (${groups.length} chunk(s))`)
+          const textResults = await runAll(groups.map((text) => (context: string) => extractTextChunk(text, apiKey, context)))
+          // Keep whichever path actually read something.
+          if (textResults.some((r) => r.transactions.length > 0) || all.length === 0) all = textResults
+        }
+      } catch (e) {
+        // No text layer (a scanned statement), or pdf.js couldn't open it —
+        // the native result, empty or not, stands.
+        console.error('PDF text-layer fallback failed:', e)
+      }
+    }
+
     if (all.length === 0) {
       const { message, status } = describeFailure(failures)
       return NextResponse.json({ error: message }, { status })
     }
 
+    // An empty list here means both paths read the document and it genuinely
+    // lists no transactions (a quiet month). That's a 200, not an error: the
+    // importer files such a statement and marks its month covered.
     const transactions = all.flatMap((r) => r.transactions)
-    if (transactions.length === 0) {
-      return NextResponse.json({ error: 'No transactions found in that PDF.' }, { status: 422 })
-    }
 
     return NextResponse.json({
       transactions,
